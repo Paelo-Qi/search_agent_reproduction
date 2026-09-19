@@ -1,0 +1,48 @@
+project:
+  seed: 20260506
+  output_dir: outputs/phase0/qwen3_vl_2b_lora
+  report_dir: reports
+
+model:
+  name_or_path: Qwen/Qwen3-VL-2B-Instruct
+  revision: 89644892e4d85e24eaac8bacfd4f463576704203
+  dtype: bfloat16
+  attn_implementation: sdpa
+  trust_remote_code: false
+  image_max_pixels: 262144
+  freeze_vision_tower: true
+  freeze_multimodal_projector: true
+
+data:
+  path: data/sft_smoke_100.json
+  max_length: 32000
+  expected_samples: 100
+  require_images: true
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  max_steps: 20
+  learning_rate: 0.0002
+  weight_decay: 0.0
+  warmup_ratio: 0.1
+  lr_scheduler_type: cosine
+  logging_steps: 1
+  save_steps: 20
+  gradient_checkpointing: true
+  bf16: true
+  tf32: true
+  dataloader_num_workers: 2

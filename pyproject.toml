@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opensearch-vl-reproduction"
+version = "0.1.0"
+description = "Small-scale OpenSearch-VL Phase 0 reproduction on Qwen3-VL"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = "Apache-2.0"
+dependencies = [
+  "transformers==5.17.0",
+  "peft==0.21.0",
+  "accelerate==1.15.0",
+  "huggingface-hub==1.32.0",
+  "safetensors==0.8.0",
+  "Pillow==11.3.0",
+  "PyYAML==6.0.2",
+  "ijson==3.4.0.post0",
+  "tensorboard==2.21.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

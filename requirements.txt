@@ -1,0 +1,11 @@
+# Install the matching CUDA build of torch/torchvision first; see README.md.
+transformers==5.17.0
+peft==0.21.0
+accelerate==1.15.0
+huggingface-hub==1.32.0
+safetensors==0.8.0
+Pillow==11.3.0
+PyYAML==6.0.2
+ijson==3.4.0.post0
+tensorboard==2.21.0
+pytest==8.4.2

@@ -1,0 +1,28 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+
+# Large or generated artifacts
+data/raw/
+data/media/
+data/sft_smoke_100.json
+data/sft_smoke_100.meta.json
+outputs/
+reports/*.json
+reports/*.jsonl
+logs/
+
+# Hugging Face / experiment caches
+.cache/
+wandb/
+runs/
+
+# Keep empty directories
+!data/.gitkeep
+!outputs/.gitkeep
+!reports/.gitkeep
+
