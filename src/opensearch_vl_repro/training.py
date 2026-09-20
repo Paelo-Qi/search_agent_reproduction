@@ -106,15 +106,18 @@ def run_sft_training(
     output_dir = (PROJECT_ROOT / config["project"]["output_dir"]).resolve()
     report_dir = (PROJECT_ROOT / config["project"]["report_dir"]).resolve()
     train_cfg = config["training"]
+    # Transformers 5 removed TrainingArguments.logging_dir. Its documented
+    # replacement preserves our existing TensorBoard destination.
+    os.environ["TENSORBOARD_LOGGING_DIR"] = str(output_dir / "tensorboard")
     arguments = TrainingArguments(
         output_dir=str(output_dir),
-        overwrite_output_dir=True,
         per_device_train_batch_size=int(train_cfg["per_device_train_batch_size"]),
         gradient_accumulation_steps=int(train_cfg["gradient_accumulation_steps"]),
         max_steps=int(train_cfg["max_steps"]),
         learning_rate=float(train_cfg["learning_rate"]),
         weight_decay=float(train_cfg.get("weight_decay", 0.0)),
-        warmup_ratio=float(train_cfg.get("warmup_ratio", 0.0)),
+        # In Transformers 5, a float warmup_steps in [0, 1) is a ratio.
+        warmup_steps=float(train_cfg.get("warmup_ratio", 0.0)),
         lr_scheduler_type=str(train_cfg.get("lr_scheduler_type", "cosine")),
         logging_steps=int(train_cfg.get("logging_steps", 1)),
         # The adapter is saved once at the end, after all evidence checks pass.
@@ -125,7 +128,6 @@ def run_sft_training(
         dataloader_num_workers=int(train_cfg.get("dataloader_num_workers", 0)),
         remove_unused_columns=False,
         report_to=["tensorboard"],
-        logging_dir=str(output_dir / "tensorboard"),
         ddp_find_unused_parameters=False,
         seed=seed,
         data_seed=seed,
