@@ -1,6 +1,6 @@
 project:
   seed: 20260506
-  output_dir: outputs/phase0/qwen3_vl_2b_lora
+  output_dir: outputs/phase0_dev/qwen3_vl_2b_lora
   report_dir: reports
 
 model:
@@ -14,9 +14,9 @@ model:
   freeze_multimodal_projector: true
 
 data:
-  path: data/sft_smoke_100.json
-  max_length: 32000
-  expected_samples: 100
+  path: data/sft_dev_4.json
+  max_length: 4096
+  expected_samples: 4
   require_images: true
 
 lora:
@@ -34,8 +34,8 @@ lora:
 
 training:
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 4
-  max_steps: 20
+  gradient_accumulation_steps: 2
+  max_steps: 2
   learning_rate: 0.0002
   weight_decay: 0.0
   warmup_ratio: 0.1
@@ -44,4 +44,5 @@ training:
   gradient_checkpointing: true
   bf16: true
   tf32: true
-  dataloader_num_workers: 2
+  dataloader_num_workers: 0
+

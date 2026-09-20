@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from PIL import Image
 
@@ -129,6 +128,48 @@ def find_subsequence(sequence: list[int], needle: list[int], start: int = 0) -> 
     return -1
 
 
+def assistant_token_spans(
+    token_ids: Sequence[int],
+    assistant_start_ids: Sequence[int],
+    message_end_id: int,
+) -> list[tuple[int, int]]:
+    """Return half-open spans for assistant bodies, including ``message_end_id``.
+
+    This pure-Python helper deliberately knows nothing about torch. It makes the
+    loss-mask boundary behavior testable on hosts that do not have the GPU
+    training stack installed. User and tool/observation regions are excluded
+    because only explicit assistant boundary sequences open a target span.
+    """
+
+    values = list(token_ids)
+    start_ids = list(assistant_start_ids)
+    if not start_ids:
+        raise ValueError("assistant_start_ids must not be empty")
+
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    while True:
+        begin = find_subsequence(values, start_ids, cursor)
+        if begin < 0:
+            break
+        body_start = begin + len(start_ids)
+        try:
+            body_end = values.index(message_end_id, body_start)
+        except ValueError:
+            # Right truncation may cut an assistant turn. Its surviving body is
+            # still a legitimate target, but an empty truncated body is not.
+            if body_start < len(values):
+                spans.append((body_start, len(values)))
+                break
+            raise RuntimeError("assistant block has no content or end token") from None
+        spans.append((body_start, body_end + 1))
+        cursor = body_end + 1
+
+    if not spans:
+        raise RuntimeError("no assistant tokens found after tokenization")
+    return spans
+
+
 def assistant_token_mask(input_ids: Any, tokenizer: Any, attention_mask: Any | None = None) -> Any:
     """Mask only Qwen assistant message bodies, including their end token.
 
@@ -155,29 +196,8 @@ def assistant_token_mask(input_ids: Any, tokenizer: Any, attention_mask: Any | N
     for row_index, row in enumerate(rows):
         valid_len = int(attn_rows[row_index].sum().item()) if attn_rows is not None else row.numel()
         values = row[:valid_len].tolist()
-        cursor = 0
-        blocks = 0
-        while True:
-            begin = find_subsequence(values, start_ids, cursor)
-            if begin < 0:
-                break
-            body_start = begin + len(start_ids)
-            try:
-                body_end = values.index(end_id, body_start)
-            except ValueError as exc:
-                # Right truncation may cut an assistant turn. Its surviving body
-                # remains a legitimate policy target.
-                if body_start < valid_len:
-                    result[row_index, body_start:valid_len] = True
-                    blocks += 1
-                    cursor = valid_len
-                    break
-                raise RuntimeError("assistant block has no content or end token") from exc
-            result[row_index, body_start : body_end + 1] = True
-            blocks += 1
-            cursor = body_end + 1
-        if blocks == 0 or not result[row_index].any():
-            raise RuntimeError("no assistant tokens found after tokenization")
+        for body_start, body_end in assistant_token_spans(values, start_ids, end_id):
+            result[row_index, body_start:body_end] = True
     return result[0] if squeeze else result
 
 
@@ -224,4 +244,3 @@ def tensor_shapes(batch: dict[str, Any]) -> dict[str, list[int]]:
         for key, value in batch.items()
         if hasattr(value, "shape")
     }
-

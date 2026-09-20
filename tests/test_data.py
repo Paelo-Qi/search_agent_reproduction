@@ -1,22 +1,8 @@
 from __future__ import annotations
 
 import pytest
-import torch
 
-from opensearch_vl_repro.data import assistant_token_mask, validate_raw_sample
-
-
-class FakeTokenizer:
-    unk_token_id = -1
-
-    def encode(self, value: str, add_special_tokens: bool = False) -> list[int]:
-        assert value == "<|im_start|>assistant\n"
-        assert add_special_tokens is False
-        return [10, 11]
-
-    def convert_tokens_to_ids(self, value: str) -> int:
-        assert value == "<|im_end|>"
-        return 12
+from opensearch_vl_repro.data import assistant_token_spans, validate_raw_sample
 
 
 def valid_sample() -> dict:
@@ -44,18 +30,14 @@ def test_validate_rejects_image_mismatch() -> None:
         validate_raw_sample(sample)
 
 
-def test_assistant_mask_selects_only_assistant_bodies_and_end_tokens() -> None:
-    ids = torch.tensor([[1, 10, 11, 50, 51, 12, 2, 10, 11, 60, 12, 0]])
-    attention = torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]])
-    mask = assistant_token_mask(ids, FakeTokenizer(), attention)
-    expected = torch.tensor(
-        [[False, False, False, True, True, True, False, False, False, True, True, False]]
-    )
-    assert torch.equal(mask, expected)
+def test_assistant_spans_exclude_user_and_observation_tokens() -> None:
+    # 70/71 represent an observation between two assistant messages.
+    ids = [1, 10, 11, 50, 51, 12, 70, 71, 10, 11, 60, 12, 2]
+    spans = assistant_token_spans(ids, [10, 11], 12)
+    assert spans == [(3, 6), (10, 12)]
+    supervised = {index for start, stop in spans for index in range(start, stop)}
+    assert supervised.isdisjoint({0, 1, 2, 6, 7, 8, 9, 12})
 
 
-def test_assistant_mask_keeps_right_truncated_body() -> None:
-    ids = torch.tensor([1, 10, 11, 50, 51])
-    mask = assistant_token_mask(ids, FakeTokenizer())
-    assert torch.equal(mask, torch.tensor([False, False, False, True, True]))
-
+def test_assistant_spans_keep_right_truncated_body() -> None:
+    assert assistant_token_spans([1, 10, 11, 50, 51], [10, 11], 12) == [(3, 5)]

@@ -1,39 +1,67 @@
-# OpenSearch-VL small-scale reproduction - Phase 0
+# OpenSearch-VL small-scale reproduction — Phase 0
 
-This repository implements the engineering gate for a controlled reproduction
-of OpenSearch-VL on **2 x A800 80GB**. Phase 0 does not claim a benchmark gain
-and contains no RL code. It proves the following chain with
-`Qwen/Qwen3-VL-2B-Instruct`:
+This repository provides two real-model execution paths for validating the
+OpenSearch-VL SFT engineering chain with `Qwen/Qwen3-VL-2B-Instruct`.
+
+- **Canonical/main Phase 0 target:** exactly 2 CUDA GPUs with BF16 support. The
+  planned formal environment is 2 x A800 80GB.
+- **Phase 0 Dev Smoke:** exactly 1 CUDA GPU with BF16 support, four fully local
+  synthetic multimodal samples, and two optimizer steps.
+
+A800 is planned hardware, not a GPU-model check in the code. Dev Smoke passing
+does **not** mean Formal Phase 0 passed. Neither path claims a benchmark gain,
+and this repository contains no RL implementation.
+
+The common chain is:
 
 ```text
-official SFT sample -> ShareGPT conversion -> Qwen3-VL processor
--> input_ids / labels / vision tensors -> forward -> backward
--> LoRA optimizer update -> adapter save -> fresh-process reload
+multimodal trajectory -> Qwen3-VL processor -> input_ids / labels / vision tensors
+-> forward -> backward -> LoRA optimizer update -> adapter save
+-> fresh-process base model + adapter reload
 ```
 
 The original project is a reference, not a vendored dependency. See
 `docs/upstream_provenance.md` for the pinned commits and consulted files.
 
-## What is fixed
+## Three distinct validation states
 
-- OpenSearch-VL commit: `c5c02a49780e26ae9cb6f1fb56731d1e594d59f0`
-- Search-VL-SFT-36K revision: `2c1c460af4fa15bd63210cbf426a96664b959944`
-- Base model: `Qwen/Qwen3-VL-2B-Instruct`
-- Base model revision: `89644892e4d85e24eaac8bacfd4f463576704203`
-- BF16 LoRA, no quantization and no full fine-tuning
-- vision tower and multimodal projector frozen
-- 100 source-stratified samples, seed `20260506`
-- 20 optimizer steps on exactly two GPUs
-- global batch = `2 GPUs x 1 sample x 4 accumulation = 8`
+1. **Local/static tests — `pytest`**
 
-The paper excludes user/system content and environment observations from the
-SFT likelihood. This implementation therefore assigns labels only to content
-inside Qwen's assistant message blocks. The sample inspection report exposes
-the exact counts before training.
+   These validate data format, deterministic synthetic generation, configuration
+   separation, and assistant/observation masking. They do not prove that the
+   model can load or train on CUDA.
 
-## 1. Environment (AutoDL/Linux)
+2. **Phase 0 Dev Smoke — 1 GPU + synthetic data**
 
-Use Python 3.11 and an image with CUDA 12.6-compatible drivers:
+   This proves the minimum real-model training path can execute. Its isolated
+   result is `reports/phase0_dev_status.json`.
+
+3. **Formal Phase 0 — 2 GPUs + official Search-VL-SFT data**
+
+   This remains the formal engineering gate: 100 samples from all seven sources,
+   target 20 optimizer steps (strict minimum 10), and fresh-process reload. Its
+   independent result is `reports/phase0_status.json`.
+
+Recommended order:
+
+```bash
+# 1. Local/static tests
+pytest
+
+# 2. Cheap single-GPU development smoke
+bash scripts/run_phase0_dev.sh
+
+# 3. Formal Phase 0 later
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/run_phase0.sh
+```
+
+Dev Smoke is recommended but optional. `run_phase0.sh` neither reads nor
+requires the Dev status and can run independently.
+
+## Environment (AutoDL/Linux)
+
+Use Python 3.11 and a CUDA environment compatible with the selected PyTorch
+wheel:
 
 ```bash
 cd OpenSearch-VL-Reproduction
@@ -46,119 +74,143 @@ pip install torch==2.7.1 torchvision==0.22.1 \
   --index-url https://download.pytorch.org/whl/cu126
 
 pip install -e ".[test]"
-python scripts/collect_env.py
 pytest
 ```
 
-If the AutoDL image exposes another CUDA runtime, install the matching official
-PyTorch wheel and keep the selected versions recorded in
-`reports/environment.json`. FlashAttention is deliberately not required;
-Phase 0 uses PyTorch SDPA to reduce environment complexity.
+If the machine uses another CUDA runtime, install the matching official PyTorch
+wheel. Both GPU paths use PyTorch SDPA; FlashAttention is not required.
 
-## 2. Prepare exactly 100 official samples
+## Phase 0 Dev Smoke
+
+The Dev configuration is `configs/sft_dev.yaml`:
+
+```text
+1 visible BF16 CUDA GPU
+Qwen/Qwen3-VL-2B-Instruct at the same pinned revision as Formal Phase 0
+BF16 LoRA; vision tower and multimodal projector frozen
+4 local synthetic multimodal samples; max_length=4096
+batch=1; gradient accumulation=2; optimizer steps=2
+```
+
+Run the full path:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_phase0_dev.sh
+```
+
+The runner generates colored geometric images and trajectories locally. It
+does not access a Hugging Face dataset and does not download the official image
+archives. Two trajectories include `human -> gpt -> observation -> gpt`, which
+exercises the rule that assistant bodies are supervised while observations are
+excluded from loss.
+
+Dev outputs are isolated from Formal Phase 0:
+
+```text
+data/sft_dev_4.json
+data/dev_media/*.png
+outputs/phase0_dev/qwen3_vl_2b_lora/adapter/
+reports/dev_environment.json
+reports/dev_sample_inspection.json
+reports/dev_model_load.json
+reports/dev_training.json
+reports/dev_checkpoint_reload.json
+reports/phase0_dev_status.json
+```
+
+Dev Smoke is intended to find processor/template mismatches, CUDA/dtype issues,
+LoRA injection or freezing mistakes, forward/backward failures, non-finite
+losses, and adapter save/reload failures as early and cheaply as possible. On a
+host without CUDA it must remain `READY FOR SINGLE-GPU EXECUTION - NOT YET
+PASSED`; no GPU evidence is synthesized.
+
+Individual Dev stages can also be run directly:
+
+```bash
+python scripts/prepare_sft_dev.py
+python scripts/inspect_sft_sample.py \
+  --config configs/sft_dev.yaml --index 1 \
+  --report reports/dev_sample_inspection.json
+python scripts/model_load_test.py \
+  --config configs/sft_dev.yaml --report reports/dev_model_load.json
+bash scripts/train_sft_dev.sh
+python scripts/reload_checkpoint.py \
+  --config configs/sft_dev.yaml --report reports/dev_checkpoint_reload.json
+python scripts/verify_phase0_dev.py --require-complete
+```
+
+## Formal Phase 0 gate
+
+The formal path remains fixed to:
+
+- OpenSearch-VL commit: `c5c02a49780e26ae9cb6f1fb56731d1e594d59f0`
+- Search-VL-SFT-36K revision: `2c1c460af4fa15bd63210cbf426a96664b959944`
+- Model revision: `89644892e4d85e24eaac8bacfd4f463576704203`
+- BF16 LoRA, no quantization and no full fine-tuning
+- frozen vision tower and multimodal projector
+- 100 official, source-stratified samples from all seven sources
+- exactly 2 visible CUDA GPUs with BF16 support
+- target 20 optimizer steps; formal verifier requires at least 10
+- global batch = `2 GPUs x 1 sample x 4 accumulation = 8`
+- fresh-process adapter reload
+
+Prepare the formal data:
 
 ```bash
 python scripts/prepare_sft_smoke.py --count 100 --seed 20260506
 ```
 
-The official dataset currently packages each source's images as one ZIP. The
-script streams each large JSON with reservoir sampling, downloads the seven
-published image archives, and extracts only the selected members. This avoids
-loading the full JSON corpus into RAM, but the archives themselves still total
-roughly 10 GB and cannot be fetched image-by-image from the published layout.
-Add `--cleanup-downloads` to remove only the downloaded JSON/ZIP files after a
-successful extraction; selected images and the 100-sample JSON are preserved.
+The official dataset publishes roughly 10 GB of source image ZIP files. The
+preparation script samples the large JSON files and extracts only selected
+images, but must still obtain the published archives. This behavior is exclusive
+to the formal preparation path.
 
-Outputs:
-
-- `data/sft_smoke_100.json`
-- `data/sft_smoke_100.meta.json`
-- `data/media/<source>/...` (only selected images)
-
-## 3. Inspect one complete preprocessing result
+Run or inspect formal stages:
 
 ```bash
 python scripts/inspect_sft_sample.py \
   --config configs/sft_smoke.yaml --index 0
-```
-
-The command prints and saves the raw sample, converted messages, formatted
-prompt, image metadata, every tensor shape, actual vision field names, and
-assistant-label masking statistics in `reports/sample_inspection.json`.
-
-## 4. Gate model loading before training
-
-```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/model_load_test.py \
   --config configs/sft_smoke.yaml
-```
-
-This command refuses CPU execution, requires BF16 CUDA support, loads one real
-image/text sample, and performs a finite-loss multimodal forward pass. Training
-must not start if it fails.
-
-## 5. Run the two-GPU SFT smoke test
-
-```bash
 CUDA_VISIBLE_DEVICES=0,1 bash scripts/train_sft_smoke.sh
-```
-
-Before training, the script audits that every trainable tensor is a LoRA tensor
-and that no vision/projector tensor is trainable. During training it fails on
-NaN/Inf loss and records loss, learning rate and GPU memory each logging step.
-After 20 optimizer updates it proves that a selected `lora_B` tensor changed,
-then saves only the adapter and processor under:
-
-```text
-outputs/phase0/qwen3_vl_2b_lora/adapter/
-```
-
-## 6. Reload in a fresh process
-
-```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/reload_checkpoint.py \
   --config configs/sft_smoke.yaml
-```
-
-The script creates a new base-model process, attaches the saved PEFT adapter,
-and executes a finite-loss multimodal forward pass.
-
-## 7. Verify evidence and finalize notes
-
-```bash
 python scripts/verify_phase0.py --require-complete
 python scripts/render_reproduction_notes.py
 ```
 
-`verify_phase0.py` exits non-zero unless every requested acceptance gate has
-machine-readable evidence. The renderer fills `docs/reproduction_notes.md`
-with actual versions, loss values, parameter counts, memory, checkpoint path,
-and reload status.
-
-To execute all seven stages in order:
+Or execute the complete, independent formal path:
 
 ```bash
-bash scripts/run_phase0.sh
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/run_phase0.sh
 ```
+
+Only assistant message bodies receive labels. User/system content and
+environment observations are excluded from SFT likelihood. Training audits that
+all trainable tensors are LoRA tensors, vision/projector tensors remain frozen,
+losses are finite, and at least one LoRA tensor changes. The adapter is saved
+once after training finishes; there is no misleading intermediate `save_steps`
+setting.
 
 ## Repository layout
 
 ```text
-configs/sft_smoke.yaml              reproducible smoke configuration
-scripts/prepare_sft_smoke.py        stratified data + selected-image extraction
-scripts/inspect_sft_sample.py       preprocessing and label-mask inspection
-scripts/model_load_test.py          pre-training CUDA multimodal gate
-scripts/train_sft_smoke.py          BF16 LoRA training and update proof
-scripts/reload_checkpoint.py        independent adapter reload gate
-scripts/verify_phase0.py             strict acceptance evaluator
-src/opensearch_vl_repro/            local data/model/reporting implementation
-tests/                              fast masking and format tests
-docs/                               provenance and final run notes
+configs/sft_dev.yaml                single-GPU synthetic Dev configuration
+configs/sft_smoke.yaml              strict two-GPU formal configuration
+scripts/prepare_sft_dev.py          deterministic local data/image generation
+scripts/run_phase0_dev.sh           complete independent Dev path
+scripts/verify_phase0_dev.py        Dev-only evidence evaluator
+scripts/prepare_sft_smoke.py        official formal data preparation
+scripts/run_phase0.sh               complete independent formal path
+scripts/verify_phase0.py            strict formal evidence evaluator
+src/opensearch_vl_repro/training.py shared LoRA/audit/evidence implementation
+tests/                              CPU-only data, masking, and config tests
 ```
 
 ## Scope boundary
 
-This Phase 0 repository intentionally does not contain RL, benchmarks, a 4B
-training configuration, full fine-tuning, QLoRA, or the complete OpenSearch-VL
-tool environment. Do not enter Phase 1 until `reports/phase0_status.json` says
-`"passed": true` and the generated notes have been reviewed manually.
+Do not treat `reports/phase0_dev_status.json` as the formal gate. Phase 1, 3K
+SFT, RL, benchmarks, a 4B configuration, full fine-tuning, QLoRA, and the full
+OpenSearch-VL tool environment are outside this phase. Formal progression still
+requires `reports/phase0_status.json` to contain `"passed": true` and a manual
+review of the generated reproduction notes.
