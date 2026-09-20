@@ -16,6 +16,7 @@ from opensearch_vl_repro.data import (  # noqa: E402
     OpenSearchVLCollator,
     build_messages,
     load_json_records,
+    messages_to_json_safe,
     render_prompt,
     tensor_shapes,
 )
@@ -56,7 +57,7 @@ def main() -> None:
         "source": sample.get("_source"),
         "dataset_size": len(records),
         "raw_sample": sample,
-        "messages": messages,
+        "messages": messages_to_json_safe(messages),
         "formatted_prompt": prompt,
         "images": image_info,
         "tensor_shapes": tensor_shapes(batch),
@@ -80,4 +81,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

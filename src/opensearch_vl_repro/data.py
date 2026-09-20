@@ -108,6 +108,39 @@ def build_messages(
     return messages, opened_images, parse_tools(sample.get("tools", ""))
 
 
+def messages_to_json_safe(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy processor messages, replacing PIL payloads with report metadata.
+
+    The runtime messages must retain their real images for multimodal processor
+    input. This function is intentionally limited to the inspection/reporting
+    boundary and never mutates the supplied message list or its content parts.
+    """
+
+    safe_messages: list[dict[str, Any]] = []
+    for message in messages:
+        safe_message = dict(message)
+        content = message.get("content")
+        if isinstance(content, list):
+            safe_content: list[Any] = []
+            for part in content:
+                if isinstance(part, dict):
+                    safe_part = dict(part)
+                    image = part.get("image")
+                    if isinstance(image, Image.Image):
+                        safe_part["image"] = {
+                            "type": f"{type(image).__module__}.{type(image).__name__}",
+                            "width": image.width,
+                            "height": image.height,
+                            "mode": image.mode,
+                        }
+                    safe_content.append(safe_part)
+                else:
+                    safe_content.append(part)
+            safe_message["content"] = safe_content
+        safe_messages.append(safe_message)
+    return safe_messages
+
+
 def render_prompt(processor: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> str:
     kwargs: dict[str, Any] = {
         "tokenize": False,

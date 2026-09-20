@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-import pytest
+import json
 
-from opensearch_vl_repro.data import assistant_token_spans, validate_raw_sample
+import pytest
+from PIL import Image
+
+from opensearch_vl_repro.data import (
+    assistant_token_spans,
+    messages_to_json_safe,
+    validate_raw_sample,
+)
 
 
 def valid_sample() -> dict:
@@ -41,3 +48,29 @@ def test_assistant_spans_exclude_user_and_observation_tokens() -> None:
 
 def test_assistant_spans_keep_right_truncated_body() -> None:
     assert assistant_token_spans([1, 10, 11, 50, 51], [10, 11], 12) == [(3, 5)]
+
+
+def test_inspection_messages_are_json_safe_without_mutating_runtime_images() -> None:
+    image = Image.new("RGB", (23, 17), color=(10, 20, 30))
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is shown?"},
+                {"type": "image", "image": image},
+            ],
+        },
+        {"role": "assistant", "content": "A synthetic image."},
+    ]
+
+    report_messages = messages_to_json_safe(messages)
+    json.dumps(report_messages)
+
+    image_metadata = report_messages[0]["content"][1]["image"]
+    assert image_metadata == {
+        "type": "PIL.Image.Image",
+        "width": 23,
+        "height": 17,
+        "mode": "RGB",
+    }
+    assert messages[0]["content"][1]["image"] is image
