@@ -1,4 +1,5 @@
 .venv/
+.eval-runtime/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -14,9 +15,12 @@ data/sft_smoke_100.meta.json
 data/dev_media/
 data/sft_dev_4.json
 data/sft_dev_4.meta.json
+data/eval/source/
+data/eval/*.parquet
 outputs/
 reports/*.json
 reports/*.jsonl
+!reports/eval_subset_report.json
 logs/
 
 # Hugging Face / experiment caches

@@ -1,4 +1,4 @@
-# OpenSearch-VL small-scale reproduction — Phase 0
+# OpenSearch-VL small-scale reproduction
 
 This repository provides two real-model execution paths for validating the
 OpenSearch-VL SFT engineering chain with `Qwen/Qwen3-VL-2B-Instruct`.
@@ -197,6 +197,7 @@ setting.
 ```text
 configs/sft_dev.yaml                single-GPU synthetic Dev configuration
 configs/sft_smoke.yaml              strict two-GPU formal configuration
+scripts/prepare_eval_subset.py      frozen Phase 1 evaluation-set builder
 scripts/prepare_sft_dev.py          deterministic local data/image generation
 scripts/run_phase0_dev.sh           complete independent Dev path
 scripts/verify_phase0_dev.py        Dev-only evidence evaluator
@@ -207,10 +208,53 @@ src/opensearch_vl_repro/training.py shared LoRA/audit/evidence implementation
 tests/                              CPU-only data, masking, and config tests
 ```
 
+## Phase 1 fixed evaluation subsets
+
+All later Base, SFT, and SFT+RL comparisons must reuse the same fixed 300
+questions:
+
+```text
+SimpleVQA-100
+MMSearch-100
+VDR-Bench-100
+```
+
+They come from the three corresponding parquet files in
+`Osilly/Vision-DeepResearch-Eval`, pinned at revision
+`deeaf45779a3bbd407d8f0ccb9b4831fc78e81c9`. Sampling is unstratified fixed
+random sampling with seed `20260506`, performed after stable ID sorting. Once
+the ID manifests exist, reruns reuse those IDs and do not resample.
+
+```bash
+python scripts/prepare_eval_subset.py
+```
+
+The command downloads only the three pinned source parquet files, validates
+required values and unique IDs, decodes every selected packed image with PIL,
+and writes:
+
+```text
+data/eval/simplevqa_100.parquet
+data/eval/mmsearch_100.parquet
+data/eval/vdr_bench_100.parquet
+data/eval/combined_eval_300.parquet
+data/eval/*_100_ids.json
+data/eval/manifest.json
+reports/eval_subset_report.json
+```
+
+These are fixed evaluation subsets for this reduced reproduction and do not
+represent complete official benchmark scores. For MMSearch, later experiments
+will use final-answer accuracy only; they will not report the official end2end,
+requery, rerank, or summarization composite score. Dataset construction does
+not implement model inference, an Agent loop, search APIs, judging, SFT, or RL.
+
+See `docs/evaluation_subset.md` for the frozen artifact checksums and actual
+source schemas.
+
 ## Scope boundary
 
-Do not treat `reports/phase0_dev_status.json` as the formal gate. Phase 1, 3K
-SFT, RL, benchmarks, a 4B configuration, full fine-tuning, QLoRA, and the full
-OpenSearch-VL tool environment are outside this phase. Formal progression still
-requires `reports/phase0_status.json` to contain `"passed": true` and a manual
-review of the generated reproduction notes.
+Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate. The
+Phase 1 work currently stops at constructing the frozen evaluation data: 4B
+inference, baseline scoring, Agent/search APIs, 3K SFT, RL, full fine-tuning,
+QLoRA, and the full OpenSearch-VL tool environment remain outside this task.

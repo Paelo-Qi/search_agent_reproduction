@@ -1,0 +1,175 @@
+{
+  "dataset": "Osilly/Vision-DeepResearch-Eval",
+  "dataset_revision": "deeaf45779a3bbd407d8f0ccb9b4831fc78e81c9",
+  "seed": 20260506,
+  "samples_per_benchmark": 100,
+  "sampling_strategy": "fixed_random_sampling_without_stratification",
+  "script_version": 1,
+  "script_git_commit": "0e334d7c4420f20d30d99da1c240676ee6348fe8",
+  "implementation_sha256": "0c185fef637494932b02950211136e39dcfe6fc3af404dbd7eb542d6256cfe7a",
+  "generated_at_utc": "2026-09-20T14:31:27.748542+00:00",
+  "benchmarks": {
+    "simplevqa": {
+      "source_file": "simplevqa_300.parquet",
+      "source_count": 300,
+      "source_schema": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": true
+        },
+        {
+          "name": "question",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "answer",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "images",
+          "type": "list<element: string>",
+          "nullable": true
+        },
+        {
+          "name": "image_caption",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "image_packed",
+          "type": "large_string",
+          "nullable": true
+        }
+      ],
+      "source_sha256": "81c41317ba367ac3c911c1f8bb854b835ebdc33ccbcbbd1d850adb656d9142ce",
+      "selected_count": 100,
+      "output_file": "simplevqa_100.parquet",
+      "output_sha256": "9a73313156061329c0d90c1ca6465805d1c9cc18ffc5a0d893f630b33e4f12a8",
+      "ids_file": "simplevqa_100_ids.json",
+      "ids_sha256": "1e2d217a75e9eff94df1e273b6ec41aeb712bdaf572a6b2a1d707e7500906e6b",
+      "image_decode_successes": 100,
+      "image_decode_failures": 0
+    },
+    "mmsearch": {
+      "source_file": "mmsearch_vision_171.parquet",
+      "source_count": 171,
+      "source_schema": [
+        {
+          "name": "id",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "question",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "answer",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "images",
+          "type": "list<element: string>",
+          "nullable": true
+        },
+        {
+          "name": "image_caption",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "image_packed",
+          "type": "large_string",
+          "nullable": true
+        }
+      ],
+      "source_sha256": "a8af824bec4c2f33b743fcbf4b4dc38fec5721be58f6bdcad25da9f8b89c9501",
+      "selected_count": 100,
+      "output_file": "mmsearch_100.parquet",
+      "output_sha256": "919d4d3f5299d9e11d5e0a2069f4ca1cc8184f15326b07ca6b37d39ff23ac9e8",
+      "ids_file": "mmsearch_100_ids.json",
+      "ids_sha256": "7a804c0b1da882862c02fcdfe590659f60e36df8c859728d95e6cbc11ebcd5cb",
+      "image_decode_successes": 100,
+      "image_decode_failures": 0
+    },
+    "vdr_bench": {
+      "source_file": "testmini500_v1.parquet",
+      "source_count": 500,
+      "source_schema": [
+        {
+          "name": "id",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "question",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "question_original",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "answer",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "images",
+          "type": "list<element: string>",
+          "nullable": true
+        },
+        {
+          "name": "image_caption",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "image_packed",
+          "type": "large_string",
+          "nullable": true
+        }
+      ],
+      "source_sha256": "66ee12683eda451aa6f293297e36c83b5941aa40ad857504b8432684dbd1895e",
+      "selected_count": 100,
+      "output_file": "vdr_bench_100.parquet",
+      "output_sha256": "8190d466708589ad0970291013fa33759d35bfc716e020cadf917748d5d1f522",
+      "ids_file": "vdr_bench_100_ids.json",
+      "ids_sha256": "89725eb8d8c45d555f666a11d990261bb39505b76c1615849a485ca5abbfab4e",
+      "image_decode_successes": 100,
+      "image_decode_failures": 0
+    }
+  },
+  "combined": {
+    "output_file": "combined_eval_300.parquet",
+    "selected_count": 300,
+    "output_sha256": "f9d0ca74f98d3f73cd6ad1f60b7f2294c5e5d59d4956b60ad95084dc8ee36cf4",
+    "sort_order": [
+      "benchmark",
+      "id"
+    ],
+    "columns": [
+      "id",
+      "benchmark",
+      "question",
+      "answer",
+      "images",
+      "image_caption",
+      "image_packed"
+    ],
+    "omitted_non_common_fields": {
+      "simplevqa": [],
+      "mmsearch": [],
+      "vdr_bench": [
+        "question_original"
+      ]
+    }
+  }
+}
