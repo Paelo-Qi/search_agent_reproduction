@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import random
@@ -14,6 +15,9 @@ from PIL import Image
 from opensearch_vl_repro.eval_subset import (
     BENCHMARKS,
     DEFAULT_SEED,
+    ID_CHECKSUM_ALGORITHM,
+    MANIFEST_VERSION,
+    canonical_id_manifest_sha256,
     prepare_evaluation_subset,
     select_stable_ids,
     validate_subset_images,
@@ -80,6 +84,23 @@ def test_stable_sampling_is_independent_of_source_row_order() -> None:
     assert select_stable_ids(ids, 100, DEFAULT_SEED) == select_stable_ids(
         shuffled, 100, DEFAULT_SEED
     )
+
+
+def test_canonical_id_checksum_is_line_ending_independent_and_order_sensitive(
+    tmp_path: Path,
+) -> None:
+    lf = tmp_path / "lf.json"
+    crlf = tmp_path / "crlf.json"
+    reordered = tmp_path / "reordered.json"
+    changed = tmp_path / "changed.json"
+    lf.write_bytes('["id_一",\n"id_2"]\n'.encode("utf-8"))
+    crlf.write_bytes('["id_一",\r\n"id_2"]\r\n'.encode("utf-8"))
+    reordered.write_bytes('["id_2",\n"id_一"]\n'.encode("utf-8"))
+    changed.write_bytes('["id_一",\n"id_3"]\n'.encode("utf-8"))
+
+    assert canonical_id_manifest_sha256(lf) == canonical_id_manifest_sha256(crlf)
+    assert canonical_id_manifest_sha256(lf) != canonical_id_manifest_sha256(reordered)
+    assert canonical_id_manifest_sha256(lf) != canonical_id_manifest_sha256(changed)
 
 
 def test_eval_subset_outputs_are_complete_frozen_and_reproducible(tmp_path: Path) -> None:
@@ -155,6 +176,55 @@ def test_existing_id_manifest_is_reused_instead_of_resampled(tmp_path: Path) -> 
             report_path=tmp_path / "report.json",
             download_missing=False,
         )
+
+
+def test_legacy_raw_checksum_migrates_only_line_ending_changes(tmp_path: Path) -> None:
+    report = run_fixture(tmp_path)
+    output = tmp_path / "output"
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("manifest_version")
+    manifest.pop("id_checksum_algorithm")
+    manifest["script_version"] = 1
+    frozen_ids = {}
+    for spec in BENCHMARKS:
+        ids_path = output / spec.ids_file
+        ids = json.loads(ids_path.read_text(encoding="utf-8"))
+        frozen_ids[spec.name] = ids
+        canonical_pretty = json.dumps(ids, ensure_ascii=False, indent=2) + "\n"
+        crlf_bytes = canonical_pretty.replace("\n", "\r\n").encode("utf-8")
+        manifest["benchmarks"][spec.name]["ids_sha256"] = hashlib.sha256(
+            crlf_bytes
+        ).hexdigest()
+        ids_path.write_bytes(canonical_pretty.encode("utf-8"))
+    manifest_path.write_bytes(
+        (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    )
+
+    migrated = prepare_evaluation_subset(
+        project_root=tmp_path,
+        dataset=report["dataset"],
+        revision=report["dataset_revision"],
+        seed=report["seed"],
+        samples_per_benchmark=100,
+        output_dir=output,
+        source_dir=tmp_path / "sources",
+        report_path=tmp_path / "migrated_report.json",
+        download_missing=False,
+    )
+    new_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert migrated["manifest_version"] == new_manifest["manifest_version"] == MANIFEST_VERSION
+    assert migrated["id_checksum_algorithm"] == ID_CHECKSUM_ALGORITHM
+    assert new_manifest["id_checksum_algorithm"] == ID_CHECKSUM_ALGORITHM
+    assert new_manifest["checksum_migration"]["from_manifest_version"] == 1
+    assert new_manifest["checksum_migration"]["ids_unchanged"] is True
+    for spec in BENCHMARKS:
+        assert json.loads((output / spec.ids_file).read_text(encoding="utf-8")) == frozen_ids[
+            spec.name
+        ]
+        assert new_manifest["benchmarks"][spec.name][
+            "ids_sha256"
+        ] == canonical_id_manifest_sha256(output / spec.ids_file)
 
 
 def test_image_decoder_accepts_official_packed_shape() -> None:

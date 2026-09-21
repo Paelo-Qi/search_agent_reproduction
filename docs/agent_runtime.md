@@ -56,3 +56,17 @@ does not result in at least one parsed and successfully executed tool call.
 Running it without `--synthetic-tool-prompt` leaves the frozen question intact;
 a direct final answer is valid, and the report separately records whether a
 tool-call chain was observed.
+
+## Smoke diagnostics and CUDA initialization
+
+Both CUDA smoke wrappers explicitly resolve `cuda:0`, call `set_device`, and
+initialize CUDA before the first peak-memory reset. This ordering avoids the
+PyTorch lazy-initialization failure where the first memory-statistics call can
+raise `RuntimeError: Invalid device argument` even though CUDA is available.
+All later reset/read operations reuse the same resolved `torch.device`.
+
+On failure, `error` is an object containing `type`, `message`, `stage`, and
+`traceback`; representative stages include `config_load`, `cuda_init`,
+`cuda_memory_reset`, `model_load`, `sample_load`, `preprocessing`,
+`generation`, `agent_runtime`, and `report_write`. Successful reports retain
+`"passed": true` and `"error": null`.

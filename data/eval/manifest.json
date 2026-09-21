@@ -1,12 +1,22 @@
 {
+  "manifest_version": 2,
+  "id_checksum_algorithm": "sha256-canonical-json-v1",
+  "checksum_migration": {
+    "from_manifest_version": 1,
+    "from_algorithm": "sha256-raw-file-bytes",
+    "to_manifest_version": 2,
+    "to_algorithm": "sha256-canonical-json-v1",
+    "ids_unchanged": true,
+    "migrated_at_utc": "2026-09-21T17:34:46.753186+00:00"
+  },
   "dataset": "Osilly/Vision-DeepResearch-Eval",
   "dataset_revision": "deeaf45779a3bbd407d8f0ccb9b4831fc78e81c9",
   "seed": 20260506,
   "samples_per_benchmark": 100,
   "sampling_strategy": "fixed_random_sampling_without_stratification",
-  "script_version": 1,
-  "script_git_commit": "0e334d7c4420f20d30d99da1c240676ee6348fe8",
-  "implementation_sha256": "0c185fef637494932b02950211136e39dcfe6fc3af404dbd7eb542d6256cfe7a",
+  "script_version": 2,
+  "script_git_commit": "9a107c0e89b02045a2ddbcbbf9ec3d5ec18f30b6",
+  "implementation_sha256": "c13abe2a61b962c94dde27e5fe612f99f2b1c0b21c22ac7a9e2c32d7e1d80ae0",
   "generated_at_utc": "2026-09-20T14:31:27.748542+00:00",
   "benchmarks": {
     "simplevqa": {
@@ -49,7 +59,7 @@
       "output_file": "simplevqa_100.parquet",
       "output_sha256": "9a73313156061329c0d90c1ca6465805d1c9cc18ffc5a0d893f630b33e4f12a8",
       "ids_file": "simplevqa_100_ids.json",
-      "ids_sha256": "1e2d217a75e9eff94df1e273b6ec41aeb712bdaf572a6b2a1d707e7500906e6b",
+      "ids_sha256": "e3877a4741748068e1609e0a5bb2097a783768eac7fddac2fd87f34bd0425614",
       "image_decode_successes": 100,
       "image_decode_failures": 0
     },
@@ -93,7 +103,7 @@
       "output_file": "mmsearch_100.parquet",
       "output_sha256": "919d4d3f5299d9e11d5e0a2069f4ca1cc8184f15326b07ca6b37d39ff23ac9e8",
       "ids_file": "mmsearch_100_ids.json",
-      "ids_sha256": "7a804c0b1da882862c02fcdfe590659f60e36df8c859728d95e6cbc11ebcd5cb",
+      "ids_sha256": "07eebdb726a162fdd7ac77d213a7aca2c76b4de02f26efad12e132b443d5d36a",
       "image_decode_successes": 100,
       "image_decode_failures": 0
     },
@@ -142,7 +152,7 @@
       "output_file": "vdr_bench_100.parquet",
       "output_sha256": "8190d466708589ad0970291013fa33759d35bfc716e020cadf917748d5d1f522",
       "ids_file": "vdr_bench_100_ids.json",
-      "ids_sha256": "89725eb8d8c45d555f666a11d990261bb39505b76c1615849a485ca5abbfab4e",
+      "ids_sha256": "218af21f0a1b6810ee41eec7b5dc004eabf202992e14fb2a6ec69b74692ae942",
       "image_decode_successes": 100,
       "image_decode_failures": 0
     }

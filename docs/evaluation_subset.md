@@ -42,6 +42,15 @@ packed images were decoded fully with PIL; image decode failures were zero.
 Running the preparation command twice reproduced identical ID and parquet
 checksums.
 
+ID-manifest checksums use manifest schema version 2 and
+`sha256-canonical-json-v1`. The ID JSON is parsed and then serialized as UTF-8
+with `ensure_ascii=False` and fixed compact separators while preserving list
+order. This avoids the former raw-file checksum problem where Git converting
+Windows CRLF to Linux LF changed the hash even though every selected ID was
+identical. Legacy version-1 manifests are migrated only when their raw checksum
+matches the current file directly or after an LF/CRLF-only conversion; the
+selected IDs are never resampled during migration.
+
 These subsets support controlled comparisons in this reduced reproduction.
 They do not constitute complete official benchmark results. MMSearch will be
 reported with final-answer accuracy only, not its official end2end, requery,

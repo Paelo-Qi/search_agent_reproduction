@@ -22,7 +22,9 @@ DEFAULT_DATASET = "Osilly/Vision-DeepResearch-Eval"
 DEFAULT_REVISION = "deeaf45779a3bbd407d8f0ccb9b4831fc78e81c9"
 DEFAULT_SEED = 20260506
 SAMPLING_STRATEGY = "fixed_random_sampling_without_stratification"
-SCRIPT_VERSION = 1
+SCRIPT_VERSION = 2
+MANIFEST_VERSION = 2
+ID_CHECKSUM_ALGORITHM = "sha256-canonical-json-v1"
 REQUIRED_FIELDS = ("id", "question", "answer")
 
 
@@ -66,6 +68,38 @@ def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
         while chunk := handle.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_json_sha256(value: Any) -> str:
+    """Hash JSON semantics with stable UTF-8 serialization and preserved list order."""
+
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_id_manifest_sha256(path: str | Path) -> str:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        ids = json.load(handle)
+    if not isinstance(ids, list):
+        raise ValueError(f"ID manifest must contain a JSON list: {path}")
+    return canonical_json_sha256(ids)
+
+
+def _legacy_raw_checksum_matches_line_ending_variants(
+    path: Path, expected_sha256: str
+) -> bool:
+    """Validate a v1 raw-byte checksum while permitting only LF/CRLF changes."""
+
+    raw = path.read_bytes()
+    lf = raw.replace(b"\r\n", b"\n")
+    crlf = lf.replace(b"\n", b"\r\n")
+    return expected_sha256 in {
+        hashlib.sha256(candidate).hexdigest() for candidate in (raw, lf, crlf)
+    }
 
 
 def write_json_atomic(path: str | Path, value: Any) -> Path:
@@ -321,13 +355,38 @@ def _validate_existing_freeze(
     missing_ids = [str(path) for path in id_paths if not path.is_file()]
     if missing_ids:
         raise RuntimeError(f"frozen manifest is missing ID files: {missing_ids}")
+    checksum_algorithm = manifest.get("id_checksum_algorithm")
+    manifest_version = manifest.get("manifest_version", 1)
+    if checksum_algorithm is None:
+        if manifest_version != 1:
+            raise RuntimeError(
+                "frozen manifest has no ID checksum algorithm but is not legacy version 1"
+            )
+    elif (
+        manifest_version != MANIFEST_VERSION
+        or checksum_algorithm != ID_CHECKSUM_ALGORITHM
+    ):
+        raise RuntimeError(
+            "unsupported frozen ID checksum schema: "
+            f"version={manifest_version}, algorithm={checksum_algorithm!r}"
+        )
+
     for spec, ids_path in zip(BENCHMARKS, id_paths):
         expected_sha256 = manifest.get("benchmarks", {}).get(spec.name, {}).get("ids_sha256")
-        actual_sha256 = sha256_file(ids_path)
-        if not expected_sha256 or actual_sha256 != expected_sha256:
+        if checksum_algorithm is None:
+            matches = bool(expected_sha256) and _legacy_raw_checksum_matches_line_ending_variants(
+                ids_path, expected_sha256
+            )
+        else:
+            matches = bool(expected_sha256) and (
+                canonical_id_manifest_sha256(ids_path) == expected_sha256
+            )
+        if not matches:
             raise RuntimeError(
                 f"{spec.name}: frozen ID manifest checksum does not match manifest.json"
             )
+    if checksum_algorithm is None:
+        manifest["_legacy_id_checksum_validated"] = True
     return manifest
 
 
@@ -446,7 +505,7 @@ def prepare_evaluation_subset(
             "output_sha256": sha256_file(parquet_path),
             "ids_file": spec.ids_file,
             "ids_path": str(ids_path),
-            "ids_sha256": sha256_file(ids_path),
+            "ids_sha256": canonical_id_manifest_sha256(ids_path),
             "selected_count": subsets[spec.name].num_rows,
             "selected_schema": schema_description(subsets[spec.name]),
         }
@@ -456,6 +515,8 @@ def prepare_evaluation_subset(
     git_commit = current_git_commit(root)
     implementation_sha256 = sha256_file(Path(__file__).resolve())
     manifest = {
+        "manifest_version": MANIFEST_VERSION,
+        "id_checksum_algorithm": ID_CHECKSUM_ALGORITHM,
         "dataset": dataset,
         "dataset_revision": revision,
         "seed": seed,
@@ -493,10 +554,21 @@ def prepare_evaluation_subset(
             },
         },
     }
+    if existing_manifest and existing_manifest.get("_legacy_id_checksum_validated"):
+        manifest["checksum_migration"] = {
+            "from_manifest_version": 1,
+            "from_algorithm": "sha256-raw-file-bytes",
+            "to_manifest_version": MANIFEST_VERSION,
+            "to_algorithm": ID_CHECKSUM_ALGORITHM,
+            "ids_unchanged": True,
+            "migrated_at_utc": generated_at,
+        }
     manifest_path = write_json_atomic(output / "manifest.json", manifest)
 
     report = {
         "passed": True,
+        "manifest_version": MANIFEST_VERSION,
+        "id_checksum_algorithm": ID_CHECKSUM_ALGORITHM,
         "dataset": dataset,
         "dataset_revision": revision,
         "seed": seed,
@@ -538,5 +610,7 @@ def prepare_evaluation_subset(
         "script_git_commit": git_commit,
         "implementation_sha256": implementation_sha256,
     }
+    if "checksum_migration" in manifest:
+        report["checksum_migration"] = manifest["checksum_migration"]
     write_json_atomic(report_output, report)
     return report

@@ -19,6 +19,10 @@ from opensearch_vl_repro.inference import (  # noqa: E402
     load_inference_config,
     read_eval_sample,
 )
+from opensearch_vl_repro.inference.smoke_support import (  # noqa: E402
+    CudaSmokeContext,
+    exception_report,
+)
 
 
 def write_report(path: Path, report: dict[str, Any]) -> None:
@@ -28,7 +32,7 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Qwen3-VL-4B single-GPU generation smoke.")
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "eval_4b.yaml")
     group = parser.add_mutually_exclusive_group()
@@ -40,7 +44,7 @@ def main() -> int:
         help="Load the pinned model/processor and report environment/VRAM without generation.",
     )
     parser.add_argument("--report", type=Path, default=PROJECT_ROOT / "reports" / "4b_smoke.json")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     indices = args.indices if args.indices is not None else [args.index if args.index is not None else 0]
     report: dict[str, Any] = {
         "passed": False,
@@ -52,6 +56,7 @@ def main() -> int:
         "error": None,
     }
     report_path = args.report.resolve()
+    stage = "config_load"
     try:
         config = load_inference_config(args.config)
         report["environment"] = {
@@ -62,18 +67,20 @@ def main() -> int:
         }
         if not config.device.startswith("cuda"):
             raise RuntimeError("4B smoke requires a CUDA device in the inference config")
+        stage = "cuda_init"
         try:
             import torch
         except ImportError as exc:
             raise RuntimeError("PyTorch is not installed; 4B CUDA smoke was not run") from exc
-
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available; 4B smoke was not run")
-        torch.cuda.reset_peak_memory_stats(config.device)
+        cuda_memory = CudaSmokeContext.initialize(torch, config.device)
+        stage = "cuda_memory_reset"
+        cuda_memory.reset_peak_memory_stats()
+        stage = "model_load"
         load_started = time.perf_counter()
         bundle = load_inference_bundle(config)
         load_seconds = time.perf_counter() - load_started
-        load_peak_vram_mb = torch.cuda.max_memory_allocated(config.device) / (1024**2)
+        stage = "cuda_memory_read"
+        load_peak_vram_mb = cuda_memory.peak_memory_mb()
         report["environment"] = {
             **bundle.environment,
             "load_seconds": load_seconds,
@@ -81,6 +88,7 @@ def main() -> int:
             "model_eval_mode": not bundle.model.training,
         }
         for index in ([] if args.load_only else indices):
+            stage = "sample_load"
             sample = read_eval_sample(config.data_path, index)
             messages = [
                 {
@@ -91,10 +99,14 @@ def main() -> int:
                     ],
                 }
             ]
-            torch.cuda.reset_peak_memory_stats(config.device)
+            stage = "cuda_memory_reset"
+            cuda_memory.reset_peak_memory_stats()
+            stage = "generation"
             started = time.perf_counter()
             generated_text = generate_chat(bundle, messages)
             elapsed = time.perf_counter() - started
+            stage = "cuda_memory_read"
+            peak_memory_mb = cuda_memory.peak_memory_mb()
             report["samples"].append(
                 {
                     "index": index,
@@ -106,8 +118,8 @@ def main() -> int:
                     "generation": generated_text,
                     "generated_text": generated_text,
                     "elapsed_seconds": elapsed,
-                    "peak_vram_mb": torch.cuda.max_memory_allocated(config.device) / (1024**2),
-                    "peak_cuda_memory_mb": torch.cuda.max_memory_allocated(config.device) / (1024**2),
+                    "peak_vram_mb": peak_memory_mb,
+                    "peak_cuda_memory_mb": peak_memory_mb,
                     "passed": bool(generated_text),
                     "error": None,
                 }
@@ -117,8 +129,14 @@ def main() -> int:
             and all(sample["passed"] for sample in report["samples"])
         )
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
-    write_report(report_path, report)
+        report["error"] = exception_report(exc, stage)
+    try:
+        write_report(report_path, report)
+    except Exception as exc:
+        report["passed"] = False
+        report["error"] = exception_report(exc, "report_write")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["passed"] else 1
 

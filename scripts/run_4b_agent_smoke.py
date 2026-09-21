@@ -21,6 +21,11 @@ from opensearch_vl_repro.inference import (  # noqa: E402
     load_inference_config,
     read_eval_sample,
 )
+from opensearch_vl_repro.inference.smoke_support import (  # noqa: E402
+    CudaSmokeContext,
+    error_report,
+    exception_report,
+)
 
 
 def write_report(path: Path, report: dict[str, Any]) -> None:
@@ -30,7 +35,7 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Real Qwen3-VL-4B Agent protocol smoke using mock tool backends."
     )
@@ -44,7 +49,7 @@ def main() -> int:
     parser.add_argument(
         "--report", type=Path, default=PROJECT_ROOT / "reports" / "4b_agent_smoke.json"
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     report: dict[str, Any] = {
         "passed": False,
         "tool_call_chain_passed": False,
@@ -56,6 +61,7 @@ def main() -> int:
         "error": None,
     }
     report_path = args.report.resolve()
+    stage = "config_load"
     try:
         config = load_inference_config(args.config)
         report["environment"] = {
@@ -66,21 +72,25 @@ def main() -> int:
         }
         if not config.device.startswith("cuda"):
             raise RuntimeError("4B Agent smoke requires a CUDA device in the inference config")
+        stage = "cuda_init"
         try:
             import torch
         except ImportError as exc:
             raise RuntimeError("PyTorch is not installed; 4B CUDA Agent smoke was not run") from exc
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available; 4B Agent smoke was not run")
-        torch.cuda.reset_peak_memory_stats(config.device)
+        cuda_memory = CudaSmokeContext.initialize(torch, config.device)
+        stage = "cuda_memory_reset"
+        cuda_memory.reset_peak_memory_stats()
+        stage = "model_load"
         load_started = time.perf_counter()
         bundle = load_inference_bundle(config)
+        stage = "cuda_memory_read"
         report["environment"] = {
             **bundle.environment,
             "load_seconds": time.perf_counter() - load_started,
-            "load_peak_vram_mb": torch.cuda.max_memory_allocated(config.device) / (1024**2),
+            "load_peak_vram_mb": cuda_memory.peak_memory_mb(),
             "model_eval_mode": not bundle.model.training,
         }
+        stage = "sample_load"
         sample = read_eval_sample(config.data_path, args.index)
         question = sample.question
         if args.synthetic_tool_prompt:
@@ -95,7 +105,9 @@ def main() -> int:
             tool_registry=create_mock_tool_registry(),
             max_agent_turns=config.max_agent_turns,
         )
-        torch.cuda.reset_peak_memory_stats(config.device)
+        stage = "cuda_memory_reset"
+        cuda_memory.reset_peak_memory_stats()
+        stage = "agent_runtime"
         started = time.perf_counter()
         trajectory = runtime.run(
             question=question,
@@ -105,18 +117,39 @@ def main() -> int:
         )
         report["trajectory"] = trajectory.to_dict()
         report["elapsed_seconds"] = time.perf_counter() - started
-        report["peak_vram_mb"] = torch.cuda.max_memory_allocated(config.device) / (1024**2)
+        stage = "cuda_memory_read"
+        report["peak_vram_mb"] = cuda_memory.peak_memory_mb()
         report["tool_call_chain_passed"] = bool(trajectory.turns) and any(
             turn.status == "success" and turn.tool_call is not None
             for turn in trajectory.turns
         )
         report["passed"] = trajectory.status == "success"
-        if args.synthetic_tool_prompt and not report["tool_call_chain_passed"]:
+        if trajectory.status != "success":
+            report["error"] = error_report(
+                type_name="AgentRuntimeError",
+                message=trajectory.error or f"agent status: {trajectory.status}",
+                stage="agent_runtime",
+            )
+        if (
+            args.synthetic_tool_prompt
+            and not report["tool_call_chain_passed"]
+            and report["error"] is None
+        ):
             report["passed"] = False
-            report["error"] = "synthetic prompt did not produce a valid executable tool call"
+            report["error"] = error_report(
+                type_name="AgentProtocolError",
+                message="synthetic prompt did not produce a valid executable tool call",
+                stage="agent_runtime",
+            )
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
-    write_report(report_path, report)
+        report["error"] = exception_report(exc, stage)
+    try:
+        write_report(report_path, report)
+    except Exception as exc:
+        report["passed"] = False
+        report["error"] = exception_report(exc, "report_write")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["passed"] else 1
 
