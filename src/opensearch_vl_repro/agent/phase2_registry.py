@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .layout_parsing import BaiduLayoutParsingBackend, layout_tool, load_layout_api_config
+from .layout_parsing import PaddleOCRAiStudioBackend, layout_tool, load_layout_api_config
 from .local_visual_tools import LOCAL_VISUAL_BACKENDS
 from .mock_tools import MOCK_BACKENDS
 from .tool_contracts import TOOL_DECLARATIONS
@@ -13,7 +13,7 @@ from .tool_registry import RegisteredTool, ToolRegistry
 
 def create_phase2_tool_registry(*, layout_config: str | Path | None = None) -> ToolRegistry:
     layout_backend = (
-        BaiduLayoutParsingBackend(load_layout_api_config(layout_config))
+        PaddleOCRAiStudioBackend(load_layout_api_config(layout_config))
         if layout_config is not None else None
     )
     registry = ToolRegistry()

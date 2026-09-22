@@ -1,19 +1,18 @@
-"""Provider-independent layout adapter with an optional Baidu Qianfan transport."""
+"""Provider-neutral layout output with a PaddleOCR AI Studio job adapter."""
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import math
 import os
-import socket
-import urllib.error
-import urllib.request
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
+from urllib.parse import quote
 
+import requests
 import yaml
 from PIL import Image
 
@@ -81,14 +80,14 @@ def layout_tool(backend: LayoutParsingBackend | None) -> Callable[[dict[str, Any
         except (KeyError, FileNotFoundError, OSError):
             return _failure("invalid_image", "registered image is unavailable or unreadable")
         except Exception as exc:
+            # Never place arbitrary provider exception text in a model message.
             return _failure("provider_error", f"unexpected {type(exc).__name__}")
 
     return execute
 
 
 def _failure(error_type: str, message: str) -> ToolResult:
-    # Keep provider credentials and raw responses out of model-visible text.
-    safe = message.replace("\n", " ")[:240]
+    safe = message.replace("\n", " ").replace("\r", " ")[:240]
     return ToolResult(
         status="error",
         error_type=error_type,
@@ -100,10 +99,12 @@ def _failure(error_type: str, message: str) -> ToolResult:
 @dataclass(frozen=True)
 class LayoutApiConfig:
     provider: str
-    endpoint: str
+    job_url: str
     model: str
-    api_key_env: str
-    timeout_seconds: float
+    access_token_env: str
+    request_timeout_seconds: float
+    poll_interval_seconds: float
+    max_poll_seconds: float
 
 
 def load_layout_api_config(path: str | Path) -> LayoutApiConfig:
@@ -112,133 +113,220 @@ def load_layout_api_config(path: str | Path) -> LayoutApiConfig:
     section = raw.get("layout_parsing") if isinstance(raw, dict) else None
     if not isinstance(section, dict):
         raise ValueError("layout_parsing config section is required")
-    for key in ("provider", "endpoint", "model", "api_key_env", "timeout_seconds"):
-        if not section.get(key):
+    required = ("provider", "job_url", "model", "access_token_env",
+                "request_timeout_seconds", "poll_interval_seconds", "max_poll_seconds")
+    for key in required:
+        if section.get(key) is None or section.get(key) == "":
             raise ValueError(f"layout_parsing.{key} is required")
-    timeout = float(section["timeout_seconds"])
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("layout_parsing.timeout_seconds must be finite and positive")
+    numbers = {}
+    for key in ("request_timeout_seconds", "poll_interval_seconds", "max_poll_seconds"):
+        number = float(section[key])
+        if not math.isfinite(number) or number <= 0:
+            raise ValueError(f"layout_parsing.{key} must be finite and positive")
+        numbers[key] = number
+    if str(section["provider"]) != "paddleocr_aistudio":
+        raise ValueError(f"unsupported layout provider: {section['provider']}")
+    if not str(section["job_url"]).startswith("https://"):
+        raise ValueError("layout_parsing.job_url must be HTTPS")
     return LayoutApiConfig(
-        provider=str(section["provider"]), endpoint=str(section["endpoint"]),
-        model=str(section["model"]), api_key_env=str(section["api_key_env"]),
-        timeout_seconds=timeout,
+        provider=str(section["provider"]), job_url=str(section["job_url"]).rstrip("/"),
+        model=str(section["model"]), access_token_env=str(section["access_token_env"]),
+        **numbers,
     )
 
 
-Transport = Callable[[str, dict[str, str], dict[str, Any], float], dict[str, Any]]
+class PaddleOCRAiStudioBackend:
+    """Submit a PNG, poll the asynchronous job, then parse its JSONL result."""
 
-
-def urllib_json_transport(endpoint: str, headers: dict[str, str],
-                          body: dict[str, Any], timeout: float) -> dict[str, Any]:
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-class BaiduLayoutParsingBackend:
-    def __init__(self, config: LayoutApiConfig,
-                 transport: Transport = urllib_json_transport) -> None:
-        if config.provider != "baidu":
+    def __init__(self, config: LayoutApiConfig, *, session: Any | None = None,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
+        if config.provider != "paddleocr_aistudio":
             raise ValueError(f"unsupported layout provider: {config.provider}")
         self.config = config
-        self.transport = transport
-
-    def _request_body(self, image: Image.Image, *,
-                      use_chart_recognition: bool | None,
-                      use_doc_orientation_classify: bool | None) -> dict[str, Any]:
-        buffer = io.BytesIO()
-        image.convert("RGB").save(buffer, format="PNG")
-        body: dict[str, Any] = {
-            "model": self.config.model,
-            "file": base64.b64encode(buffer.getvalue()).decode("ascii"),
-            "fileType": 1,
-            "visualize": False,
-        }
-        if use_chart_recognition is not None:
-            body["useChartRecognition"] = use_chart_recognition
-        if use_doc_orientation_classify is not None:
-            body["useDocOrientationClassify"] = use_doc_orientation_classify
-        return body
+        self.session = session if session is not None else requests.Session()
+        self.clock = clock
+        self.sleep = sleep
 
     @staticmethod
-    def _adapt_response(raw: Any) -> LayoutDocument:
+    def _checked_response(response: Any) -> Any:
+        code = response.status_code
+        if code in {401, 403}:
+            raise LayoutBackendError("authentication_error", f"provider HTTP status {code}")
+        if code == 429:
+            raise LayoutBackendError("quota_error", "provider HTTP status 429")
+        if not 200 <= code < 300:
+            raise LayoutBackendError("provider_error", f"provider HTTP status {code}")
+        return response
+
+    @staticmethod
+    def _json(response: Any) -> dict[str, Any]:
+        try:
+            raw = response.json()
+        except ValueError:
+            raise LayoutBackendError("invalid_response", "provider returned invalid JSON") from None
         if not isinstance(raw, dict):
             raise LayoutBackendError("invalid_response", "provider returned a non-object response")
-        if raw.get("error"):
-            error = raw["error"]
-            code = str(error.get("code", "")) if isinstance(error, dict) else ""
-            kind = "authentication_error" if code in {"invalid_model", "invalid_api_key"} else "provider_error"
-            raise LayoutBackendError(kind, f"provider returned error code {code or 'unknown'}")
-        result = raw.get("result")
-        pages = result.get("layoutParsingResults") if isinstance(result, dict) else None
-        if not isinstance(pages, list) or not pages:
-            raise LayoutBackendError("invalid_response", "missing layoutParsingResults")
+        if raw.get("code") not in (None, 0):
+            raise LayoutBackendError("provider_error", "provider returned a nonzero API code")
+        return raw
+
+    @staticmethod
+    def _data(raw: dict[str, Any]) -> dict[str, Any]:
+        data = raw.get("data")
+        if not isinstance(data, dict):
+            raise LayoutBackendError("invalid_response", "provider response is missing data")
+        return data
+
+    @staticmethod
+    def _request_error(exc: requests.RequestException) -> LayoutBackendError:
+        if isinstance(exc, requests.Timeout):
+            return LayoutBackendError("timeout", "provider request timed out")
+        if isinstance(exc, requests.ConnectionError):
+            return LayoutBackendError("network_error", "provider network request failed")
+        return LayoutBackendError("provider_error", "provider request failed")
+
+    def _submit(self, image: Image.Image, headers: dict[str, str],
+                optional_payload: dict[str, bool]) -> str:
+        buffer = io.BytesIO()
+        image.convert("RGB").save(buffer, format="PNG")
+        try:
+            response = self.session.post(
+                self.config.job_url,
+                headers=headers,
+                data={"model": self.config.model,
+                      "optionalPayload": json.dumps(optional_payload)},
+                files={"file": ("image.png", buffer.getvalue(), "image/png")},
+                timeout=self.config.request_timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise self._request_error(exc) from None
+        data = self._data(self._json(self._checked_response(response)))
+        job_id = data.get("jobId")
+        if not isinstance(job_id, str) or not job_id.strip():
+            raise LayoutBackendError("invalid_response", "submit response is missing data.jobId")
+        return job_id
+
+    def _poll(self, job_id: str, headers: dict[str, str]) -> str:
+        deadline = self.clock() + self.config.max_poll_seconds
+        url = f"{self.config.job_url}/{quote(job_id, safe='')}"
+        while True:
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise LayoutBackendError("timeout", "provider job polling exceeded its deadline")
+            try:
+                response = self.session.get(
+                    url, headers=headers,
+                    timeout=min(self.config.request_timeout_seconds, remaining),
+                )
+            except requests.RequestException as exc:
+                raise self._request_error(exc) from None
+            data = self._data(self._json(self._checked_response(response)))
+            state = data.get("state")
+            if state == "done":
+                result_url = data.get("resultUrl")
+                json_url = result_url.get("jsonUrl") if isinstance(result_url, dict) else None
+                if not isinstance(json_url, str) or not json_url.startswith("https://"):
+                    raise LayoutBackendError("invalid_response", "done response is missing resultUrl.jsonUrl")
+                return json_url
+            if state == "failed":
+                reason = data.get("errorMsg")
+                token = os.environ.get(self.config.access_token_env, "")
+                safe_reason = str(reason or "unspecified error")
+                if token:
+                    safe_reason = safe_reason.replace(token, "[REDACTED]")
+                safe_reason = safe_reason.replace("\n", " ").replace("\r", " ")[:160]
+                raise LayoutBackendError("provider_error", f"provider job failed: {safe_reason}")
+            if state not in {"pending", "running"}:
+                raise LayoutBackendError("invalid_response", "provider returned an unknown job state")
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise LayoutBackendError("timeout", "provider job polling exceeded its deadline")
+            self.sleep(min(self.config.poll_interval_seconds, remaining))
+
+    @staticmethod
+    def _adapt_jsonl(body: str, job_id: str) -> LayoutDocument:
         blocks: list[LayoutBlock] = []
-        for page in pages:
-            if not isinstance(page, dict):
-                raise LayoutBackendError("invalid_response", "invalid page result")
-            pruned = page.get("prunedResult")
-            block_items = pruned.get("parsing_res_list") if isinstance(pruned, dict) else None
-            if isinstance(block_items, list):
-                for item in block_items:
-                    if not isinstance(item, dict):
-                        continue
-                    content = item.get("block_content")
-                    if not isinstance(content, str) or not content.strip():
-                        continue
-                    label = item.get("block_label")
-                    bbox = item.get("block_bbox")
-                    blocks.append(LayoutBlock(
-                        kind=label if isinstance(label, str) else "text",
-                        content=content,
-                        bbox=tuple(bbox) if isinstance(bbox, list) else None,
-                    ))
-            if not block_items:
-                markdown = page.get("markdown")
-                text = markdown.get("text") if isinstance(markdown, dict) else None
-                if isinstance(text, str) and text.strip():
-                    blocks.append(LayoutBlock(kind="text", content=text))
+        pages_seen = 0
+        lines = [line for line in body.splitlines() if line.strip()]
+        if not lines:
+            raise LayoutBackendError("invalid_response", "provider returned empty JSONL")
+        for line in lines:
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                raise LayoutBackendError("invalid_response", "provider returned malformed JSONL") from None
+            result = raw.get("result") if isinstance(raw, dict) else None
+            pages = result.get("layoutParsingResults") if isinstance(result, dict) else None
+            if not isinstance(pages, list) or not pages:
+                raise LayoutBackendError("invalid_response", "JSONL line is missing layoutParsingResults")
+            for page in pages:
+                if not isinstance(page, dict):
+                    raise LayoutBackendError("invalid_response", "invalid layout page")
+                pages_seen += 1
+                page_blocks: list[LayoutBlock] = []
+                pruned = page.get("prunedResult")
+                items = pruned.get("parsing_res_list") if isinstance(pruned, dict) else None
+                if isinstance(items, list):
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        content = item.get("block_content")
+                        if not isinstance(content, str) or not content.strip():
+                            continue
+                        label = item.get("block_label")
+                        bbox = item.get("block_bbox")
+                        page_blocks.append(LayoutBlock(
+                            kind=label if isinstance(label, str) else "text",
+                            content=content,
+                            bbox=tuple(bbox) if isinstance(bbox, list) else None,
+                        ))
+                if not page_blocks:
+                    markdown = page.get("markdown")
+                    markdown_text = markdown.get("text") if isinstance(markdown, dict) else None
+                    if isinstance(markdown_text, str) and markdown_text.strip():
+                        page_blocks.append(LayoutBlock(kind="text", content=markdown_text))
+                blocks.extend(page_blocks)
         if not blocks:
-            raise LayoutBackendError("invalid_response", "provider returned no readable blocks")
-        request_id = raw.get("id")
+            raise LayoutBackendError("invalid_response", "provider returned no readable layout content")
         return LayoutDocument(
             blocks=tuple(blocks),
-            metadata={"provider": "baidu", "request_id": request_id,
-                      "block_count": len(blocks),
+            metadata={"provider": "paddleocr_aistudio", "job_id": job_id,
+                      "page_count": pages_seen, "block_count": len(blocks),
                       "bounding_boxes": [list(block.bbox) for block in blocks if block.bbox]},
         )
 
+    def _download(self, json_url: str) -> str:
+        try:
+            response = self.session.get(json_url, timeout=self.config.request_timeout_seconds)
+        except requests.RequestException as exc:
+            raise self._request_error(exc) from None
+        return self._checked_response(response).text
+
     def parse(self, image: Image.Image, *, use_chart_recognition: bool | None,
               use_doc_orientation_classify: bool | None) -> LayoutDocument:
-        api_key = os.environ.get(self.config.api_key_env)
-        if not api_key:
+        token = os.environ.get(self.config.access_token_env)
+        if not token:
             raise LayoutBackendError(
-                "configuration_error", f"missing API key environment variable {self.config.api_key_env}"
+                "configuration_error", f"missing access token environment variable {self.config.access_token_env}"
             )
-        body = self._request_body(
-            image, use_chart_recognition=use_chart_recognition,
-            use_doc_orientation_classify=use_doc_orientation_classify,
+        headers = {"Authorization": f"bearer {token}"}
+        optional_payload = {"useDocUnwarping": False}
+        if use_chart_recognition is not None:
+            optional_payload["useChartRecognition"] = use_chart_recognition
+        if use_doc_orientation_classify is not None:
+            optional_payload["useDocOrientationClassify"] = use_doc_orientation_classify
+        job_id = self._submit(image, headers, optional_payload)
+        json_url = self._poll(job_id, headers)
+        document = self._adapt_jsonl(self._download(json_url), job_id)
+        # A provider must never be able to echo our credential into observations
+        # or reports, including through OCR text or a malformed job ID.
+        return LayoutDocument(
+            blocks=tuple(LayoutBlock(
+                kind=block.kind.replace(token, "[REDACTED]"),
+                content=block.content.replace(token, "[REDACTED]"),
+                bbox=block.bbox,
+            ) for block in document.blocks),
+            metadata={**document.metadata,
+                      "job_id": document.metadata["job_id"].replace(token, "[REDACTED]")},
         )
-        try:
-            raw = self.transport(
-                self.config.endpoint,
-                {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                body,
-                self.config.timeout_seconds,
-            )
-        except urllib.error.HTTPError as exc:
-            kind = ("authentication_error" if exc.code in {401, 403}
-                    else "quota_error" if exc.code == 429 else "provider_error")
-            raise LayoutBackendError(kind, f"provider HTTP status {exc.code}") from exc
-        except (socket.timeout, TimeoutError) as exc:
-            raise LayoutBackendError("timeout", "provider request timed out") from exc
-        except urllib.error.URLError as exc:
-            raise LayoutBackendError("network_error", "provider network request failed") from exc
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            raise LayoutBackendError("invalid_response", "provider response is not valid JSON") from exc
-        return self._adapt_response(raw)

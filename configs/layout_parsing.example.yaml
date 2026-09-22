@@ -1,6 +1,8 @@
 layout_parsing:
-  provider: baidu
-  endpoint: https://qianfan.baidubce.com/v2/ocr/paddleocr
-  model: paddleocr-vl-0.9b
-  api_key_env: BAIDU_QIANFAN_API_KEY
-  timeout_seconds: 30
+  provider: paddleocr_aistudio
+  job_url: https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
+  model: PaddleOCR-VL-1.6
+  access_token_env: PADDLEOCR_ACCESS_TOKEN
+  request_timeout_seconds: 30
+  poll_interval_seconds: 2
+  max_poll_seconds: 120

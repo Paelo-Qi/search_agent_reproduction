@@ -16,6 +16,7 @@ dependencies = [
   "huggingface-hub==1.32.0",
   "safetensors==0.8.0",
   "Pillow==11.3.0",
+  "requests>=2.32,<3",
   "pyarrow==19.0.1",
   "PyYAML==6.0.2",
   "ijson==3.4.0.post0",

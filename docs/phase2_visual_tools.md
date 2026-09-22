@@ -49,21 +49,32 @@ It writes `reports/phase2_local_visual_smoke.json` with each tool's status,
 lineage, dimensions, derived IDs, and final registry state. This is a CPU
 protocol/backend check, not a real Qwen or benchmark result.
 
-## Optional Baidu layout provider
+## Optional PaddleOCR AI Studio layout provider
 
 `LayoutParsingBackend` is a provider-neutral interface returning `LayoutDocument`
-blocks. `BaiduLayoutParsingBackend` implements an optional Qianfan PaddleOCR-VL
-HTTP transport. Endpoint, model, key environment-variable name, and timeout
-come from [the example config](../configs/layout_parsing.example.yaml); the key
-itself is read at request time from `BAIDU_QIANFAN_API_KEY`. Copy
-[`.env.example`](../.env.example) only as a template and load the actual secret
-into your shell. `.env` files are ignored by Git. Nothing calls the paid API
-unless `create_phase2_tool_registry(layout_config=...)` is used and a model
-invokes `layout_parsing`.
+blocks. `PaddleOCRAiStudioBackend` uses the official hosted **asynchronous job
+API**, not the former synchronous Qianfan endpoint. The example configuration
+specifies `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`, model
+`PaddleOCR-VL-1.6`, per-request timeout, poll interval, and a monotonic maximum
+poll duration. The old Qianfan-specific backend was removed.
 
-The adapter sends a base64 PNG and preserves optional
-`use_chart_recognition` / `use_doc_orientation_classify` flags. Provider JSON
-is normalized to stable plain text in provider reading order, for example:
+The credential is read at request time from `PADDLEOCR_ACCESS_TOKEN`; see
+[the example config](../configs/layout_parsing.example.yaml) and
+[`.env.example`](../.env.example). Load the actual token into your shell, never
+commit it. `.env` files are ignored by Git. No paid request occurs unless a
+registry configured with `layout_config=...` actually invokes `layout_parsing`.
+
+The adapter converts the registered PIL image to PNG bytes in memory, submits
+multipart `file` plus `model` and JSON-string `optionalPayload`, polls
+`pending` / `running` until `done` or `failed`, then downloads only the returned
+JSONL URL. It never downloads `markdown.images` or `outputImages`. The
+model-visible optional arguments map to `useChartRecognition` and
+`useDocOrientationClassify`; absent arguments are omitted. Because there is no
+model-visible unwarping argument, `useDocUnwarping` is always `false`.
+
+Structured `prunedResult.parsing_res_list` blocks take precedence in reading
+order; pages without readable structured blocks use `markdown.text` as a
+fallback. The result is stable plain text, for example:
 
 ```text
 <observation>
@@ -80,11 +91,21 @@ Results are summarized here.
 </observation>
 ```
 
-Bounding boxes and request ID are kept in trajectory metadata, not dumped to
-the model. Explicit failure categories include configuration, authentication,
-timeout, network, quota, provider, and invalid-response errors; the tool
-returns a concise failure observation and does not crash the agent. Unit tests
-use an injected fake HTTP transport, not a paid request. A real API response
-and credential handling remain to be validated with a real key.
+Bounding boxes, job ID, page count, and block count are metadata only; raw JSON,
+result URLs, and the token are not sent to the model. Failure categories include
+`configuration_error`, `authentication_error`, `quota_error`, `timeout`,
+`network_error`, `provider_error`, `invalid_response`, and `invalid_image`.
+All API unit tests use a fake HTTP session and make no paid request.
 
-API shape is based on [Baidu Qianfan PaddleOCR-VL API documentation](https://cloud.baidu.com/doc/qianfan-api/s/zmho8omz3).
+To run a real API smoke on the first image of one frozen evaluation sample:
+
+```bash
+# Set PADDLEOCR_ACCESS_TOKEN privately in the environment first.
+python scripts/run_layout_parsing_smoke.py \
+  --index 0 --report reports/layout_parsing_smoke.json
+```
+
+Without a token the smoke reports `configuration_error` and does **not** pass.
+Success requires a readable `Content:` observation; it is not a benchmark
+result. A live request has not been validated in this repository without a
+real token. API shape follows [the official PaddleOCR AI Studio API documentation](https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5).
