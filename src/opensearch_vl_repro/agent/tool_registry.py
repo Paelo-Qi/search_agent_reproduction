@@ -8,17 +8,27 @@ from .tool_contracts import ToolDeclaration
 
 
 @dataclass(frozen=True)
+class DerivedImage:
+    value: Any
+    parent_id: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ToolResult:
     status: str
     observation: str
     error_type: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    derived_images: tuple[DerivedImage, ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in {"success", "error"}:
             raise ValueError(f"unsupported ToolResult status: {self.status}")
         if not isinstance(self.observation, str):
             raise TypeError("model-facing observation must be plain text")
+        if self.status != "success" and self.derived_images:
+            raise ValueError("failed tool results cannot contain derived images")
 
 
 @dataclass
@@ -72,4 +82,3 @@ class ToolRegistry:
         if not isinstance(result, ToolResult):
             raise TypeError(f"{name}: backend must return ToolResult")
         return result
-

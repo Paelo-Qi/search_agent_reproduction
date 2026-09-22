@@ -4,11 +4,12 @@ from .image_registry import ImageRegistry
 from .runtime import AgentRuntime, AgentTrajectory
 from .tool_contracts import TOOL_DECLARATIONS, ToolDeclaration
 from .tool_parser import ParsedToolCall, ToolCallParser
-from .tool_registry import ToolContext, ToolRegistry, ToolResult
+from .tool_registry import DerivedImage, ToolContext, ToolRegistry, ToolResult
 
 __all__ = [
     "AgentRuntime",
     "AgentTrajectory",
+    "DerivedImage",
     "ImageRegistry",
     "ParsedToolCall",
     "TOOL_DECLARATIONS",
@@ -18,4 +19,3 @@ __all__ = [
     "ToolRegistry",
     "ToolResult",
 ]
-

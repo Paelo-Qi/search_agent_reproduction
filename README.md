@@ -23,6 +23,11 @@ multimodal trajectory -> Qwen3-VL processor -> input_ids / labels / vision tenso
 The original project is a reference, not a vendored dependency. See
 `docs/upstream_provenance.md` for the pinned commits and consulted files.
 
+Phase 2 adds an opt-in real local visual-tool loop and a pluggable layout API
+adapter without changing either Phase 0 gate. See
+[Phase 2 visual tools](docs/phase2_visual_tools.md); its CPU smoke is
+`python scripts/run_local_visual_smoke.py`.
+
 ## Three distinct validation states
 
 1. **Local/static tests — `pytest`**

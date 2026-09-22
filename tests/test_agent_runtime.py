@@ -149,13 +149,13 @@ def test_all_mock_tools_execute_through_registry_with_plain_text_observations() 
         assert result.status == "success"
         assert isinstance(result.observation, str)
         assert "<observation>" in result.observation
-    assert [entry.image_id for entry in images.list_images()] == [
-        "img_1",
-        "img_2",
-        "img_3",
-        "img_4",
-        "img_5",
-    ]
+        if name in {"crop", "super_resolution", "sharpen", "perspective_correct"}:
+            assert len(result.derived_images) == 1
+            assert result.derived_images[0].parent_id == "img_1"
+        else:
+            assert not result.derived_images
+    # Backend execution produces an image; only AgentRuntime assigns img_n IDs.
+    assert [entry.image_id for entry in images.list_images()] == ["img_1"]
 
 
 def test_mock_agent_loop_runs_model_tool_observation_and_final_answer() -> None:

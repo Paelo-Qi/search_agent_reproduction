@@ -1,0 +1,6 @@
+layout_parsing:
+  provider: baidu
+  endpoint: https://qianfan.baidubce.com/v2/ocr/paddleocr
+  model: paddleocr-vl-0.9b
+  api_key_env: BAIDU_QIANFAN_API_KEY
+  timeout_seconds: 30

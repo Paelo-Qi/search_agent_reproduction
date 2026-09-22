@@ -6,6 +6,9 @@ __pycache__/
 .coverage
 .mypy_cache/
 .ruff_cache/
+.env
+.env.*
+!.env.example
 
 # Large or generated artifacts
 data/raw/

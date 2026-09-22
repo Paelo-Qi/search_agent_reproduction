@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .tool_contracts import TOOL_DECLARATIONS
-from .tool_registry import RegisteredTool, ToolContext, ToolRegistry, ToolResult
+from .tool_registry import DerivedImage, RegisteredTool, ToolContext, ToolRegistry, ToolResult
 
 
 def _require_image(context: ToolContext, image_id: str) -> Any:
@@ -69,18 +69,15 @@ def _derived_image_backend(action: str):
     def backend(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         source_id = arguments["image"]
         value = _require_image(context, source_id)
-        new_id = context.image_registry.register_derived_image(
-            value,
-            parent_id=source_id,
-            metadata={"mock": True, "operation": action},
-        )
         return ToolResult(
             status="success",
             observation=(
                 f"<image><observation>\nImage {action} completed successfully.\n"
-                f"New image ID: {new_id}.\n</observation>"
+                "</observation>"
             ),
-            metadata={"mock": True, "image_id": new_id, "source_image_id": source_id},
+            metadata={"mock": True, "source_image_id": source_id},
+            derived_images=(DerivedImage(value=value, parent_id=source_id,
+                                         metadata={"mock": True, "operation": action}),),
         )
 
     return backend
@@ -119,4 +116,3 @@ class ScriptedAgentModel:
         if not self._outputs:
             raise RuntimeError("scripted model has no remaining output")
         return self._outputs.pop(0)
-

@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from opensearch_vl_repro.agent.mock_tools import create_mock_tool_registry  # noqa: E402
+from opensearch_vl_repro.agent.phase2_registry import create_phase2_tool_registry  # noqa: E402
 from opensearch_vl_repro.agent.runtime import AgentRuntime  # noqa: E402
 from opensearch_vl_repro.inference import (  # noqa: E402
     QwenAgentModel,
@@ -47,6 +48,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Explicitly request a tool call to test mechanics; this is not benchmark evaluation.",
     )
     parser.add_argument(
+        "--local-visual-tools",
+        action="store_true",
+        help="Opt in to Phase 2 backends and ask for a crop of img_1; not benchmark evaluation.",
+    )
+    parser.add_argument(
+        "--layout-config", type=Path,
+        help="Optional layout API config for --local-visual-tools; no API is called unless requested by the model.",
+    )
+    parser.add_argument(
         "--report", type=Path, default=PROJECT_ROOT / "reports" / "4b_agent_smoke.json"
     )
     args = parser.parse_args(argv)
@@ -54,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
         "passed": False,
         "tool_call_chain_passed": False,
         "synthetic_tool_call_smoke": args.synthetic_tool_prompt,
+        "local_visual_tools": args.local_visual_tools,
+        "visual_tool_chain_passed": False,
         "config": str(args.config.resolve()),
         "index": args.index,
         "environment": {},
@@ -93,7 +105,15 @@ def main(argv: list[str] | None = None) -> int:
         stage = "sample_load"
         sample = read_eval_sample(config.data_path, args.index)
         question = sample.question
-        if args.synthetic_tool_prompt:
+        if args.local_visual_tools:
+            question = (
+                "Synthetic Phase 2 visual-tool smoke only; this is not a benchmark result. "
+                "First call crop with exactly "
+                '{"image":"img_1","x":0,"y":0,"width":64,"height":64}. '
+                "After receiving the derived image, look at it and give a short final answer. "
+                "Do not call another tool."
+            )
+        elif args.synthetic_tool_prompt:
             question = (
                 "Synthetic tool-call protocol smoke only; this is not a benchmark result. "
                 "First call image_search with the exact argument {\"url\": \"img_1\"}. "
@@ -102,7 +122,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         runtime = AgentRuntime(
             model=QwenAgentModel(bundle),
-            tool_registry=create_mock_tool_registry(),
+            tool_registry=(
+                create_phase2_tool_registry(layout_config=args.layout_config)
+                if args.local_visual_tools else create_mock_tool_registry()
+            ),
             max_agent_turns=config.max_agent_turns,
         )
         stage = "cuda_memory_reset"
@@ -123,6 +146,11 @@ def main(argv: list[str] | None = None) -> int:
             turn.status == "success" and turn.tool_call is not None
             for turn in trajectory.turns
         )
+        report["visual_tool_chain_passed"] = any(
+            turn.status == "success" and turn.tool_call is not None
+            and turn.tool_call["name"] == "crop" and bool(turn.derived_images)
+            for turn in trajectory.turns
+        ) and trajectory.status == "success"
         report["passed"] = trajectory.status == "success"
         if trajectory.status != "success":
             report["error"] = error_report(
@@ -131,14 +159,15 @@ def main(argv: list[str] | None = None) -> int:
                 stage="agent_runtime",
             )
         if (
-            args.synthetic_tool_prompt
-            and not report["tool_call_chain_passed"]
-            and report["error"] is None
-        ):
+            (args.synthetic_tool_prompt and not report["tool_call_chain_passed"])
+            or (args.local_visual_tools and not report["visual_tool_chain_passed"])
+        ) and report["error"] is None:
             report["passed"] = False
             report["error"] = error_report(
                 type_name="AgentProtocolError",
-                message="synthetic prompt did not produce a valid executable tool call",
+                message=("visual prompt did not produce a successful crop and final answer"
+                         if args.local_visual_tools else
+                         "synthetic prompt did not produce a valid executable tool call"),
                 stage="agent_runtime",
             )
     except Exception as exc:

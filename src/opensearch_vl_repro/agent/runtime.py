@@ -23,6 +23,7 @@ class AgentTurn:
     status: str
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    derived_images: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -35,6 +36,7 @@ class AgentTrajectory:
     image_ids: list[str]
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    images: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -109,6 +111,102 @@ class AgentRuntime:
         except Exception as exc:
             return self._error_result(type(exc).__name__, str(exc))
 
+    @staticmethod
+    def _image_size(value: Any) -> tuple[int, int]:
+        from PIL import Image
+        from pathlib import Path
+
+        if isinstance(value, Image.Image):
+            return value.size
+        with Image.open(Path(value)) as image:
+            return image.size
+
+    @classmethod
+    def _image_summaries(cls, registry: ImageRegistry) -> list[dict[str, Any]]:
+        return [
+            {
+                "image_id": entry.image_id,
+                "parent_id": entry.parent_id,
+                "kind": entry.kind,
+                "size": list(cls._image_size(entry.value)),
+                "metadata": entry.metadata,
+            }
+            for entry in registry.list_images()
+        ]
+
+    def _commit_result(
+        self,
+        *,
+        result: ToolResult,
+        call: ParsedToolCall,
+        context: ToolContext,
+        messages: list[dict[str, Any]],
+        assistant_output: str,
+    ) -> AgentTurn:
+        derived: list[dict[str, Any]] = []
+        content: list[dict[str, Any]] = []
+        # Validate the whole batch before assigning any IDs, so a malformed
+        # second image cannot leave a half-committed tool result behind.
+        for item in result.derived_images:
+            if not isinstance(item.metadata, dict):
+                raise TypeError("derived image metadata must be a dict")
+            context.image_registry.get(item.parent_id)
+            context.image_registry._validate_value(item.value)
+            self._image_size(item.value)
+        for item in result.derived_images:
+            parent_size = self._image_size(context.image_registry.get(item.parent_id))
+            image_id = context.image_registry.register_derived_image(
+                item.value,
+                parent_id=item.parent_id,
+                metadata={**item.metadata, "producing_tool": call.name},
+            )
+            entry = context.image_registry.get_entry(image_id)
+            entry.metadata["result_image_id"] = image_id
+            summary = {
+                "parent_image_id": item.parent_id,
+                "image_id": image_id,
+                "producing_tool": call.name,
+                "source_size": list(parent_size),
+                "result_size": list(self._image_size(entry.value)),
+                "metadata": entry.metadata,
+            }
+            derived.append(summary)
+            # The PIL object, not just its img_n identifier, must reach
+            # processor.apply_chat_template on the next model turn.
+            from PIL import Image
+
+            if isinstance(entry.value, Image.Image):
+                visual = entry.value
+            else:
+                with Image.open(entry.value) as loaded:
+                    visual = loaded.convert("RGB").copy()
+            content.append({"type": "image", "image": visual})
+        observation = result.observation
+        if derived:
+            ids_text = "\n".join(
+                f"New image ID: {item['image_id']}." for item in derived
+            )
+            if "</observation>" in observation:
+                observation = observation.replace(
+                    "</observation>", f"{ids_text}\n</observation>", 1
+                )
+            else:
+                observation = f"{observation.rstrip()}\n{ids_text}"
+        if content:
+            content.append({"type": "text", "text": observation})
+            messages.append({"role": "tool", "content": content})
+        else:
+            messages.append({"role": "tool", "content": observation})
+        return AgentTurn(
+            assistant_output=assistant_output,
+            tool_call={"name": call.name, "arguments": call.arguments},
+            observation=observation,
+            status=result.status,
+            error=result.error_type,
+            metadata={**result.metadata, "derived_image_ids": [d["image_id"] for d in derived]},
+            derived_images=derived,
+        )
+
     def run(
         self,
         *,
@@ -145,6 +243,7 @@ class AgentRuntime:
                     status="model_error",
                     image_ids=[entry.image_id for entry in image_registry.list_images()],
                     error=f"{type(exc).__name__}: {exc}",
+                    images=self._image_summaries(image_registry),
                 )
 
             parsed = self.parser.parse(assistant_output)
@@ -156,6 +255,7 @@ class AgentRuntime:
                     final_answer=parsed.final_answer,
                     status="success",
                     image_ids=[entry.image_id for entry in image_registry.list_images()],
+                    images=self._image_summaries(image_registry),
                 )
 
             if parsed.kind == "malformed_tool_call":
@@ -174,40 +274,24 @@ class AgentRuntime:
                 continue
 
             messages.append(self._structured_assistant_message(parsed))
-            if parsed.kind == "unknown_tool":
-                for call in parsed.tool_calls:
-                    if self.tool_registry.has(call.name):
-                        result = self._execute_call(call, context)
-                    else:
-                        result = self._error_result(
-                            "unknown_tool", f"unknown tool: {call.name}"
-                        )
-                    turns.append(
-                        AgentTurn(
-                            assistant_output=assistant_output,
-                            tool_call={"name": call.name, "arguments": call.arguments},
-                            observation=result.observation,
-                            status=result.status,
-                            error=result.error_type,
-                            metadata=result.metadata,
-                        )
-                    )
-                    messages.append({"role": "tool", "content": result.observation})
-                continue
-
             for call in parsed.tool_calls:
-                result = self._execute_call(call, context)
-                turns.append(
-                    AgentTurn(
-                        assistant_output=assistant_output,
-                        tool_call={"name": call.name, "arguments": call.arguments},
-                        observation=result.observation,
-                        status=result.status,
-                        error=result.error_type,
-                        metadata=result.metadata,
-                    )
+                result = (
+                    self._execute_call(call, context)
+                    if self.tool_registry.has(call.name)
+                    else self._error_result("unknown_tool", f"unknown tool: {call.name}")
                 )
-                messages.append({"role": "tool", "content": result.observation})
+                try:
+                    turn = self._commit_result(
+                        result=result, call=call, context=context,
+                        messages=messages, assistant_output=assistant_output,
+                    )
+                except Exception as exc:
+                    turn = self._commit_result(
+                        result=self._error_result(type(exc).__name__, str(exc)),
+                        call=call, context=context, messages=messages,
+                        assistant_output=assistant_output,
+                    )
+                turns.append(turn)
 
         return AgentTrajectory(
             sample_id=sample_id,
@@ -217,4 +301,5 @@ class AgentRuntime:
             status="max_agent_turns_exceeded",
             image_ids=[entry.image_id for entry in image_registry.list_images()],
             error=f"no final answer after {self.max_agent_turns} model turns",
+            images=self._image_summaries(image_registry),
         )

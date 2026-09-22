@@ -1,7 +1,11 @@
 # Qwen3-VL-4B inference and Agent smoke
 
-This stage provides infrastructure only. It does not implement real tool
-backends, external APIs, benchmark scoring, SFT, or RL.
+The original Agent smoke remains infrastructure-only and uses mock tools.
+Phase 2 adds separate real local visual backends and an optional layout API
+adapter; it does not add search backends, benchmark scoring, SFT, or RL.
+
+See [Phase 2 visual tools](phase2_visual_tools.md) for the new opt-in registry,
+CPU smoke, and provider configuration.
 
 The model is pinned to `Qwen/Qwen3-VL-4B-Instruct` revision
 `ebb281ec70b05090aa6165b016eac8ec08e71b17`. The eight declarations mirror the
