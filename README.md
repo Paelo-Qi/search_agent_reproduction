@@ -56,6 +56,13 @@ would not establish this live-model result.
 Phase 4 adds bounded transient retry, a shared success-only filesystem cache,
 sample-level resume, and full text/tool trajectory persistence without adding
 Agent capabilities or scoring. See [Phase 4 reliability](docs/phase4_reliability.md).
+Each batch run now has a deterministic `run_manifest.json`; the same `run_id`
+can resume only the same model/checkpoint, frozen dataset, selection, inference
+behavior, search/layout configuration, and tool contracts. Jina auth/quota/
+configuration errors are explicit tool failures, while ordinary page failures
+retain snippet fallback. PaddleOCR result downloads retry transient failures
+without resubmitting the OCR job. Summary cache misses count real tool
+executions, not HTTP/API calls.
 Its completely offline engineering smoke is:
 
 ```bash

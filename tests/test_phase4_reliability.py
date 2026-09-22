@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from opensearch_vl_repro.agent.layout_parsing import (
 )
 from opensearch_vl_repro.agent.phase3_registry import create_phase3_tool_registry
 from opensearch_vl_repro.agent.reliability import (
+    CACHE_SCHEMA_VERSION, LAYOUT_BEHAVIOR_VERSION, SEARCH_BEHAVIOR_VERSION,
     FileSystemToolCache, RetryPolicy, cache_identity, cached_tool_backend,
 )
 from opensearch_vl_repro.agent.runtime import AgentTrajectory, AgentTurn
@@ -20,7 +22,10 @@ from opensearch_vl_repro.agent.search_providers import (
     SearchBackendError, SerperSearchBackend, load_search_config,
 )
 from opensearch_vl_repro.agent.tool_registry import ToolContext, ToolResult
-from opensearch_vl_repro.evaluation import BatchRunner, BatchSample
+from opensearch_vl_repro.evaluation import (
+    BatchRunner, BatchSample, RunManifestMismatchError, build_run_manifest,
+    create_run_manifest,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -334,17 +339,74 @@ def _samples():
                         [Image.new("RGB", (4, 4))]) for name in "ABCD"]
 
 
+def _manifest(*, revision="model-r1", dataset_sha="dataset-a", max_turns=2,
+              tool_fingerprint="tools-a", search_fingerprint="search-a"):
+    return create_run_manifest(
+        run_id="test-run", model_name_or_path="fake/model", model_revision=revision,
+        inference_config_fingerprint="inference-a",
+        dataset_path="synthetic-eval.parquet",
+        dataset_identity={"sha256": dataset_sha},
+        start=0, limit=4, max_agent_turns=max_turns,
+        search_config_fingerprint=search_fingerprint,
+        layout_config_fingerprint="layout-a",
+        tool_fingerprint=tool_fingerprint,
+    )
+
+
+def test_build_run_manifest_uses_frozen_dataset_and_config_identity(tmp_path):
+    dataset = tmp_path / "combined_eval_300.parquet"
+    dataset.write_bytes(b"frozen-eval-bytes")
+    expected_sha = hashlib.sha256(b"frozen-eval-bytes").hexdigest()
+    eval_manifest = tmp_path / "manifest.json"
+    eval_manifest.write_text(json.dumps({
+        "manifest_version": 2,
+        "dataset": "dataset/name",
+        "dataset_revision": "dataset-revision",
+        "combined": {"output_file": dataset.name, "output_sha256": expected_sha},
+    }), encoding="utf-8")
+    manifest = build_run_manifest(
+        run_id="identity-test", model_name_or_path="Qwen/model",
+        model_revision="model-revision",
+        inference_config_path=ROOT / "configs" / "eval_4b.yaml",
+        dataset_path=dataset, eval_manifest_path=eval_manifest,
+        start=2, limit=4, max_agent_turns=8,
+        search_config_path=ROOT / "configs" / "search_backends.example.yaml",
+        layout_config_path=ROOT / "configs" / "layout_parsing.example.yaml",
+    )
+    assert manifest["model_name_or_path"] == "Qwen/model"
+    assert manifest["model_revision"] == "model-revision"
+    assert manifest["checkpoint_identity"]["kind"] == "remote"
+    assert manifest["dataset_identity"]["sha256"] == expected_sha
+    assert manifest["dataset_identity"]["frozen_manifest_identity"]["dataset_revision"] == "dataset-revision"
+    assert manifest["sample_selection"] == {"start": 2, "limit": 4}
+    assert manifest["inference_config_fingerprint"]
+    assert manifest["search_config_fingerprint"] and manifest["layout_config_fingerprint"]
+    assert manifest["tool_contract_fingerprint"] and manifest["run_config_fingerprint"]
+
+
 def test_batch_resume_retry_failed_and_trajectory_persistence(tmp_path):
     runtime = FakeRuntime()
-    runner = BatchRunner(runtime, tmp_path)
+    run_dir = tmp_path / "run"
+    runner = BatchRunner(runtime, run_dir, run_manifest=_manifest())
     first = runner.run(_samples(), max_samples=2)
     assert first["success"] == 1 and first["failed"] == 1 and first["pending"] == 2
+    runner = BatchRunner(runtime, run_dir, run_manifest=_manifest())
     resumed = runner.run(_samples())
     assert resumed["success"] == 3 and resumed["failed"] == 1
     assert runtime.calls == {"A": 1, "B": 1, "C": 1, "D": 1}
     retried = runner.run(_samples(), retry_failed=True)
     assert retried["success"] == 4 and runtime.calls["B"] == 2
-    lines = (tmp_path / "trajectories.jsonl").read_text(encoding="utf-8").splitlines()
+    assert retried["real_tool_executions"] == retried["cache_misses"] == 4
+    assert "real_provider_calls" not in retried
+    persisted_manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert persisted_manifest["run_config_fingerprint"]
+    assert persisted_manifest["model_revision"] == "model-r1"
+    assert persisted_manifest["dataset_identity"]["sha256"] == "dataset-a"
+    assert persisted_manifest["tool_contract_fingerprint"] == "tools-a"
+    assert persisted_manifest["cache_schema_version"] == CACHE_SCHEMA_VERSION
+    assert persisted_manifest["search_behavior_version"] == SEARCH_BEHAVIOR_VERSION
+    assert persisted_manifest["layout_behavior_version"] == LAYOUT_BEHAVIOR_VERSION
+    lines = (run_dir / "trajectories.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 4
     records = {record["sample_id"]: record for record in map(json.loads, lines)}
     record = records["A"]
@@ -358,12 +420,14 @@ def test_batch_resume_retry_failed_and_trajectory_persistence(tmp_path):
 
 def test_stale_running_becomes_failed_and_requires_explicit_retry(tmp_path):
     runtime = FakeRuntime()
-    runner = BatchRunner(runtime, tmp_path)
+    manifest = _manifest()
+    runner = BatchRunner(runtime, tmp_path, run_manifest=manifest)
     state = {"version": 1, "samples": {
         "A": {"benchmark": "synthetic", "status": "running", "attempts": 1,
               "error_type": None, "error": None}
     }}
     tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (tmp_path / "status.json").write_text(json.dumps(state), encoding="utf-8")
     sample = _samples()[:1]
     summary = runner.run(sample)
@@ -372,3 +436,40 @@ def test_stale_running_becomes_failed_and_requires_explicit_retry(tmp_path):
     assert status["samples"]["A"]["error_type"] == "interrupted"
     assert runner.run(sample, retry_failed=True)["success"] == 1
     assert runtime.calls == {"A": 1}
+
+
+@pytest.mark.parametrize("changed,expected_field", [
+    ({"revision": "model-r2"}, "model_revision"),
+    ({"dataset_sha": "dataset-b"}, "dataset_identity"),
+    ({"max_turns": 3}, "max_agent_turns"),
+    ({"tool_fingerprint": "tools-b"}, "tool_contract_fingerprint"),
+    ({"search_fingerprint": "search-b"}, "search_config_fingerprint"),
+])
+def test_manifest_mismatch_refuses_resume_without_mutation(
+    tmp_path, changed, expected_field,
+):
+    samples = _samples()
+    run_dir = tmp_path / "run"
+    BatchRunner(FakeRuntime(), run_dir, run_manifest=_manifest()).run(samples, max_samples=1)
+    paths = [run_dir / name for name in (
+        "run_manifest.json", "status.json", "trajectories.jsonl", "summary.json",
+    )]
+    before = {path.name: path.read_bytes() for path in paths}
+    incompatible = BatchRunner(FakeRuntime(), run_dir, run_manifest=_manifest(**changed))
+    with pytest.raises(RunManifestMismatchError) as caught:
+        incompatible.run(samples, retry_failed=True)
+    assert "refusing to resume" in str(caught.value)
+    assert expected_field in str(caught.value)
+    assert {path.name: path.read_bytes() for path in paths} == before
+
+
+def test_existing_legacy_run_without_manifest_is_not_silently_adopted(tmp_path):
+    (tmp_path / "status.json").write_text(
+        json.dumps({"version": 1, "samples": {}}), encoding="utf-8",
+    )
+    before = (tmp_path / "status.json").read_bytes()
+    runner = BatchRunner(FakeRuntime(), tmp_path, run_manifest=_manifest())
+    with pytest.raises(RunManifestMismatchError, match="run_manifest_missing"):
+        runner.run(_samples())
+    assert (tmp_path / "status.json").read_bytes() == before
+    assert not (tmp_path / "run_manifest.json").exists()

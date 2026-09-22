@@ -65,7 +65,10 @@ class FakeSession:
         self.submit = submit or FakeResponse({"code": 0, "data": {"jobId": "job-123"}})
         self.polls = list(polls or [FakeResponse({"code": 0, "data": {
             "state": "done", "resultUrl": {"jsonUrl": "https://result.test/out.jsonl"}}})])
-        self.download = download or FakeResponse(text=_line(_structured()))
+        default_download = FakeResponse(text=_line(_structured()))
+        self.downloads = list(download) if isinstance(download, (list, tuple)) else [
+            download or default_download
+        ]
         self.calls = []
 
     def post(self, url, **kwargs):
@@ -76,7 +79,7 @@ class FakeSession:
 
     def get(self, url, **kwargs):
         self.calls.append(("get", url, kwargs))
-        result = self.polls.pop(0) if "/jobs/" in url else self.download
+        result = self.polls.pop(0) if "/jobs/" in url else self.downloads.pop(0)
         if isinstance(result, Exception):
             raise result
         return result
@@ -221,6 +224,32 @@ def test_jsonl_multipage_structured_then_markdown_fallback(monkeypatch):
     assert result.observation.index("Fallback page") < result.observation.index("Third page")
     assert "should-not-download" not in result.observation
     assert len(session.calls) == 3  # submit, one poll, one JSONL GET
+
+
+def test_result_download_transient_retry_does_not_resubmit(monkeypatch):
+    session = FakeSession(download=[
+        requests.ConnectionError("temporary"),
+        FakeResponse(text=_line({"markdown": {"text": "download recovered"}})),
+    ])
+    tool, clock = _tool(monkeypatch, session)
+    result = tool({"image": "img_1"}, _context())
+    assert result.status == "success"
+    assert "download recovered" in result.observation
+    assert result.metadata["download_attempt_count"] == 2
+    assert result.metadata["attempt_count"] == 2
+    assert len([call for call in session.calls if call[0] == "post"]) == 1
+    assert len([call for call in session.calls if call[1] == "https://result.test/out.jsonl"]) == 2
+    assert 1.0 in clock.sleeps
+
+
+def test_result_download_authentication_failure_is_not_retried(monkeypatch):
+    session = FakeSession(download=FakeResponse(status=401))
+    tool, _ = _tool(monkeypatch, session)
+    result = tool({"image": "img_1"}, _context())
+    assert result.status == "error" and result.error_type == "authentication_error"
+    assert result.metadata["download_attempt_count"] == 1
+    assert len([call for call in session.calls if call[0] == "post"]) == 1
+    assert len([call for call in session.calls if call[1] == "https://result.test/out.jsonl"]) == 1
 
 
 @pytest.mark.parametrize("body", [

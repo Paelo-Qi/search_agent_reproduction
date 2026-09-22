@@ -11,6 +11,7 @@ from typing import Any, Callable, Sequence
 
 from opensearch_vl_repro.agent.reliability import redact_secrets
 from opensearch_vl_repro.agent.runtime import AgentRuntime, AgentTrajectory
+from .run_manifest import RunManifestMismatchError, manifest_mismatches
 
 
 @dataclass(frozen=True)
@@ -36,13 +37,44 @@ class BatchRunner:
     """Run each eligible sample at most once per invocation."""
 
     def __init__(self, runtime: AgentRuntime, output_dir: str | Path,
-                 *, clock: Callable[[], float] = time.perf_counter) -> None:
+                 *, run_manifest: dict[str, Any],
+                 clock: Callable[[], float] = time.perf_counter) -> None:
         self.runtime = runtime
         self.output_dir = Path(output_dir).expanduser().resolve()
+        self.manifest_path = self.output_dir / "run_manifest.json"
         self.status_path = self.output_dir / "status.json"
         self.trajectory_path = self.output_dir / "trajectories.jsonl"
         self.summary_path = self.output_dir / "summary.json"
+        self.run_manifest = redact_secrets(run_manifest)
         self.clock = clock
+
+    def _prepare_manifest(self) -> None:
+        if self.manifest_path.is_file():
+            try:
+                persisted = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RunManifestMismatchError(
+                    "Run configuration mismatch; refusing to resume existing run.\n"
+                    f"- run_manifest ({type(exc).__name__})"
+                ) from None
+            if not isinstance(persisted, dict):
+                raise RunManifestMismatchError(
+                    "Run configuration mismatch; refusing to resume existing run.\n"
+                    "- run_manifest"
+                )
+            mismatches = manifest_mismatches(persisted, self.run_manifest)
+            if mismatches:
+                fields = "\n".join(f"- {field}" for field in mismatches)
+                raise RunManifestMismatchError(
+                    "Run configuration mismatch; refusing to resume existing run.\n" + fields
+                )
+            return
+        if self.output_dir.exists():
+            raise RunManifestMismatchError(
+                "Run configuration mismatch; refusing to resume existing run.\n"
+                "- run_manifest_missing"
+            )
+        _atomic_json(self.manifest_path, self.run_manifest)
 
     def _load_status(self, samples: Sequence[BatchSample]) -> dict[str, Any]:
         if self.status_path.is_file():
@@ -128,13 +160,14 @@ class BatchRunner:
             "total": len(state["samples"]), **counts,
             "cache_hits": cache_hits,
             "cache_misses": cache_misses,
-            "real_provider_calls": cache_misses,
+            "real_tool_executions": cache_misses,
         }
 
     def run(self, samples: Sequence[BatchSample], *, retry_failed: bool = False,
             max_samples: int | None = None) -> dict[str, Any]:
         if len({sample.sample_id for sample in samples}) != len(samples):
             raise ValueError("sample IDs must be unique")
+        self._prepare_manifest()
         state = self._load_status(samples)
         records = self._load_records()
         by_id = {sample.sample_id: sample for sample in samples}

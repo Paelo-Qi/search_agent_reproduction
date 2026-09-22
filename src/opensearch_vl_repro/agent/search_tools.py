@@ -17,6 +17,11 @@ from .search_providers import (
 from .tool_registry import ToolContext, ToolResult
 
 
+READER_FALLBACK_ERROR_TYPES = {
+    "timeout", "network_error", "invalid_response", "provider_error",
+}
+
+
 def _redact(value: Any) -> Any:
     secrets = [os.environ.get(name) for name in ("SERPER_API_KEY", "JINA_API_KEY", "SERPAPI_API_KEY")]
     if isinstance(value, str):
@@ -128,6 +133,8 @@ class SearchTools:
                     attempt_count = max(attempt_count, getattr(self.reader, "last_attempt_count", 1))
                     reader_success += 1
                 except SearchBackendError as exc:
+                    if exc.error_type not in READER_FALLBACK_ERROR_TYPES:
+                        raise
                     attempt_count = max(attempt_count, getattr(exc, "attempt_count", 1))
                     passage = ""
                     reader_failure += 1

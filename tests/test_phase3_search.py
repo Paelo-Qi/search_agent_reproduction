@@ -244,6 +244,37 @@ def test_text_q_only_defaults_and_all_reader_fail_snippet_fallback(config):
     assert "Snippet: S" in result.observation and "Passage:" not in result.observation
 
 
+def test_all_transient_reader_failures_keep_snippet_fallback(config):
+    results = [SearchResult(f"T{i}", f"https://x{i}.test", f"S{i}") for i in range(3)]
+    reader = FakeReader([
+        SearchBackendError("timeout", "timeout"),
+        SearchBackendError("network_error", "network"),
+        SearchBackendError("invalid_response", "invalid"),
+    ])
+    result = SearchTools(config, serper=FakeSerper(results), reader=reader).text_search(
+        {"q": "x", "top_k": 3}, _context(),
+    )
+    assert result.status == "success"
+    assert result.metadata["reader_success_count"] == 0
+    assert result.metadata["reader_failure_count"] == 3
+    assert result.metadata["reader_fallback_used"] is True
+    assert "Snippet: S0" in result.observation and "Passage:" not in result.observation
+
+
+@pytest.mark.parametrize("error_type", [
+    "authentication_error", "quota_error", "configuration_error",
+])
+def test_systemic_reader_failure_aborts_text_search(config, error_type):
+    results = [SearchResult("T", "https://x.test", "S")]
+    reader = FakeReader([SearchBackendError(error_type, "systemic reader failure")])
+    result = SearchTools(config, serper=FakeSerper(results), reader=reader).text_search(
+        {"q": "x"}, _context(),
+    )
+    assert result.status == "error" and result.error_type == error_type
+    assert result.metadata["error_type"] == error_type
+    assert "Snippet: S" not in result.observation
+
+
 def test_unexpected_reader_bug_is_not_silent_fallback(config):
     serper = FakeSerper([SearchResult("T", "https://x.test", "S")])
     reader = FakeReader([TypeError("programming bug")])

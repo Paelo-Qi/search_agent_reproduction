@@ -80,7 +80,12 @@ def layout_tool(backend: LayoutParsingBackend | None) -> Callable[[dict[str, Any
             )
         except LayoutBackendError as exc:
             return _failure(exc.error_type, str(exc),
-                            attempt_count=getattr(exc, "attempt_count", 1))
+                            attempt_count=max(getattr(backend, "last_attempt_count", 1),
+                                              getattr(exc, "attempt_count", 1)),
+                            metadata={
+                                "poll_attempt_count": getattr(backend, "last_poll_attempt_count", 1),
+                                "download_attempt_count": getattr(backend, "last_download_attempt_count", 1),
+                            })
         except (KeyError, FileNotFoundError, OSError):
             return _failure("invalid_image", "registered image is unavailable or unreadable")
         except Exception as exc:
@@ -90,13 +95,15 @@ def layout_tool(backend: LayoutParsingBackend | None) -> Callable[[dict[str, Any
     return execute
 
 
-def _failure(error_type: str, message: str, *, attempt_count: int = 1) -> ToolResult:
+def _failure(error_type: str, message: str, *, attempt_count: int = 1,
+             metadata: dict[str, Any] | None = None) -> ToolResult:
     safe = message.replace("\n", " ").replace("\r", " ")[:240]
     return ToolResult(
         status="error",
         error_type=error_type,
         observation=f"<observation>\nLayout parsing failed ({error_type}): {safe}.\n</observation>",
-        metadata={"error_type": error_type, "attempt_count": attempt_count},
+        metadata={"error_type": error_type, "attempt_count": attempt_count,
+                  **(metadata or {})},
     )
 
 
@@ -145,7 +152,8 @@ class PaddleOCRAiStudioBackend:
     def __init__(self, config: LayoutApiConfig, *, session: Any | None = None,
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
-                 poll_retry: RetryPolicy | None = None) -> None:
+                 poll_retry: RetryPolicy | None = None,
+                 download_retry: RetryPolicy | None = None) -> None:
         if config.provider != "paddleocr_aistudio":
             raise ValueError(f"unsupported layout provider: {config.provider}")
         self.config = config
@@ -153,7 +161,10 @@ class PaddleOCRAiStudioBackend:
         self.clock = clock
         self.sleep = sleep
         self.poll_retry = poll_retry or RetryPolicy(sleeper=sleep)
+        self.download_retry = download_retry or RetryPolicy(sleeper=sleep)
         self.last_attempt_count = 1
+        self.last_poll_attempt_count = 1
+        self.last_download_attempt_count = 1
 
     @staticmethod
     def _checked_response(response: Any) -> Any:
@@ -237,10 +248,14 @@ class PaddleOCRAiStudioBackend:
 
             try:
                 response, attempts = self.poll_retry.run(request_status)
+                self.last_poll_attempt_count = max(self.last_poll_attempt_count, attempts)
                 self.last_attempt_count = max(self.last_attempt_count, attempts)
             except LayoutBackendError as exc:
                 self.last_attempt_count = max(
                     self.last_attempt_count, getattr(exc, "attempt_count", 1),
+                )
+                self.last_poll_attempt_count = max(
+                    self.last_poll_attempt_count, getattr(exc, "attempt_count", 1),
                 )
                 raise
             data = self._data(self._json(response))
@@ -319,15 +334,31 @@ class PaddleOCRAiStudioBackend:
         )
 
     def _download(self, json_url: str) -> str:
+        def request_result() -> Any:
+            try:
+                return self._checked_response(self.session.get(
+                    json_url, timeout=self.config.request_timeout_seconds,
+                ))
+            except requests.RequestException as exc:
+                raise self._request_error(exc) from None
+
         try:
-            response = self.session.get(json_url, timeout=self.config.request_timeout_seconds)
-        except requests.RequestException as exc:
-            raise self._request_error(exc) from None
-        return self._checked_response(response).text
+            response, attempts = self.download_retry.run(request_result)
+            self.last_download_attempt_count = attempts
+            self.last_attempt_count = max(self.last_attempt_count, attempts)
+            return response.text
+        except LayoutBackendError as exc:
+            self.last_download_attempt_count = getattr(exc, "attempt_count", 1)
+            self.last_attempt_count = max(
+                self.last_attempt_count, self.last_download_attempt_count,
+            )
+            raise
 
     def parse(self, image: Image.Image, *, use_chart_recognition: bool | None,
               use_doc_orientation_classify: bool | None) -> LayoutDocument:
         self.last_attempt_count = 1
+        self.last_poll_attempt_count = 1
+        self.last_download_attempt_count = 1
         token = os.environ.get(self.config.access_token_env)
         if not token:
             raise LayoutBackendError(
@@ -351,5 +382,7 @@ class PaddleOCRAiStudioBackend:
                 bbox=block.bbox,
             ) for block in document.blocks),
             metadata={**document.metadata,
-                      "job_id": document.metadata["job_id"].replace(token, "[REDACTED]")},
+                      "job_id": document.metadata["job_id"].replace(token, "[REDACTED]"),
+                      "poll_attempt_count": self.last_poll_attempt_count,
+                      "download_attempt_count": self.last_download_attempt_count},
         )

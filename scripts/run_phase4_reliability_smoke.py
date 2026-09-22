@@ -22,7 +22,9 @@ from opensearch_vl_repro.agent.reliability import (  # noqa: E402
 from opensearch_vl_repro.agent.runtime import AgentTrajectory, AgentTurn  # noqa: E402
 from opensearch_vl_repro.agent.search_providers import SearchBackendError  # noqa: E402
 from opensearch_vl_repro.agent.tool_registry import ToolContext, ToolResult  # noqa: E402
-from opensearch_vl_repro.evaluation import BatchRunner, BatchSample  # noqa: E402
+from opensearch_vl_repro.evaluation import (  # noqa: E402
+    BatchRunner, BatchSample, create_run_manifest,
+)
 
 
 class OfflineBatchRuntime:
@@ -90,7 +92,16 @@ def main(argv: list[str] | None = None) -> int:
     samples = [BatchSample(name, "synthetic", f"question {name}",
                            [Image.new("RGB", (8, 8), "white")]) for name in "ABCD"]
     runtime = OfflineBatchRuntime()
-    runner = BatchRunner(runtime, output / "batch")
+    manifest = create_run_manifest(
+        run_id="phase4-offline-smoke", model_name_or_path="offline-fake-model",
+        model_revision="v1", inference_config_fingerprint="offline-inference-v1",
+        dataset_path=output / "synthetic-dataset",
+        dataset_identity={"kind": "synthetic", "version": 1},
+        start=0, limit=4, max_agent_turns=2,
+        search_config_fingerprint="offline-search-v1",
+        layout_config_fingerprint="offline-layout-v1",
+    )
+    runner = BatchRunner(runtime, output / "batch", run_manifest=manifest)
     first_batch = runner.run(samples, max_samples=2)
     resumed = runner.run(samples)
     calls_after_resume = dict(runtime.calls)
@@ -104,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         "resume_skips_success_and_failed": calls_after_resume == {"A": 1, "B": 1, "C": 1, "D": 1},
         "retry_failed_exactly_once": retried["failed"] == 0 and runtime.calls["B"] == 2,
         "trajectory_jsonl_exists": (output / "batch" / "trajectories.jsonl").is_file(),
+        "run_manifest_created": (output / "batch" / "run_manifest.json").is_file(),
         "status_and_summary_exist": all((output / "batch" / name).is_file()
                                         for name in ("status.json", "summary.json")),
         "resume_left_two_success_before_retry": resumed["success"] == 3 and resumed["failed"] == 1,

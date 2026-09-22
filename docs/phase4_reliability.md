@@ -12,11 +12,23 @@ and HTTP 5xx are retryable. Authentication failures, configuration errors,
 invalid arguments, invalid local input, and invalid responses are not. Retry
 details remain metadata; the model sees only the final observation.
 
+Jina Reader page failures are classified. `timeout`, `network_error`,
+`invalid_response`, and `provider_error` may fall back to the corresponding
+Serper snippet while other pages continue. Even if every page has one of those
+transient/page-level failures, snippet-only success is allowed when snippets
+exist. `authentication_error`, `configuration_error`, and `quota_error` are
+systemic: `text_search` immediately returns a tool error instead of silently
+changing capability for the rest of a batch.
+
 PaddleOCR is intentionally different. Image submission occurs exactly once.
 After a `job_id` is received, only transient GET failures while polling that
 same job are retried. Every retry uses the same URL/job ID and the original
 `max_poll_seconds` deadline; neither a new job nor a new deadline is created.
 The whole OCR job is never automatically retried.
+After the job reports done, the signed JSONL result download independently uses
+the same bounded transient policy. Download timeout, network failure, 429, and
+5xx are retried; 401/403 and invalid responses are not. Download retry neither
+submits another job nor restarts the polling deadline.
 
 ## Tool-result cache
 
@@ -61,7 +73,15 @@ dimensions, and truncation. Per-execution metadata is never persisted in the
 entry: `cache_hit`, `cache_key`, `cache_version`, `attempt_count`,
 `latency_seconds`, and `cache_warning` are attached at runtime. A hit has
 `attempt_count=0`; a clean real call has 1; a success on the third attempt has
-3. Observation text is identical on hit and miss.
+3. For tools involving several requests, `attempt_count` is the maximum retry
+attempt index across their request stages—not HTTP request count or API usage.
+PaddleOCR also records `poll_attempt_count` and `download_attempt_count`.
+Observation text is identical on hit and miss.
+
+The cache schema remains version 1. The search behavior version is 2 because
+Jina systemic failures can no longer produce cacheable snippet-only successes;
+this prevents reuse of older text-search entries created under that unsafe
+failure policy. The observation formatter and cache JSON layout are unchanged.
 
 One cache namespace can be shared by Base, SFT, and SFT+RL runs. Identical
 calls then receive identical evidence; distinct model queries naturally use
@@ -75,10 +95,38 @@ Each run directory contains:
 
 ```text
 reports/eval_runs/<run_id>/
+  run_manifest.json
   status.json
   trajectories.jsonl
   summary.json
 ```
+
+## Run identity
+
+The manifest is created before any status or trajectory write. Its deterministic
+`run_config_fingerprint` covers model name/revision and checkpoint identity,
+inference-config content, actual dataset SHA256 and the frozen eval-manifest
+identity, `start`/`limit`, maximum Agent turns, search/layout configuration,
+cache and behavior versions, and a fingerprint derived directly from all eight
+tool declarations. API values, creation time, report path, hostname, PID,
+latency, and GPU identity are excluded.
+
+Remote models use their repository ID plus pinned revision. Local checkpoints
+record their resolved path and a lightweight artifact fingerprint: small
+configs/weights are fully hashed, while large weights use size plus first/last
+1 MiB hashing, avoiding a full multi-GB startup read. The dataset path is
+recorded for diagnosis, while checksum and frozen manifest identity protect
+semantics if bytes at that path are replaced.
+
+Reusing a `run_id` is permitted only when the persisted and current identities
+match. A mismatch reports only differing field names and aborts before touching
+manifest, status, summary, or trajectories. `--retry-failed` cannot bypass this
+check. An older run directory containing artifacts but no manifest is also
+refused rather than silently adopted. This prevents Base/SFT/RL, checkpoint,
+dataset, selection, or tool-contract trajectories from being mixed.
+
+The run manifest does not affect `.eval-runtime/cache/`: different compatible
+or model-comparison run IDs still share evidence for identical tool calls.
 
 Statuses are `pending`, `running`, `success`, and `failed`. Before a sample is
 executed, `running` is written atomically. Its completed record and final status
@@ -99,6 +147,13 @@ PIL objects, raw bytes, and base64 are never serialized.
 Cache entries, status, summary, and trajectory rewrites use a temporary file,
 flush/fsync, and `os.replace`. Known API credential values are recursively
 redacted from cache and batch artifacts.
+
+`summary.json` reports sample-state counts, `cache_hits`, `cache_misses`, and
+`real_tool_executions`. The last field equals cache misses among cache-enabled
+tool calls whose backend executed. A cache miss is not an HTTP/provider request
+count: one `text_search` can issue Serper plus several Jina requests and retry;
+one `image_search` can upload and then query Lens. Phase 4 deliberately does
+not claim HTTP/API usage accounting.
 
 ## Commands
 

@@ -16,7 +16,7 @@ from .tool_registry import ToolBackend, ToolContext, ToolResult
 
 
 CACHE_SCHEMA_VERSION = 1
-SEARCH_BEHAVIOR_VERSION = 1
+SEARCH_BEHAVIOR_VERSION = 2
 LAYOUT_BEHAVIOR_VERSION = 1
 RUNTIME_METADATA_FIELDS = {
     "cache_hit", "cache_key", "cache_version", "attempt_count",

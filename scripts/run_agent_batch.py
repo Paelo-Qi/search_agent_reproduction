@@ -15,7 +15,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from opensearch_vl_repro.agent.phase3_registry import create_phase3_tool_registry  # noqa: E402
 from opensearch_vl_repro.agent.runtime import AgentRuntime  # noqa: E402
-from opensearch_vl_repro.evaluation import BatchRunner, BatchSample  # noqa: E402
+from opensearch_vl_repro.evaluation import (  # noqa: E402
+    BatchRunner, BatchSample, build_run_manifest,
+)
 from opensearch_vl_repro.inference import (  # noqa: E402
     QwenAgentModel, load_inference_bundle, load_inference_config, read_eval_sample,
 )
@@ -43,6 +45,19 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--start must be non-negative and --limit must be positive")
 
     config = load_inference_config(args.config)
+    run_manifest = build_run_manifest(
+        run_id=args.run_id,
+        model_name_or_path=config.model_name_or_path,
+        model_revision=config.revision,
+        inference_config_path=args.config,
+        dataset_path=config.data_path,
+        eval_manifest_path=config.data_path.parent / "manifest.json",
+        start=args.start,
+        limit=args.limit,
+        max_agent_turns=config.max_agent_turns,
+        search_config_path=args.search_config,
+        layout_config_path=args.layout_config,
+    )
     bundle = load_inference_bundle(config)
     runtime = AgentRuntime(
         model=QwenAgentModel(bundle),
@@ -60,7 +75,9 @@ def main(argv: list[str] | None = None) -> int:
             question=sample.question, images=sample.images,
         ))
     output_dir = PROJECT_ROOT / "reports" / "eval_runs" / args.run_id
-    summary = BatchRunner(runtime, output_dir).run(samples, retry_failed=args.retry_failed)
+    summary = BatchRunner(runtime, output_dir, run_manifest=run_manifest).run(
+        samples, retry_failed=args.retry_failed,
+    )
     print(json.dumps({"run_id": args.run_id, "output_dir": str(output_dir.resolve()),
                       **summary}, ensure_ascii=False, indent=2))
     return 0 if summary["failed"] == 0 and summary["pending"] == 0 else 1
