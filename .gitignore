@@ -24,6 +24,8 @@ data/eval/*.parquet
 outputs/
 reports/*.json
 reports/*.jsonl
+reports/eval_runs/
+reports/phase4_smoke/
 !reports/eval_subset_report.json
 logs/
 

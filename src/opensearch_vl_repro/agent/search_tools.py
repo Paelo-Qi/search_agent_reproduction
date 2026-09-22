@@ -31,11 +31,11 @@ def _redact(value: Any) -> Any:
     return value
 
 
-def _error(tool: str, exc: SearchBackendError) -> ToolResult:
+def _error(tool: str, exc: SearchBackendError, *, attempt_count: int = 1) -> ToolResult:
     return ToolResult(
         status="error", error_type=exc.error_type,
         observation=_redact(f"<observation>\n{tool} failed ({exc.error_type}): {str(exc)[:180]}.\n</observation>"),
-        metadata={"error_type": exc.error_type},
+        metadata={"error_type": exc.error_type, "attempt_count": attempt_count},
     )
 
 
@@ -101,9 +101,11 @@ class SearchTools:
             ]
             observation, _ = _observation(chunks, "Search Results")
             return ToolResult(status="success", observation=_redact(observation),
-                              metadata={"provider": "serper", "result_count": len(results)})
+                              metadata={"provider": "serper", "result_count": len(results),
+                                        "attempt_count": getattr(self.serper, "last_attempt_count", 1)})
         except SearchBackendError as exc:
-            return _error("web_search", exc)
+            return _error("web_search", exc,
+                          attempt_count=getattr(self.serper, "last_attempt_count", 1))
         except Exception:
             return _error("web_search", SearchBackendError("provider_error", "unexpected provider failure"))
 
@@ -118,12 +120,15 @@ class SearchTools:
                 raise SearchBackendError("no_results", "search returned no usable results")
             chunks = []
             reader_success = reader_failure = 0
+            attempt_count = getattr(self.serper, "last_attempt_count", 1)
             truncated_indices: set[int] = set()
             for index, item in enumerate(results, 1):
                 try:
                     passage = self.reader.read(item.url)
+                    attempt_count = max(attempt_count, getattr(self.reader, "last_attempt_count", 1))
                     reader_success += 1
-                except SearchBackendError:
+                except SearchBackendError as exc:
+                    attempt_count = max(attempt_count, getattr(exc, "attempt_count", 1))
                     passage = ""
                     reader_failure += 1
                 if len(passage) > settings["max_chars_per_page"]:
@@ -145,10 +150,13 @@ class SearchTools:
                           "reader_success_count": reader_success,
                           "reader_failure_count": reader_failure,
                           "reader_fallback_used": reader_failure > 0,
-                          "truncated_result_count": len(truncated_indices | total_truncated)},
+                          "truncated_result_count": len(truncated_indices | total_truncated),
+                          "attempt_count": attempt_count},
             )
         except SearchBackendError as exc:
-            return _error("text_search", exc)
+            return _error("text_search", exc,
+                          attempt_count=max(getattr(self.serper, "last_attempt_count", 1),
+                                            getattr(exc, "attempt_count", 1)))
         except Exception:
             return _error("text_search", SearchBackendError("provider_error", "unexpected provider failure"))
 
@@ -177,11 +185,13 @@ class SearchTools:
                 status="success", observation=_redact(observation),
                 metadata=_redact({"provider": "serpapi_google_lens", "source_image_id": reference,
                                   "provider_image_id": image_id, "result_count": len(matches),
+                                  "attempt_count": search.attempt_count,
                                   **search.upload_metadata,
                                   "thumbnails": [match.thumbnail for match in matches if match.thumbnail]}),
             )
         except SearchBackendError as exc:
-            return _error("image_search", exc)
+            return _error("image_search", exc,
+                          attempt_count=getattr(self.lens, "last_attempt_count", 1))
         except (OSError, ValueError):
             return _error("image_search", SearchBackendError("invalid_argument", "registered image is unreadable"))
         except Exception:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Protocol, Sequence
 
 from .image_registry import ImageRegistry
+from .reliability import image_sha256
 from .tool_parser import ParsedAssistantOutput, ParsedToolCall, ToolCallParser
 from .tool_registry import ToolContext, ToolRegistry, ToolResult
 
@@ -24,6 +26,7 @@ class AgentTurn:
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     derived_images: list[dict[str, Any]] = field(default_factory=list)
+    tool_latency_seconds: float | None = None
 
 
 @dataclass
@@ -129,6 +132,7 @@ class AgentRuntime:
                 "parent_id": entry.parent_id,
                 "kind": entry.kind,
                 "size": list(cls._image_size(entry.value)),
+                "sha256": image_sha256(entry.value),
                 "metadata": entry.metadata,
             }
             for entry in registry.list_images()
@@ -142,6 +146,7 @@ class AgentRuntime:
         context: ToolContext,
         messages: list[dict[str, Any]],
         assistant_output: str,
+        tool_latency_seconds: float | None = None,
     ) -> AgentTurn:
         derived: list[dict[str, Any]] = []
         content: list[dict[str, Any]] = []
@@ -205,6 +210,7 @@ class AgentRuntime:
             error=result.error_type,
             metadata={**result.metadata, "derived_image_ids": [d["image_id"] for d in derived]},
             derived_images=derived,
+            tool_latency_seconds=tool_latency_seconds,
         )
 
     def run(
@@ -275,21 +281,25 @@ class AgentRuntime:
 
             messages.append(self._structured_assistant_message(parsed))
             for call in parsed.tool_calls:
+                tool_started = time.perf_counter()
                 result = (
                     self._execute_call(call, context)
                     if self.tool_registry.has(call.name)
                     else self._error_result("unknown_tool", f"unknown tool: {call.name}")
                 )
+                tool_latency_seconds = time.perf_counter() - tool_started
                 try:
                     turn = self._commit_result(
                         result=result, call=call, context=context,
                         messages=messages, assistant_output=assistant_output,
+                        tool_latency_seconds=tool_latency_seconds,
                     )
                 except Exception as exc:
                     turn = self._commit_result(
                         result=self._error_result(type(exc).__name__, str(exc)),
                         call=call, context=context, messages=messages,
                         assistant_output=assistant_output,
+                        tool_latency_seconds=tool_latency_seconds,
                     )
                 turns.append(turn)
 

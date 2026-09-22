@@ -35,9 +35,9 @@ available for mock-search regression. No LLM summarization is used. The layout
 smoke now defaults to a deterministic synthetic document; its timeout defaults
 are 120 s/request, 5 s polling interval, and 600 s maximum polling duration.
 
-The three real-provider smokes were reported as passed in the preceding Phase 3
-acceptance; provider success is **not** a Qwen-Agent integration pass. The
-final integration path is opt-in and still needs to be run on the GPU host:
+The three real-provider smokes and both Qwen-Agent integration smokes were
+reported by the user as passed on AutoDL. The integration commands remain
+available for regression checks:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/run_4b_agent_smoke.py \
@@ -48,11 +48,19 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_4b_agent_smoke.py \
   --report reports/4b_phase3_image_search_smoke.json
 ```
 
-Both reports must show a successful real tool call, its observation in the
-next Qwen turn, a nonempty final answer, and `trajectory.status=success` before
-Phase 3 can be marked complete. See the linked Phase 3 guide for the exact
-pass criteria and provider metadata. Offline `pytest` does not establish this
-live-model result.
+Both reports showed a successful real tool call, its observation in the next
+Qwen turn, a nonempty final answer, and `trajectory.status=success`; Phase 3 is
+therefore complete based on that external acceptance. Offline `pytest` alone
+would not establish this live-model result.
+
+Phase 4 adds bounded transient retry, a shared success-only filesystem cache,
+sample-level resume, and full text/tool trajectory persistence without adding
+Agent capabilities or scoring. See [Phase 4 reliability](docs/phase4_reliability.md).
+Its completely offline engineering smoke is:
+
+```bash
+python scripts/run_phase4_reliability_smoke.py
+```
 
 ## Three distinct validation states
 
@@ -235,6 +243,10 @@ scripts/verify_phase0_dev.py        Dev-only evidence evaluator
 scripts/prepare_sft_smoke.py        official formal data preparation
 scripts/run_phase0.sh               complete independent formal path
 scripts/verify_phase0.py            strict formal evidence evaluator
+scripts/run_phase4_reliability_smoke.py offline cache/retry/resume smoke
+scripts/run_agent_batch.py           resumable sequential Agent runner, no scoring
+src/opensearch_vl_repro/agent/reliability.py retry/cache/image-hash primitives
+src/opensearch_vl_repro/evaluation/  batch state and trajectory persistence
 src/opensearch_vl_repro/training.py shared LoRA/audit/evidence implementation
 tests/                              CPU-only data, masking, and config tests
 ```
@@ -287,6 +299,7 @@ source schemas.
 ## Scope boundary
 
 Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate.
-Phase 3 includes backend infrastructure but does not run formal baseline
-scoring, the 300-item benchmark, judging, 3K SFT, RL, full fine-tuning, or
-QLoRA. A local/mock test pass is not a live search-provider acceptance.
+Phase 4 includes reliability and batch-execution infrastructure but does not
+run formal baseline scoring, the 300-item benchmark, judging, 3K SFT, RL, full
+fine-tuning, or QLoRA. A local/mock test pass is not a live provider or model
+acceptance.

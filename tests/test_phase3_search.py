@@ -15,6 +15,7 @@ from PIL import Image
 from opensearch_vl_repro.agent.image_registry import ImageRegistry
 from opensearch_vl_repro.agent.phase2_registry import create_phase2_tool_registry
 from opensearch_vl_repro.agent.phase3_registry import create_phase3_tool_registry
+from opensearch_vl_repro.agent.reliability import RetryPolicy
 from opensearch_vl_repro.agent.search_providers import (
     ImageSearchResult, JinaReaderBackend, LensSearchResponse, SearchBackendError, SearchResult,
     SerpApiLensBackend, SerperSearchBackend, load_search_config,
@@ -131,7 +132,9 @@ def test_missing_serper_key_fails_before_network(config, monkeypatch):
     (Response({"wrong": []}), "invalid_response"),
 ])
 def test_serper_failure_mapping(config, keys, failure, expected):
-    backend = SerperSearchBackend(config.serper, session=Session(posts=[failure]))
+    backend = SerperSearchBackend(
+        config.serper, session=Session(posts=[failure]), retry=RetryPolicy(max_attempts=1),
+    )
     with pytest.raises(SearchBackendError) as caught:
         backend.search("q", hl=None, limit=1)
     assert caught.value.error_type == expected
@@ -157,7 +160,9 @@ def test_reader_text_auth_and_optional_key(config, keys, monkeypatch):
     (requests.ConnectionError("jina-secret"), "network_error"),
 ])
 def test_reader_failure_mapping(config, keys, failure, expected):
-    reader = JinaReaderBackend(config.jina_reader, session=Session(gets=[failure]))
+    reader = JinaReaderBackend(
+        config.jina_reader, session=Session(gets=[failure]), retry=RetryPolicy(max_attempts=1),
+    )
     with pytest.raises(SearchBackendError) as caught:
         reader.read("https://example.com")
     assert caught.value.error_type == expected
@@ -266,7 +271,9 @@ def test_serpapi_upload_lens_and_result_normalization(config, keys):
         gets=[Response({"visual_matches": [{"title": "Match", "link": "https://x.test",
                                            "source": "Source", "thumbnail": "https://thumb.test"}]})],
     )
-    backend = SerpApiLensBackend(config.serpapi, session=session)
+    backend = SerpApiLensBackend(
+        config.serpapi, session=session, retry=RetryPolicy(max_attempts=1),
+    )
     response = backend.search(Image.new("RGB", (40, 30)), limit=10)
     assert response.image_id == "provider-img-1"
     assert response.matches == (ImageSearchResult("Match", "Source", "https://x.test", "https://thumb.test"),)
@@ -335,7 +342,9 @@ def test_image_tool_exposes_upload_metadata(config, keys):
 def test_serpapi_failure_mapping(config, keys, upload, lens, expected):
     session = Session(posts=[upload or Response({"image_id": "id"})],
                       gets=[lens or Response({"visual_matches": []})])
-    backend = SerpApiLensBackend(config.serpapi, session=session)
+    backend = SerpApiLensBackend(
+        config.serpapi, session=session, retry=RetryPolicy(max_attempts=1),
+    )
     with pytest.raises(SearchBackendError) as caught:
         backend.search(Image.new("RGB", (4, 4)), limit=10)
     assert caught.value.error_type == expected

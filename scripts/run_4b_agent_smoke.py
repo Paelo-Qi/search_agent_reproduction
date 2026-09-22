@@ -147,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Required with --phase3-search-tools; selects the exact integration tool.")
     parser.add_argument("--search-config", type=Path,
                         default=PROJECT_ROOT / "configs" / "search_backends.example.yaml")
+    parser.add_argument("--cache-dir", type=Path,
+                        help="Optional shared Phase 4 cache for external Phase 3 tools.")
     parser.add_argument(
         "--layout-config", type=Path,
         help="Layout API config for Phase 2/3; Phase 3 defaults to configs/layout_parsing.example.yaml.",
@@ -267,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
                 create_phase3_tool_registry(
                     search_config=args.search_config,
                     layout_config=args.layout_config or PROJECT_ROOT / "configs" / "layout_parsing.example.yaml",
+                    cache_dir=args.cache_dir,
                 ) if args.phase3_search_tools else
                 create_phase2_tool_registry(layout_config=args.layout_config)
                 if args.local_visual_tools else create_mock_tool_registry()

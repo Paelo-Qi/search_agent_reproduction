@@ -13,11 +13,14 @@ import requests
 import yaml
 from PIL import Image
 
+from .reliability import RetryPolicy
+
 
 class SearchBackendError(RuntimeError):
-    def __init__(self, error_type: str, message: str) -> None:
+    def __init__(self, error_type: str, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
         self.error_type = error_type
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,7 @@ class LensSearchResponse:
     image_id: str
     matches: tuple[ImageSearchResult, ...]
     upload_metadata: dict[str, int | bool]
+    attempt_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -112,7 +116,9 @@ def _response(response: Any) -> Any:
     if code in (401, 403):
         raise SearchBackendError("authentication_error", f"provider HTTP {code}")
     if code == 429:
-        raise SearchBackendError("quota_error", "provider HTTP 429")
+        raise SearchBackendError("quota_error", "provider HTTP 429", retryable=True)
+    if 500 <= code < 600:
+        raise SearchBackendError("provider_error", f"provider HTTP {code}", retryable=True)
     if not 200 <= code < 300:
         raise SearchBackendError("provider_error", f"provider HTTP {code}")
     return response
@@ -134,9 +140,9 @@ def _request(method: Any, *args: Any, **kwargs: Any) -> Any:
     try:
         return _response(method(*args, **kwargs))
     except requests.Timeout:
-        raise SearchBackendError("timeout", "provider request timed out") from None
+        raise SearchBackendError("timeout", "provider request timed out", retryable=True) from None
     except requests.ConnectionError:
-        raise SearchBackendError("network_error", "provider network request failed") from None
+        raise SearchBackendError("network_error", "provider network request failed", retryable=True) from None
     except requests.RequestException:
         raise SearchBackendError("provider_error", "provider request failed") from None
 
@@ -146,20 +152,28 @@ def _field(value: Any) -> str:
 
 
 class SerperSearchBackend:
-    def __init__(self, config: dict[str, Any], *, session: Any | None = None) -> None:
+    def __init__(self, config: dict[str, Any], *, session: Any | None = None,
+                 retry: RetryPolicy | None = None) -> None:
         self.config = config
         self.session = session if session is not None else requests.Session()
+        self.retry = retry or RetryPolicy()
+        self.last_attempt_count = 1
 
     def search(self, query: str, *, hl: str | None, limit: int) -> tuple[SearchResult, ...]:
+        self.last_attempt_count = 1
         key = _credential(self.config["api_key_env"])
         body: dict[str, Any] = {"q": query, "num": limit}
         if hl is not None:
             body["hl"] = hl
-        response = _request(
-            self.session.post, self.config["endpoint"],
-            headers={"X-API-KEY": key, "Content-Type": "application/json"},
-            json=body, timeout=self.config["timeout_seconds"],
-        )
+        try:
+            response, self.last_attempt_count = self.retry.run(lambda: _request(
+                self.session.post, self.config["endpoint"],
+                headers={"X-API-KEY": key, "Content-Type": "application/json"},
+                json=body, timeout=self.config["timeout_seconds"],
+            ))
+        except SearchBackendError as exc:
+            self.last_attempt_count = getattr(exc, "attempt_count", 1)
+            raise
         raw = _json(response)
         organic = raw.get("organic")
         if organic is None and "searchParameters" in raw:
@@ -177,21 +191,29 @@ class SerperSearchBackend:
 
 
 class JinaReaderBackend:
-    def __init__(self, config: dict[str, Any], *, session: Any | None = None) -> None:
+    def __init__(self, config: dict[str, Any], *, session: Any | None = None,
+                 retry: RetryPolicy | None = None) -> None:
         self.config = config
         self.session = session if session is not None else requests.Session()
+        self.retry = retry or RetryPolicy()
+        self.last_attempt_count = 1
 
     def read(self, url: str) -> str:
+        self.last_attempt_count = 1
         if not url.startswith(("https://", "http://")):
             raise SearchBackendError("invalid_argument", "reader URL must be HTTP(S)")
         key = _credential(self.config["api_key_env"], required=False)
         headers = {"Accept": "text/plain"}
         if key:
             headers["Authorization"] = f"Bearer {key}"
-        response = _request(
-            self.session.get, self.config["endpoint_prefix"].rstrip("/") + "/" + url,
-            headers=headers, timeout=self.config["timeout_seconds"],
-        )
+        try:
+            response, self.last_attempt_count = self.retry.run(lambda: _request(
+                self.session.get, self.config["endpoint_prefix"].rstrip("/") + "/" + url,
+                headers=headers, timeout=self.config["timeout_seconds"],
+            ))
+        except SearchBackendError as exc:
+            self.last_attempt_count = getattr(exc, "attempt_count", 1)
+            raise
         text = response.text.strip()
         if not text:
             raise SearchBackendError("invalid_response", "reader returned empty text")
@@ -201,9 +223,12 @@ class JinaReaderBackend:
 class SerpApiLensBackend:
     """Upload image bytes first; query Google Lens with the short-lived image_id."""
 
-    def __init__(self, config: dict[str, Any], *, session: Any | None = None) -> None:
+    def __init__(self, config: dict[str, Any], *, session: Any | None = None,
+                 retry: RetryPolicy | None = None) -> None:
         self.config = config
         self.session = session if session is not None else requests.Session()
+        self.retry = retry or RetryPolicy()
+        self.last_attempt_count = 1
 
     @staticmethod
     def _encoded_image(image: Image.Image) -> EncodedUpload:
@@ -244,23 +269,34 @@ class SerpApiLensBackend:
         raise SearchBackendError("invalid_argument", "image exceeds SerpApi 500 KB upload limit after bounded resize")
 
     def search(self, image: Image.Image, *, limit: int) -> LensSearchResponse:
+        self.last_attempt_count = 1
         key = _credential(self.config["api_key_env"])
         encoded = self._encoded_image(image)
-        upload = _request(
-            self.session.post, self.config["upload_endpoint"],
-            data={"api_key": key}, files={"image": encoded.multipart_file()},
-            timeout=self.config["timeout_seconds"],
-        )
+        try:
+            upload, upload_attempts = self.retry.run(lambda: _request(
+                self.session.post, self.config["upload_endpoint"],
+                data={"api_key": key}, files={"image": encoded.multipart_file()},
+                timeout=self.config["timeout_seconds"],
+            ))
+            self.last_attempt_count = upload_attempts
+        except SearchBackendError as exc:
+            self.last_attempt_count = getattr(exc, "attempt_count", 1)
+            raise
         upload_raw = _json(upload)
         image_id = upload_raw.get("image_id")
         if not isinstance(image_id, str) or not image_id.strip():
             raise SearchBackendError("invalid_response", "upload response is missing image_id")
-        lens = _request(
-            self.session.get, self.config["lens_endpoint"],
-            params={"engine": "google_lens", "type": "visual_matches",
-                    "image_id": image_id, "api_key": key},
-            timeout=self.config["timeout_seconds"],
-        )
+        try:
+            lens, lens_attempts = self.retry.run(lambda: _request(
+                self.session.get, self.config["lens_endpoint"],
+                params={"engine": "google_lens", "type": "visual_matches",
+                        "image_id": image_id, "api_key": key},
+                timeout=self.config["timeout_seconds"],
+            ))
+            self.last_attempt_count = max(upload_attempts, lens_attempts)
+        except SearchBackendError as exc:
+            self.last_attempt_count = max(upload_attempts, getattr(exc, "attempt_count", 1))
+            raise
         raw = _json(lens)
         matches = raw.get("visual_matches")
         metadata = raw.get("search_metadata")
@@ -276,4 +312,6 @@ class SerpApiLensBackend:
             if title and link:
                 results.append(ImageSearchResult(title, _field(item.get("source")),
                                                  link, _field(item.get("thumbnail")) or None))
-        return LensSearchResponse(image_id, tuple(results[:limit]), encoded.metadata)
+        return LensSearchResponse(
+            image_id, tuple(results[:limit]), encoded.metadata, self.last_attempt_count,
+        )

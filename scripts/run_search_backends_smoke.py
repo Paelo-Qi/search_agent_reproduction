@@ -37,8 +37,8 @@ def _redact(value: Any) -> Any:
                 value = value.replace(secret, "[REDACTED]")
         return value
     if isinstance(value, dict):
-        return {key: _redact(item) for key, item in value.items()}
-    if isinstance(value, list):
+        return {_redact(key): _redact(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
         return [_redact(item) for item in value]
     return value
 
@@ -49,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
                         choices=("web_search", "text_search", "image_search"))
     parser.add_argument("--search-config", type=Path,
                         default=PROJECT_ROOT / "configs" / "search_backends.example.yaml")
+    parser.add_argument("--cache-dir", type=Path,
+                        help="Optional shared Phase 4 filesystem cache directory.")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     report: dict[str, Any] = {
@@ -58,7 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     started = time.perf_counter()
     try:
-        registry = create_phase3_tool_registry(search_config=args.search_config)
+        registry = create_phase3_tool_registry(
+            search_config=args.search_config, cache_dir=args.cache_dir,
+        )
         images = ImageRegistry()
         images.register_initial_image(_image())
         arguments = {

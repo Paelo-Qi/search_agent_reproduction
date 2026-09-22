@@ -47,8 +47,9 @@ from result thumbnail URLs.
 All three tools map missing credentials, 401/403, 429, timeout, connection
 failure, 5xx, malformed responses, invalid arguments, and absent results into
 explicit `ToolResult` status/error categories. Reader failure is partial where
-possible. This stage deliberately adds no retry framework, cache, resume,
-judge, benchmark evaluation, SFT, or RL.
+possible. Phase 3 itself added no reliability framework; the later, separate
+[Phase 4 layer](phase4_reliability.md) now supplies retry, cache, resume, and
+trajectory persistence without adding judge, benchmark evaluation, SFT, or RL.
 
 Run local tests without any API call:
 
@@ -102,10 +103,9 @@ Each report records the requested/called tool, status, real provider metadata,
 trajectory status, observation re-entry, final-answer presence, elapsed time,
 and peak VRAM. `passed` requires the full tool-to-next-model chain, not merely
 a final answer. Reports redact known API credential values even if echoed in a
-trajectory. These integration smokes are **not yet passed** in this checkout:
-offline tests verify the wiring, but Qwen plus live APIs must be run on the
-GPU host. Phase 3 is complete only after both reports pass there. Existing
-mock and Phase 2 modes remain available and are not prerequisites.
+trajectory. The user subsequently ran both Qwen plus live-API smokes on the
+AutoDL GPU host and reported both trajectories successful, completing Phase 3.
+Existing mock and Phase 2 modes remain available and are not prerequisites.
 
 Provider references: [Serper](https://serper.dev/),
 [Jina Reader](https://jina.ai/reader/), [SerpApi Image API](https://serpapi.com/image-api),
