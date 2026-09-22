@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in real AI Studio API smoke on one frozen evaluation image."""
+"""Opt-in real AI Studio API smoke on a deterministic local document."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from PIL import Image, ImageDraw, ImageFont
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
@@ -20,6 +22,22 @@ from opensearch_vl_repro.agent.layout_parsing import load_layout_api_config  # n
 from opensearch_vl_repro.agent.phase2_registry import create_phase2_tool_registry  # noqa: E402
 from opensearch_vl_repro.agent.tool_registry import ToolContext  # noqa: E402
 from opensearch_vl_repro.inference.eval_reader import read_eval_sample  # noqa: E402
+
+
+def synthetic_document() -> Image.Image:
+    image = Image.new("RGB", (920, 510), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=24)
+    lines = (
+        "OpenSearch-VL Evaluation Report",
+        "This is a document parsing test.",
+        "Model: Qwen3-VL-4B-Instruct",
+        "Accuracy: 78.5%",
+        "The experiment completed successfully.",
+    )
+    for index, line in enumerate(lines):
+        draw.text((50, 40 + index * 85), line, fill="black", font=font)
+    return image
 
 
 def _redact(value: Any, token: str) -> Any:
@@ -34,6 +52,8 @@ def _redact(value: Any, token: str) -> Any:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Real PaddleOCR AI Studio layout API smoke")
+    parser.add_argument("--use-eval-sample", action="store_true",
+                        help="Explicitly use the first image of a frozen eval sample instead of the default synthetic document")
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--layout-config", type=Path,
                         default=PROJECT_ROOT / "configs" / "layout_parsing.example.yaml")
@@ -51,10 +71,15 @@ def main(argv: list[str] | None = None) -> int:
         config = load_layout_api_config(args.layout_config)
         report["provider"] = config.provider
         token = os.environ.get(config.access_token_env, "")
-        sample = read_eval_sample(PROJECT_ROOT / "data" / "eval" / "combined_eval_300.parquet", args.index)
-        report["sample_id"] = sample.sample_id
+        if args.use_eval_sample:
+            sample = read_eval_sample(PROJECT_ROOT / "data" / "eval" / "combined_eval_300.parquet", args.index)
+            image = sample.images[0]
+            report["sample_id"] = sample.sample_id
+        else:
+            image = synthetic_document()
+            report["sample_id"] = "synthetic-layout-document"
         images = ImageRegistry()
-        images.register_initial_image(sample.images[0])
+        images.register_initial_image(image)
         registry = create_phase2_tool_registry(layout_config=args.layout_config)
         result = registry.execute("layout_parsing", {"image": "img_1"}, ToolContext(images))
         report["status"] = result.status

@@ -273,10 +273,32 @@ def test_smoke_report_redacts_token_without_network(monkeypatch, tmp_path):
         metadata={"job_id": "fake-token"}))
     monkeypatch.setattr(module, "create_phase2_tool_registry", lambda **kwargs: fake_registry)
     report_path = tmp_path / "layout-report.json"
-    assert module.main(["--report", str(report_path)]) == 0
+    assert module.main(["--use-eval-sample", "--report", str(report_path)]) == 0
     report_text = report_path.read_text(encoding="utf-8")
     assert "fake-token" not in report_text
     assert "[REDACTED]" in report_text
+
+
+def test_layout_smoke_defaults_to_deterministic_synthetic_document(monkeypatch, tmp_path):
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_layout_parsing_smoke.py"
+    spec = importlib.util.spec_from_file_location("layout_synthetic_smoke_module", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    first, second = module.synthetic_document(), module.synthetic_document()
+    assert first.size == (920, 510)
+    assert first.tobytes() == second.tobytes()
+    monkeypatch.delenv("PADDLEOCR_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(module, "read_eval_sample", lambda *args: pytest.fail("eval parquet must be opt-in"))
+    fake_registry = SimpleNamespace(execute=lambda *args: ToolResult(
+        status="error", error_type="configuration_error",
+        observation="<observation>missing token</observation>"))
+    monkeypatch.setattr(module, "create_phase2_tool_registry", lambda **kwargs: fake_registry)
+    report_path = tmp_path / "synthetic-layout.json"
+    assert module.main(["--report", str(report_path)]) == 1
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["sample_id"] == "synthetic-layout-document"
+    assert report["error_type"] == "configuration_error"
+    assert report["passed"] is False
 
 
 def test_config_and_registry_select_ai_studio():
@@ -285,7 +307,7 @@ def test_config_and_registry_select_ai_studio():
     assert config.provider == "paddleocr_aistudio"
     assert config.model == "PaddleOCR-VL-1.6"
     assert config.access_token_env == "PADDLEOCR_ACCESS_TOKEN"
-    assert config.max_poll_seconds == 120
+    assert config.max_poll_seconds == 600
     registry = create_phase2_tool_registry(layout_config=path)
     assert len(registry.list_tools()) == 8
     assert registry.get("layout_parsing").backend is not None

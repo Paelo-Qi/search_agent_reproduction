@@ -37,7 +37,8 @@ The local backends are deliberately small:
   image and reports `changed=false`, `backend_mode=identity_fallback`; it does
   **not** perform perspective detection or correction.
 
-The three search tools remain mock-only. `layout_parsing` is optional and
+The three search tools remain mock-only **in the Phase 2 registry**; Phase 3
+has a separate real-search registry. `layout_parsing` is optional and
 returns `configuration_error` when no provider is configured. Thus the local
 smoke makes no API calls or downloads:
 
@@ -56,7 +57,10 @@ blocks. `PaddleOCRAiStudioBackend` uses the official hosted **asynchronous job
 API**, not the former synchronous Qianfan endpoint. The example configuration
 specifies `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`, model
 `PaddleOCR-VL-1.6`, per-request timeout, poll interval, and a monotonic maximum
-poll duration. The old Qianfan-specific backend was removed.
+poll duration. Defaults are 120 seconds per HTTP request, 5 seconds between
+polls, and a 600-second maximum polling window. A quick job returns immediately
+on `done`; it does not wait the full window. The old Qianfan-specific backend
+was removed.
 
 The credential is read at request time from `PADDLEOCR_ACCESS_TOKEN`; see
 [the example config](../configs/layout_parsing.example.yaml) and
@@ -97,15 +101,33 @@ result URLs, and the token are not sent to the model. Failure categories include
 `network_error`, `provider_error`, `invalid_response`, and `invalid_image`.
 All API unit tests use a fake HTTP session and make no paid request.
 
-To run a real API smoke on the first image of one frozen evaluation sample:
+The project's prior real-API acceptance, as reported by the user, established:
+
+| Check | Status |
+| --- | --- |
+| AI Studio authentication | PASS |
+| Multipart image submission | PASS |
+| Async job polling | PASS |
+| JSONL download | PASS |
+| Structured block parsing | PASS |
+| SearchVL-style observation | PASS |
+| Credential redaction | PASS |
+
+The reported synthetic document result was `status=success`, `error_type=None`,
+`provider=paddleocr_aistudio`, `page_count=1`, `block_count=5`. A natural/anime
+image such as `anime_0` may contain no readable OCR content; that is not by
+itself a transport/backend failure. For a reproducible layout check, the smoke
+now draws the same local document on every run and does not read eval parquet
+by default:
 
 ```bash
 # Set PADDLEOCR_ACCESS_TOKEN privately in the environment first.
 python scripts/run_layout_parsing_smoke.py \
-  --index 0 --report reports/layout_parsing_smoke.json
+  --report reports/layout_parsing_smoke.json
 ```
 
+For an explicit evaluation-image diagnostic, use `--use-eval-sample --index 0`.
 Without a token the smoke reports `configuration_error` and does **not** pass.
 Success requires a readable `Content:` observation; it is not a benchmark
-result. A live request has not been validated in this repository without a
-real token. API shape follows [the official PaddleOCR AI Studio API documentation](https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5).
+result. This code change itself did not make a new live request. API shape
+follows [the official PaddleOCR AI Studio API documentation](https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5).

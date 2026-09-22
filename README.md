@@ -28,6 +28,13 @@ asynchronous layout API adapter without changing either Phase 0 gate. See
 [Phase 2 visual tools](docs/phase2_visual_tools.md); its CPU smoke is
 `python scripts/run_local_visual_smoke.py`.
 
+Phase 3 adds a separate [real-search registry](docs/phase3_search_backends.md):
+Serper for `web_search`, Serper plus Jina Reader for `text_search`, and SerpApi
+image upload plus Google Lens for `image_search`. The Phase 2 registry remains
+available for mock-search regression. No LLM summarization is used. The layout
+smoke now defaults to a deterministic synthetic document; its timeout defaults
+are 120 s/request, 5 s polling interval, and 600 s maximum polling duration.
+
 ## Three distinct validation states
 
 1. **Local/static tests — `pytest`**
@@ -251,15 +258,16 @@ reports/eval_subset_report.json
 These are fixed evaluation subsets for this reduced reproduction and do not
 represent complete official benchmark scores. For MMSearch, later experiments
 will use final-answer accuracy only; they will not report the official end2end,
-requery, rerank, or summarization composite score. Dataset construction does
-not implement model inference, an Agent loop, search APIs, judging, SFT, or RL.
+requery, rerank, or summarization composite score. Dataset construction itself
+did not implement inference or tools; later phases added 4B inference and the
+opt-in Agent/search backends described above.
 
 See `docs/evaluation_subset.md` for the frozen artifact checksums and actual
 source schemas.
 
 ## Scope boundary
 
-Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate. The
-Phase 1 work currently stops at constructing the frozen evaluation data: 4B
-inference, baseline scoring, Agent/search APIs, 3K SFT, RL, full fine-tuning,
-QLoRA, and the full OpenSearch-VL tool environment remain outside this task.
+Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate.
+Phase 3 includes backend infrastructure but does not run formal baseline
+scoring, the 300-item benchmark, judging, 3K SFT, RL, full fine-tuning, or
+QLoRA. A local/mock test pass is not a live search-provider acceptance.

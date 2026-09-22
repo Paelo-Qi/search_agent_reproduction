@@ -3,6 +3,6 @@ layout_parsing:
   job_url: https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
   model: PaddleOCR-VL-1.6
   access_token_env: PADDLEOCR_ACCESS_TOKEN
-  request_timeout_seconds: 30
-  poll_interval_seconds: 2
-  max_poll_seconds: 120
+  request_timeout_seconds: 120
+  poll_interval_seconds: 5
+  max_poll_seconds: 600
