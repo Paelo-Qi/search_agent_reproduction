@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import random
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from opensearch_vl_repro.agent.image_registry import ImageRegistry
 from opensearch_vl_repro.agent.phase2_registry import create_phase2_tool_registry
 from opensearch_vl_repro.agent.phase3_registry import create_phase3_tool_registry
 from opensearch_vl_repro.agent.search_providers import (
-    ImageSearchResult, JinaReaderBackend, SearchBackendError, SearchResult,
+    ImageSearchResult, JinaReaderBackend, LensSearchResponse, SearchBackendError, SearchResult,
     SerpApiLensBackend, SerperSearchBackend, load_search_config,
 )
 from opensearch_vl_repro.agent.search_tools import SearchTools
@@ -238,6 +239,15 @@ def test_text_q_only_defaults_and_all_reader_fail_snippet_fallback(config):
     assert "Snippet: S" in result.observation and "Passage:" not in result.observation
 
 
+def test_unexpected_reader_bug_is_not_silent_fallback(config):
+    serper = FakeSerper([SearchResult("T", "https://x.test", "S")])
+    reader = FakeReader([TypeError("programming bug")])
+    result = SearchTools(config, serper=serper, reader=reader).text_search({"q": "x"}, _context())
+    assert result.status == "error"
+    assert result.error_type == "provider_error"
+    assert "reader_failure_count" not in result.metadata
+
+
 def test_text_length_limits_and_no_raw_json(config):
     settings = {**config.text_search, "max_chars_per_page": 30, "max_total_chars": 150}
     limited = replace(config, text_search=settings)
@@ -257,9 +267,13 @@ def test_serpapi_upload_lens_and_result_normalization(config, keys):
                                            "source": "Source", "thumbnail": "https://thumb.test"}]})],
     )
     backend = SerpApiLensBackend(config.serpapi, session=session)
-    image_id, results = backend.search(Image.new("RGB", (40, 30)), limit=10)
-    assert image_id == "provider-img-1"
-    assert results == (ImageSearchResult("Match", "Source", "https://x.test", "https://thumb.test"),)
+    response = backend.search(Image.new("RGB", (40, 30)), limit=10)
+    assert response.image_id == "provider-img-1"
+    assert response.matches == (ImageSearchResult("Match", "Source", "https://x.test", "https://thumb.test"),)
+    assert response.upload_metadata["resized_for_upload"] is False
+    assert response.upload_metadata["original_width"] == 40
+    assert response.upload_metadata["uploaded_width"] == 40
+    assert response.upload_metadata["upload_bytes"] <= 500_000
     upload = session.calls[0]
     assert upload[1] == "https://serpapi.com/image"
     assert upload[2]["data"] == {"api_key": "serpapi-secret"}
@@ -276,9 +290,38 @@ def test_serpapi_upload_lens_and_result_normalization(config, keys):
 def test_serpapi_success_without_visual_matches(config, keys):
     session = Session(posts=[Response({"image_id": "provider-img-2"})],
                       gets=[Response({"search_metadata": {"status": "Success"}})])
-    image_id, matches = SerpApiLensBackend(config.serpapi, session=session).search(
+    response = SerpApiLensBackend(config.serpapi, session=session).search(
         Image.new("RGB", (4, 4)), limit=10)
-    assert image_id == "provider-img-2" and matches == ()
+    assert response.image_id == "provider-img-2" and response.matches == ()
+
+
+def test_serpapi_large_noisy_image_uses_bounded_resize(config, keys):
+    size = (1600, 1200)
+    pixels = random.Random(123).randbytes(size[0] * size[1] * 3)
+    image = Image.frombytes("RGB", size, pixels)
+    session = Session(posts=[Response({"image_id": "resized-id"})],
+                      gets=[Response({"visual_matches": []})])
+    response = SerpApiLensBackend(config.serpapi, session=session).search(image, limit=10)
+    metadata = response.upload_metadata
+    assert metadata["resized_for_upload"] is True
+    assert metadata["upload_bytes"] <= 500_000
+    assert metadata["uploaded_width"] < size[0]
+    assert metadata["uploaded_height"] < size[1]
+    assert abs(metadata["uploaded_width"] / metadata["uploaded_height"] - size[0] / size[1]) < 0.01
+    _, uploaded_bytes, _ = session.calls[0][2]["files"]["image"]
+    assert len(uploaded_bytes) == metadata["upload_bytes"]
+
+
+def test_image_tool_exposes_upload_metadata(config, keys):
+    session = Session(posts=[Response({"image_id": "metadata-id"})],
+                      gets=[Response({"visual_matches": []})])
+    lens = SerpApiLensBackend(config.serpapi, session=session)
+    result = SearchTools(config, lens=lens).image_search({"url": "img_1"}, _context())
+    assert result.status == "success"
+    assert result.metadata["original_width"] == 40
+    assert result.metadata["uploaded_width"] == 40
+    assert result.metadata["upload_bytes"] <= 500_000
+    assert result.metadata["resized_for_upload"] is False
 
 
 @pytest.mark.parametrize("upload,lens,expected", [
@@ -306,7 +349,7 @@ def test_image_tool_img_reference_unknown_and_zero_results(config, keys):
 
         def search(self, image, *, limit):
             self.calls.append((image.size, limit))
-            return "provider-id", ()
+            return LensSearchResponse("provider-id", (), {})
 
     lens = Lens()
     tool = SearchTools(config, lens=lens)
@@ -329,7 +372,7 @@ def test_image_tool_accepts_registered_local_path(config, keys, tmp_path):
     class Lens:
         def search(self, image, *, limit):
             assert image.size == (12, 9)
-            return "provider-id", ()
+            return LensSearchResponse("provider-id", (), {})
     result = SearchTools(config, lens=Lens()).image_search({"url": "img_1"}, ToolContext(images))
     assert result.status == "success"
 
@@ -340,7 +383,8 @@ def test_credential_redaction_in_observation_metadata_and_report(config, keys, t
     assert "serper-secret" not in web.observation + json.dumps(web.metadata)
     class Lens:
         def search(self, image, *, limit):
-            return "serpapi-secret", (ImageSearchResult("serpapi-secret", "S", "https://x.test"),)
+            return LensSearchResponse(
+                "serpapi-secret", (ImageSearchResult("serpapi-secret", "S", "https://x.test"),), {})
     image = SearchTools(config, lens=Lens()).image_search({"url": "img_1"}, _context())
     assert "serpapi-secret" not in image.observation + json.dumps(image.metadata)
     path = ROOT / "scripts" / "run_search_backends_smoke.py"

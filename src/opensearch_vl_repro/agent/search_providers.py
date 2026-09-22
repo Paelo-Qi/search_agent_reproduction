@@ -36,6 +36,24 @@ class ImageSearchResult:
 
 
 @dataclass(frozen=True)
+class LensSearchResponse:
+    image_id: str
+    matches: tuple[ImageSearchResult, ...]
+    upload_metadata: dict[str, int | bool]
+
+
+@dataclass(frozen=True)
+class EncodedUpload:
+    filename: str
+    data: bytes
+    mime_type: str
+    metadata: dict[str, int | bool]
+
+    def multipart_file(self) -> tuple[str, bytes, str]:
+        return self.filename, self.data, self.mime_type
+
+
+@dataclass(frozen=True)
 class SearchConfig:
     serper: dict[str, Any]
     jina_reader: dict[str, Any]
@@ -188,24 +206,49 @@ class SerpApiLensBackend:
         self.session = session if session is not None else requests.Session()
 
     @staticmethod
-    def _encoded_image(image: Image.Image) -> tuple[str, bytes, str]:
+    def _encoded_image(image: Image.Image) -> EncodedUpload:
         rgb = image.convert("RGB")
-        output = io.BytesIO()
-        rgb.save(output, format="PNG")
-        if len(output.getvalue()) <= 500_000:
-            return ("image.png", output.getvalue(), "image/png")
-        for quality in (85, 70, 55):
-            output = io.BytesIO()
-            rgb.save(output, format="JPEG", quality=quality, optimize=True)
-            if len(output.getvalue()) <= 500_000:
-                return ("image.jpg", output.getvalue(), "image/jpeg")
-        raise SearchBackendError("invalid_argument", "image exceeds SerpApi 500 KB upload limit")
+        original_size = rgb.size
 
-    def search(self, image: Image.Image, *, limit: int) -> tuple[str, tuple[ImageSearchResult, ...]]:
+        def encode(candidate: Image.Image) -> tuple[str, bytes, str] | None:
+            output = io.BytesIO()
+            candidate.save(output, format="PNG")
+            if len(output.getvalue()) <= 500_000:
+                return "image.png", output.getvalue(), "image/png"
+            for quality in (85, 70, 55):
+                output = io.BytesIO()
+                candidate.save(output, format="JPEG", quality=quality, optimize=True)
+                if len(output.getvalue()) <= 500_000:
+                    return "image.jpg", output.getvalue(), "image/jpeg"
+            return None
+
+        candidate = rgb
+        scale = 1.0
+        for attempt in range(13):
+            if attempt:
+                scale *= 0.8
+                size = (round(original_size[0] * scale), round(original_size[1] * scale))
+                if min(size) < 32 or size == candidate.size:
+                    break
+                candidate = rgb.resize(size, Image.Resampling.LANCZOS)
+            encoded = encode(candidate)
+            if encoded is not None:
+                filename, data, mime_type = encoded
+                return EncodedUpload(
+                    filename, data, mime_type,
+                    {"original_width": original_size[0], "original_height": original_size[1],
+                     "uploaded_width": candidate.width, "uploaded_height": candidate.height,
+                     "upload_bytes": len(data),
+                     "resized_for_upload": candidate.size != original_size},
+                )
+        raise SearchBackendError("invalid_argument", "image exceeds SerpApi 500 KB upload limit after bounded resize")
+
+    def search(self, image: Image.Image, *, limit: int) -> LensSearchResponse:
         key = _credential(self.config["api_key_env"])
+        encoded = self._encoded_image(image)
         upload = _request(
             self.session.post, self.config["upload_endpoint"],
-            data={"api_key": key}, files={"image": self._encoded_image(image)},
+            data={"api_key": key}, files={"image": encoded.multipart_file()},
             timeout=self.config["timeout_seconds"],
         )
         upload_raw = _json(upload)
@@ -233,4 +276,4 @@ class SerpApiLensBackend:
             if title and link:
                 results.append(ImageSearchResult(title, _field(item.get("source")),
                                                  link, _field(item.get("thumbnail")) or None))
-        return image_id, tuple(results[:limit])
+        return LensSearchResponse(image_id, tuple(results[:limit]), encoded.metadata)

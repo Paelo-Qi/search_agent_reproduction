@@ -33,8 +33,12 @@ Passages are cut deterministically to 6,000 characters per page and the full
 observation to 20,000 characters by default. No model is used for compression.
 
 SerpApi's Image API accepts in-memory PNG/JPEG multipart uploads up to 500 KB.
-The adapter uses a deterministic JPEG fallback for oversized PNGs and fails
-clearly if still too large. Lens is queried with `engine=google_lens`,
+The adapter tries PNG, then JPEG quality 85/70/55. If the image is still too
+large, it resizes with Lanczos at deterministic 0.8 scale intervals and
+re-encodes, with a 12-resize bound and a 32-pixel minimum dimension. It fails
+clearly only if those bounded attempts cannot fit. Metadata records original
+and uploaded dimensions, byte size, and whether resizing occurred; no image
+bytes enter the report. Lens is queried with `engine=google_lens`,
 `type=visual_matches`, and the returned short-lived `image_id`; no public URL
 for `img_n` is required. An empty `visual_matches` list is a valid protocol
 success with zero semantic matches, not an HTTP failure. No images are fetched
@@ -63,8 +67,45 @@ python scripts/run_search_backends_smoke.py --tool image_search
 Reports are independent under `reports/<tool>_smoke.json`. Web smoke requires
 at least one title/URL. Text smoke requires at least one successful Reader
 passage. Image smoke requires successful upload and Lens protocol; zero matches
-are recorded separately and may still pass. These live calls must not be
-reported as passed until run with real credentials.
+are recorded separately and may still pass. The three provider-only real API
+smokes were reported as passed in the preceding Phase 3 acceptance. That does
+**not** prove Qwen-Agent integration.
+
+## Phase 3 final integration smoke
+
+This separate opt-in path loads the real Qwen3-VL-4B model, registers one
+synthetic image as `img_1`, and connects the Agent runtime to the eight-tool
+Phase 3 registry. It uses the existing `SERPER_API_KEY`, `JINA_API_KEY`, and
+`SERPAPI_API_KEY` environment variables; the layout token is needed only if
+that unrelated tool is called. Run each command on the AutoDL GPU host with
+the relevant credentials set:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_4b_agent_smoke.py \
+  --phase3-search-tools --phase3-tool text_search \
+  --report reports/4b_phase3_text_search_smoke.json
+
+CUDA_VISIBLE_DEVICES=0 python scripts/run_4b_agent_smoke.py \
+  --phase3-search-tools --phase3-tool image_search \
+  --report reports/4b_phase3_image_search_smoke.json
+```
+
+The first prompt asks Qwen to emit `text_search` with a fixed query; Serper
+returns URLs, Jina Reader returns at least one passage, and that observation
+must appear in the next Qwen `generate()` input before a nonempty final answer.
+The second prompt asks for `image_search({"url":"img_1"})`; the registered
+image is uploaded to SerpApi, searched by Google Lens, and its observation
+must likewise enter the next Qwen turn. Zero Lens matches remain valid if
+the upload and Lens request succeed.
+
+Each report records the requested/called tool, status, real provider metadata,
+trajectory status, observation re-entry, final-answer presence, elapsed time,
+and peak VRAM. `passed` requires the full tool-to-next-model chain, not merely
+a final answer. Reports redact known API credential values even if echoed in a
+trajectory. These integration smokes are **not yet passed** in this checkout:
+offline tests verify the wiring, but Qwen plus live APIs must be run on the
+GPU host. Phase 3 is complete only after both reports pass there. Existing
+mock and Phase 2 modes remain available and are not prerequisites.
 
 Provider references: [Serper](https://serper.dev/),
 [Jina Reader](https://jina.ai/reader/), [SerpApi Image API](https://serpapi.com/image-api),

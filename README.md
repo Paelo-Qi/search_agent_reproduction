@@ -35,6 +35,25 @@ available for mock-search regression. No LLM summarization is used. The layout
 smoke now defaults to a deterministic synthetic document; its timeout defaults
 are 120 s/request, 5 s polling interval, and 600 s maximum polling duration.
 
+The three real-provider smokes were reported as passed in the preceding Phase 3
+acceptance; provider success is **not** a Qwen-Agent integration pass. The
+final integration path is opt-in and still needs to be run on the GPU host:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_4b_agent_smoke.py \
+  --phase3-search-tools --phase3-tool text_search \
+  --report reports/4b_phase3_text_search_smoke.json
+CUDA_VISIBLE_DEVICES=0 python scripts/run_4b_agent_smoke.py \
+  --phase3-search-tools --phase3-tool image_search \
+  --report reports/4b_phase3_image_search_smoke.json
+```
+
+Both reports must show a successful real tool call, its observation in the
+next Qwen turn, a nonempty final answer, and `trajectory.status=success` before
+Phase 3 can be marked complete. See the linked Phase 3 guide for the exact
+pass criteria and provider metadata. Offline `pytest` does not establish this
+live-model result.
+
 ## Three distinct validation states
 
 1. **Local/static tests — `pytest`**

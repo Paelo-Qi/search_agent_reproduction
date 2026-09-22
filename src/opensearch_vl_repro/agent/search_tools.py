@@ -123,7 +123,7 @@ class SearchTools:
                 try:
                     passage = self.reader.read(item.url)
                     reader_success += 1
-                except Exception:
+                except SearchBackendError:
                     passage = ""
                     reader_failure += 1
                 if len(passage) > settings["max_chars_per_page"]:
@@ -163,7 +163,8 @@ class SearchTools:
             else:
                 with Image.open(Path(value)) as loaded:
                     image = loaded.convert("RGB").copy()
-            image_id, matches = self.lens.search(image, limit=self.config.image_search["max_results"])
+            search = self.lens.search(image, limit=self.config.image_search["max_results"])
+            image_id, matches = search.image_id, search.matches
             chunks = [
                 f"[{index}]\nTitle: {item.title[:300]}\nSource: {item.source[:300]}\n"
                 f"URL: {item.link[:1000]}\n\n"
@@ -176,6 +177,7 @@ class SearchTools:
                 status="success", observation=_redact(observation),
                 metadata=_redact({"provider": "serpapi_google_lens", "source_image_id": reference,
                                   "provider_image_id": image_id, "result_count": len(matches),
+                                  **search.upload_metadata,
                                   "thumbnails": [match.thumbnail for match in matches if match.thumbnail]}),
             )
         except SearchBackendError as exc:
