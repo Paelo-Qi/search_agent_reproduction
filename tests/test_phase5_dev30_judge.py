@@ -73,11 +73,14 @@ def test_judge_parse_invalid(raw):
 
 
 class Response:
-    def __init__(self, status=200, content='{"verdict":"correct","reason":"ok"}'):
+    def __init__(self, status=200, content='{"verdict":"correct","reason":"ok"}',
+                 finish_reason="stop"):
         self.status_code, self.text = status, content
+        self.finish_reason = finish_reason
 
     def json(self):
-        return {"choices": [{"message": {"content": self.text}}]}
+        return {"choices": [{"finish_reason": self.finish_reason,
+                             "message": {"content": self.text}}]}
 
 
 class Session:
@@ -116,6 +119,26 @@ def test_judge_retries_transient(monkeypatch, outcomes, calls):
     user_data = json.loads(messages[1]["content"])
     assert set(user_data) == {"sample_id", "benchmark", "question",
                               "reference_answer", "model_answer"}
+
+
+def test_deepseek_request_disables_thinking_and_stop_response_succeeds(monkeypatch):
+    sample = JudgeSample("1", "benchmark", "question", "reference", "answer")
+    response = Response(finish_reason="stop")
+    session = Session([response])
+
+    result = _judge(session, monkeypatch).judge(sample)
+
+    assert result.status == "success"
+    assert result.verdict == "correct"
+    assert response.finish_reason == "stop"
+    assert session.payloads == [{
+        "model": "deepseek-flash",
+        "messages": build_judge_messages(sample),
+        "temperature": 0,
+        "max_tokens": 256,
+        "thinking": {"type": "disabled"},
+        "response_format": {"type": "json_object"},
+    }]
 
 
 @pytest.mark.parametrize("response,error", [

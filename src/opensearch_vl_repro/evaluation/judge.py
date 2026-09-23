@@ -139,6 +139,7 @@ class DeepSeekJudge:
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={"model": self.config.model, "messages": build_judge_messages(sample),
                       "temperature": self.config.temperature, "max_tokens": self.config.max_tokens,
+                      "thinking": {"type": "disabled"},
                       "response_format": {"type": "json_object"}},
                 timeout=self.config.timeout_seconds,
             )
