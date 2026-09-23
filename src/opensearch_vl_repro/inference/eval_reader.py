@@ -73,3 +73,37 @@ def read_eval_sample(path: str | Path, index: int) -> EvalSample:
         images=images,
     )
 
+
+def read_eval_samples_by_ids(
+    path: str | Path, selections: list[tuple[str, str]],
+) -> list[EvalSample]:
+    """Read Agent inputs in manifest order without ever loading the answer column."""
+    import pyarrow.parquet as pq
+
+    parquet_path = Path(path).expanduser().resolve()
+    required = {"id", "benchmark", "question", "image_packed"}
+    table = pq.read_table(parquet_path, columns=sorted(required))
+    lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in table.to_pylist():
+        key = (str(row["benchmark"]), str(row["id"]))
+        if key in lookup:
+            raise ValueError(f"duplicate evaluation key: {key}")
+        lookup[key] = row
+    if len(selections) != len(set(selections)):
+        raise ValueError("selection contains duplicate benchmark/sample ID pairs")
+    if len({sample_id for _, sample_id in selections}) != len(selections):
+        raise ValueError("selection sample IDs must be globally unique")
+    missing = [key for key in selections if key not in lookup]
+    if missing:
+        raise ValueError(f"selected IDs are missing from Eval-300: {missing[:5]}")
+    output: list[EvalSample] = []
+    for key in selections:
+        row = lookup[key]
+        images: list[Image.Image] = []
+        for payload in _packed_payloads(row["image_packed"]):
+            with Image.open(io.BytesIO(payload)) as image:
+                image.load()
+                images.append(image.convert("RGB").copy())
+        output.append(EvalSample(str(row["id"]), str(row["benchmark"]),
+                                 str(row["question"]), images))
+    return output

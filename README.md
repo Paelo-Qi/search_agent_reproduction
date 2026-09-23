@@ -303,6 +303,32 @@ opt-in Agent/search backends described above.
 See `docs/evaluation_subset.md` for the frozen artifact checksums and actual
 source schemas.
 
+## Phase 5 Dev-30 and correctness judge
+
+Phase 5 adds a frozen, ID-selected Dev-30 (10 SimpleVQA + 10 MMSearch + 10
+VDR-Bench) and a separate resumable DeepSeek correctness-judge stage. Dev-30 is
+for engineering validation, not final benchmark reporting. It is deterministic
+from the frozen Eval-300 and does not copy images or pass references to the
+Agent.
+
+```bash
+python scripts/prepare_dev30.py
+python scripts/run_phase5_judge_smoke.py       # fully offline
+
+# Future opt-in GPU rollout; not run during infrastructure construction:
+CUDA_VISIBLE_DEVICES=0 python scripts/run_agent_batch.py \
+  --run-id base-dev30 \
+  --selection-manifest data/eval/dev30/dev30_manifest.json
+
+# Future opt-in live judging after export DEEPSEEK_API_KEY=...:
+python scripts/run_judge.py --run-id base-dev30
+```
+
+Judge API errors and upstream Agent failures are not incorrect verdicts.
+Accuracy uses successful `correct + incorrect` responses only. See
+`docs/phase5_dev30_judge.md` for input isolation, retry/fail-fast, resume,
+identity, redaction, and the explicit single-sample live-smoke command.
+
 ## Scope boundary
 
 Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate.

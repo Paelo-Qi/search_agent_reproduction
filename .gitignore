@@ -26,6 +26,7 @@ reports/*.json
 reports/*.jsonl
 reports/eval_runs/
 reports/phase4_smoke/
+reports/phase5_judge_smoke/
 !reports/eval_subset_report.json
 logs/
 

@@ -1,0 +1,79 @@
+{
+  "manifest_version": 1,
+  "id_checksum_algorithm": "sha256-canonical-json-v1",
+  "seed": 20260506,
+  "selection_strategy": "stable_id_sort_then_seeded_sample_without_replacement",
+  "source_eval_manifest_version": 2,
+  "source_dataset": "Osilly/Vision-DeepResearch-Eval",
+  "source_dataset_revision": "deeaf45779a3bbd407d8f0ccb9b4831fc78e81c9",
+  "source_combined_eval_sha256": "f9d0ca74f98d3f73cd6ad1f60b7f2294c5e5d59d4956b60ad95084dc8ee36cf4",
+  "benchmarks": {
+    "simplevqa": {
+      "benchmark": "SimpleVQA",
+      "selected_count": 10,
+      "selected_ids": [
+        "1052",
+        "1244",
+        "1352",
+        "1490",
+        "209",
+        "260",
+        "263",
+        "585",
+        "631",
+        "683"
+      ],
+      "ids_file": "simplevqa_10_ids.json",
+      "canonical_id_checksum": "11dacccb4693f7c495ce9f3539b7a4341beab71c4a1d3857588741ea3a54398c"
+    },
+    "mmsearch": {
+      "benchmark": "MMSearch",
+      "selected_count": 10,
+      "selected_ids": [
+        "anime_5",
+        "architecture_8",
+        "art_14",
+        "art_7",
+        "fashion_0",
+        "fashion_6",
+        "fashion_7",
+        "general_29",
+        "general_34",
+        "general_45"
+      ],
+      "ids_file": "mmsearch_10_ids.json",
+      "canonical_id_checksum": "24bd33c6bda8a0246eb031d58678a6ecb2d1f77f02a9ddceb4a6f57e201e5afe"
+    },
+    "vdr_bench": {
+      "benchmark": "VDR-Bench",
+      "selected_count": 10,
+      "selected_ids": [
+        "base_Art&Music_46",
+        "base_Other_1550",
+        "hard1_Architecture_872_fir",
+        "hard1_Game_516_fir",
+        "hard2_Art&Music_1141_sec",
+        "hard2_Game_17_thi",
+        "hard2_Game_3_sec",
+        "hard2_Object_1203_thi",
+        "hard2_Object_691_sec",
+        "hard2_Other_674_sec"
+      ],
+      "ids_file": "vdr_bench_10_ids.json",
+      "canonical_id_checksum": "b67b0b4badf550ac9f57a776fb8ae3012e080ba6fbdc05ed325e9552f204cc28"
+    }
+  },
+  "combined": {
+    "total_count": 30,
+    "ids_file": "dev30_ids.json",
+    "benchmark_order": [
+      "simplevqa",
+      "mmsearch",
+      "vdr_bench"
+    ],
+    "canonical_id_checksum": "cee625603931da89f22f953a966d668850a5c40645c10631127fb5066b82ac24"
+  },
+  "script_version": 1,
+  "created_at": "2026-09-23T09:43:59.036228+00:00",
+  "selection_manifest_checksum": "7585f21576f4e07d3862c361b7148ed7f18f5fac6ccedb386cfd37892b4f7516"
+}

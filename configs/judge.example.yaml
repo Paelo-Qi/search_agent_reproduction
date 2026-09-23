@@ -1,0 +1,9 @@
+judge:
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  model: deepseek-chat
+  api_key_env: DEEPSEEK_API_KEY
+  timeout_seconds: 60
+  max_attempts: 3
+  max_tokens: 256
+  temperature: 0.0

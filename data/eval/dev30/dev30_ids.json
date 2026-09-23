@@ -1,0 +1,122 @@
+[
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "1052"
+  },
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "1244"
+  },
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "1352"
+  },
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "1490"
+  },
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "209"
+  },
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "260"
+  },
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "263"
+  },
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "585"
+  },
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "631"
+  },
+  {
+    "benchmark": "simplevqa",
+    "sample_id": "683"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "anime_5"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "architecture_8"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "art_14"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "art_7"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "fashion_0"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "fashion_6"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "fashion_7"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "general_29"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "general_34"
+  },
+  {
+    "benchmark": "mmsearch",
+    "sample_id": "general_45"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "base_Art&Music_46"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "base_Other_1550"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "hard1_Architecture_872_fir"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "hard1_Game_516_fir"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "hard2_Art&Music_1141_sec"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "hard2_Game_17_thi"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "hard2_Game_3_sec"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "hard2_Object_1203_thi"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "hard2_Object_691_sec"
+  },
+  {
+    "benchmark": "vdr_bench",
+    "sample_id": "hard2_Other_674_sec"
+  }
+]

@@ -147,17 +147,22 @@ def create_run_manifest(
     inference_config_fingerprint: str,
     dataset_path: str | Path,
     dataset_identity: dict[str, Any],
-    start: int,
-    limit: int,
+    start: int | None,
+    limit: int | None,
     max_agent_turns: int,
     search_config_fingerprint: str,
     layout_config_fingerprint: str,
     checkpoint: dict[str, Any] | None = None,
     tool_fingerprint: str | None = None,
     created_at: str | None = None,
+    sample_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     checkpoint = checkpoint or checkpoint_identity(model_name_or_path, model_revision)
     tool_fingerprint = tool_fingerprint or tool_contract_fingerprint()
+    if sample_selection is None:
+        if start is None or limit is None:
+            raise ValueError("continuous selection requires start and limit")
+        sample_selection = {"start": start, "limit": limit}
     identity = {
         "model_name_or_path": model_name_or_path,
         "model_revision": model_revision or None,
@@ -165,7 +170,7 @@ def create_run_manifest(
         "inference_config_fingerprint": inference_config_fingerprint,
         "dataset_path": str(Path(dataset_path).expanduser().resolve()),
         "dataset_identity": dataset_identity,
-        "sample_selection": {"start": start, "limit": limit},
+        "sample_selection": sample_selection,
         "max_agent_turns": max_agent_turns,
         "search_config_fingerprint": search_config_fingerprint,
         "layout_config_fingerprint": layout_config_fingerprint,
@@ -186,9 +191,9 @@ def create_run_manifest(
 def build_run_manifest(
     *, run_id: str, model_name_or_path: str, model_revision: str | None,
     inference_config_path: str | Path, dataset_path: str | Path,
-    eval_manifest_path: str | Path | None, start: int, limit: int,
+    eval_manifest_path: str | Path | None, start: int | None, limit: int | None,
     max_agent_turns: int, search_config_path: str | Path,
-    layout_config_path: str | Path,
+    layout_config_path: str | Path, sample_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return create_run_manifest(
         run_id=run_id,
@@ -198,7 +203,8 @@ def build_run_manifest(
         inference_config_fingerprint=_config_fingerprint(inference_config_path),
         dataset_path=dataset_path,
         dataset_identity=frozen_dataset_identity(dataset_path, eval_manifest_path),
-        start=start, limit=limit, max_agent_turns=max_agent_turns,
+        start=start, limit=limit, sample_selection=sample_selection,
+        max_agent_turns=max_agent_turns,
         search_config_fingerprint=_config_fingerprint(search_config_path),
         layout_config_fingerprint=_config_fingerprint(layout_config_path),
     )
