@@ -309,7 +309,7 @@ Phase 5 adds a frozen, ID-selected Dev-30 (10 SimpleVQA + 10 MMSearch + 10
 VDR-Bench) and a separate resumable DeepSeek correctness-judge stage. Dev-30 is
 for engineering validation, not final benchmark reporting. It is deterministic
 from the frozen Eval-300 and does not copy images or pass references to the
-Agent.
+Agent. The default Judge model is `deepseek-flash`.
 
 ```bash
 python scripts/prepare_dev30.py
@@ -328,6 +328,9 @@ Judge API errors and upstream Agent failures are not incorrect verdicts.
 Accuracy uses successful `correct + incorrect` responses only. See
 `docs/phase5_dev30_judge.md` for input isolation, retry/fail-fast, resume,
 identity, redaction, and the explicit single-sample live-smoke command.
+Judge starts only when the parent Agent status has zero `pending` and zero
+`running` samples and its completed IDs match the trajectory records. Agent
+`failed` samples do not block Judge; they become `upstream_agent_failure`.
 
 ## Scope boundary
 

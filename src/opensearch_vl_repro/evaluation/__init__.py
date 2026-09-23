@@ -10,6 +10,7 @@ from .judge import (
     build_judge_messages, load_judge_config, load_judge_samples, parse_judge_response,
 )
 from .judge_runner import JudgeRunner, build_judge_manifest
+from .parent_run import ParentRunValidationError, validate_parent_run_ready_for_judge
 
 __all__ = [
     "BatchRunner", "BatchSample", "RunManifestMismatchError",
@@ -18,4 +19,5 @@ __all__ = [
     "JUDGE_PROMPT_VERSION", "DeepSeekJudge", "JudgeConfig", "JudgeResult",
     "JudgeSample", "JudgeRunner", "build_judge_manifest", "build_judge_messages",
     "load_judge_config", "load_judge_samples", "parse_judge_response",
+    "ParentRunValidationError", "validate_parent_run_ready_for_judge",
 ]

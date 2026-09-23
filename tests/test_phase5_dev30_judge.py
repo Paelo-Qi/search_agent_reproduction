@@ -95,7 +95,7 @@ class Session:
 
 def _judge(session, monkeypatch, attempts=3):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deep-secret")
-    config = JudgeConfig("deepseek", "https://example.test", "deepseek-chat",
+    config = JudgeConfig("deepseek", "https://example.test", "deepseek-flash",
                          max_attempts=attempts)
     return DeepSeekJudge(config, session=session,
         retry=RetryPolicy(max_attempts=attempts, backoff_seconds=(0, 0), sleeper=lambda _: None))
@@ -168,7 +168,7 @@ def _samples():
 def _manifest(samples):
     return build_judge_manifest(
         parent_manifest={"run_id": "agent-run", "run_config_fingerprint": "parent-fp"},
-        config=JudgeConfig("deepseek", "https://example.test", "deepseek-chat"),
+        config=JudgeConfig("deepseek", "https://example.test", "deepseek-flash"),
         samples=samples, created_at="fixed",
     )
 

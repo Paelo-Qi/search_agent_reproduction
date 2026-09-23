@@ -13,7 +13,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from opensearch_vl_repro.evaluation import (  # noqa: E402
     DeepSeekJudge, JudgeRunner, build_judge_manifest, load_judge_config,
-    load_judge_samples,
+    load_judge_samples, ParentRunValidationError,
+    validate_parent_run_ready_for_judge,
 )
 
 
@@ -29,6 +30,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--run-id must be a safe 1-80 character identifier")
     run_dir = ROOT / "reports/eval_runs" / args.run_id
     parent = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    try:
+        validate_parent_run_ready_for_judge(run_dir)
+    except ParentRunValidationError as exc:
+        parser.error(str(exc))
     samples = load_judge_samples(run_dir / "trajectories.jsonl", args.dataset)
     config = load_judge_config(args.config)
     manifest = build_judge_manifest(parent_manifest=parent, config=config, samples=samples)

@@ -20,6 +20,9 @@ Dev-30 outputs are not reused.
 
 ## Judge boundary and verdicts
 
+The default live configuration uses DeepSeek model `deepseek-flash` at
+`https://api.deepseek.com`.
+
 The DeepSeek correctness judge receives only `question`, `reference_answer`,
 and `model_answer`, plus sample/benchmark audit IDs. It never receives tool
 observations, full trajectories, hidden reasoning, or cache data. Its system
@@ -54,6 +57,12 @@ sample becomes failed and later samples remain pending. Status is persisted as
 parent Agent fingerprint, public judge config, model, prompt version, and exact
 judge inputs. Incompatible reuse is rejected. The API key value is never part
 of identity, output, or logs and all artifacts pass through secret redaction.
+
+Judge may start only after the parent Agent batch has no `pending` or `running`
+samples. Agent `failed` samples are allowed: they are complete rollout attempts
+and become `upstream_agent_failure` without a provider call. Before any Judge
+artifact is created, the guard also requires the completed IDs and outcomes in
+`status.json` to match `trajectories.jsonl` exactly.
 
 Agent failures or missing final answers bypass the provider and become
 `upstream_agent_failure`, not `incorrect`. Accuracy is
