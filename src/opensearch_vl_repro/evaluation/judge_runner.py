@@ -154,7 +154,8 @@ class JudgeRunner:
             return {"total": len(ids), **statuses, "correct": correct,
                     "incorrect": incorrect, "upstream_failed": upstream,
                     "accuracy_among_successful_judges":
-                        (correct / denominator if denominator else None)}
+                        (correct / denominator if denominator else None),
+                    "end_to_end_accuracy": (correct / len(ids) if ids else None)}
         all_ids = list(state["samples"])
         per_benchmark: dict[str, Any] = {}
         benchmarks = sorted({item["benchmark"] for item in state["samples"].values()})
@@ -167,7 +168,8 @@ class JudgeRunner:
                       if item["accuracy_among_successful_judges"] is not None]
         return {**counts(all_ids), "per_benchmark": per_benchmark,
                 "macro_accuracy": sum(accuracies) / len(accuracies) if accuracies else None,
-                "accuracy_denominator": "correct + incorrect (successful judges only)"}
+                "accuracy_denominator": "correct + incorrect (successful judges only)",
+                "end_to_end_accuracy_denominator": "all samples including upstream failures"}
 
     def run(self, samples: Sequence[JudgeSample], *, retry_failed: bool = False,
             max_samples: int | None = None) -> dict[str, Any]:

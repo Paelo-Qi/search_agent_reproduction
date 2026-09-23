@@ -16,7 +16,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from opensearch_vl_repro.agent.phase3_registry import create_phase3_tool_registry  # noqa: E402
 from opensearch_vl_repro.agent.runtime import AgentRuntime  # noqa: E402
 from opensearch_vl_repro.evaluation import (  # noqa: E402
-    BatchRunner, BatchSample, build_run_manifest, load_selection_manifest,
+    BatchRunner, BatchSample, build_eval300_plan, build_run_manifest,
+    load_selection_manifest,
 )
 from opensearch_vl_repro.inference import (  # noqa: E402
     QwenAgentModel, load_inference_bundle, load_inference_config, read_eval_sample,
@@ -41,18 +42,33 @@ def main(argv: list[str] | None = None) -> int:
                         help="Explicit batch size; this command does not default to a formal eval run.")
     selection.add_argument("--selection-manifest", type=Path,
                            help="ID-based Dev selection manifest; independent of parquet row order.")
+    selection.add_argument(
+        "--eval300", action="store_true",
+        help="Use the complete frozen Eval-300 in deterministic balanced-batch order.",
+    )
+    parser.add_argument(
+        "--max-samples", type=int,
+        help="Invocation-only cap; does not change the run manifest sample universe.",
+    )
     parser.add_argument("--retry-failed", action="store_true")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", args.run_id):
         parser.error("--run-id must be a safe 1-80 character identifier")
-    if args.start < 0 or (args.limit is not None and args.limit < 1):
-        parser.error("--start must be non-negative and --limit must be positive")
-    if args.selection_manifest is not None and args.start != 0:
+    if (args.start < 0 or (args.limit is not None and args.limit < 1)
+            or (args.max_samples is not None and args.max_samples < 1)):
+        parser.error("--start must be non-negative and limits must be positive")
+    if (args.selection_manifest is not None or args.eval300) and args.start != 0:
         parser.error("--start is only valid with continuous --limit selection")
+    if args.limit is not None and args.max_samples is not None:
+        parser.error("--max-samples is for ID/full-run selections, not continuous --limit")
 
     config = load_inference_config(args.config)
     entries = selection_manifest = None
-    if args.selection_manifest is not None:
+    if args.eval300:
+        plan = build_eval300_plan(config.data_path)
+        entries = list(plan.entries)
+        selection_identity = plan.selection_identity()
+    elif args.selection_manifest is not None:
         entries, selection_manifest = load_selection_manifest(args.selection_manifest)
         selection_identity = {
             "selection_mode": "id_manifest",
@@ -97,10 +113,14 @@ def main(argv: list[str] | None = None) -> int:
         ))
     output_dir = PROJECT_ROOT / "reports" / "eval_runs" / args.run_id
     summary = BatchRunner(runtime, output_dir, run_manifest=run_manifest).run(
-        samples, retry_failed=args.retry_failed,
+        samples, retry_failed=args.retry_failed, max_samples=args.max_samples,
     )
     print(json.dumps({"run_id": args.run_id, "output_dir": str(output_dir.resolve()),
                       **summary}, ensure_ascii=False, indent=2))
+    if args.max_samples is not None and summary["pending"] > 0:
+        # An invocation cap intentionally leaves the full run incomplete.
+        # Reaching this point means every selected attempt was durably recorded.
+        return 0
     return 0 if summary["failed"] == 0 and summary["pending"] == 0 else 1
 
 

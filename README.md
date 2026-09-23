@@ -344,6 +344,31 @@ blocked before cache/provider execution. `agent_behavior_version` prevents old
 run manifests from resuming under this behavior. Batch runs print flushed
 `[i/N] START` and `DONE` lines where `N` is eligible in the current invocation.
 
+## Phase 6A Base Eval-300 preparation
+
+The formal Base run is `base-eval300-v1`: one full 300-sample manifest, with an
+invocation-only balanced first batch of 67 SimpleVQA + 67 MMSearch + 66
+VDR-Bench samples and a pending remainder of 33 + 33 + 34. The same run is then
+resumed without re-executing successful samples. A read-only preflight verifies
+the frozen SHA256, counts, partition, model configuration, and API environment
+presence without loading Qwen or calling any provider.
+
+```bash
+python scripts/preflight_eval300.py --require-agent-env
+CUDA_VISIBLE_DEVICES=0 python scripts/run_agent_batch.py \
+  --run-id base-eval300-v1 --config configs/eval_base_300.yaml \
+  --eval300 --max-samples 200
+python -m json.tool reports/eval_runs/base-eval300-v1/summary.json
+CUDA_VISIBLE_DEVICES=0 python scripts/run_agent_batch.py \
+  --run-id base-eval300-v1 --config configs/eval_base_300.yaml --eval300
+python scripts/run_judge.py --run-id base-eval300-v1
+```
+
+Judge remains blocked while the Agent run has pending/running samples, so the
+first 200 are not judged as a separate experiment. See
+`docs/phase6_base_eval300.md` for complete AutoDL commands, resume/retry
+semantics, cache reuse, and overall/per-benchmark metrics.
+
 ## Scope boundary
 
 Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate.

@@ -14,6 +14,16 @@ from opensearch_vl_repro.agent.runtime import AgentRuntime, AgentTrajectory
 from .run_manifest import RunManifestMismatchError, manifest_mismatches
 
 
+TOOL_NAMES = (
+    "web_search", "text_search", "image_search", "layout_parsing",
+    "crop", "sharpen", "super_resolution", "perspective_correct",
+)
+PROVIDER_ERROR_TYPES = {
+    "authentication_error", "configuration_error", "invalid_response",
+    "network_error", "provider_error", "quota_error", "timeout",
+}
+
+
 @dataclass(frozen=True)
 class BatchSample:
     sample_id: str
@@ -145,23 +155,77 @@ class BatchRunner:
 
     @staticmethod
     def _summary(state: dict[str, Any], records: dict[str, dict[str, Any]]) -> dict[str, Any]:
-        counts = {name: 0 for name in ("pending", "running", "success", "failed")}
-        for item in state["samples"].values():
-            counts[item["status"]] += 1
-        cache_hits = cache_misses = 0
-        for record in records.values():
-            for turn in record.get("trajectory", {}).get("turns", []):
-                metadata = turn.get("metadata", {})
-                if metadata.get("cache_hit") is True:
-                    cache_hits += 1
-                elif metadata.get("cache_hit") is False:
-                    cache_misses += 1
-        return {
-            "total": len(state["samples"]), **counts,
-            "cache_hits": cache_hits,
-            "cache_misses": cache_misses,
-            "real_tool_executions": cache_misses,
-        }
+        def counts_for(sample_ids: list[str]) -> dict[str, Any]:
+            counts = {name: 0 for name in ("pending", "running", "success", "failed")}
+            tool_calls = {name: 0 for name in TOOL_NAMES}
+            tool_stats = {name: {"calls": 0, "cache_hits": 0, "cache_misses": 0,
+                                 "real_tool_executions": 0, "errors": 0}
+                          for name in TOOL_NAMES}
+            cache_hits = cache_misses = total_tool_calls = 0
+            duplicate_calls = unknown_image_ids = provider_errors = 0
+            for sample_id in sample_ids:
+                counts[state["samples"][sample_id]["status"]] += 1
+                record = records.get(sample_id, {})
+                trajectory = record.get("trajectory") or {}
+                for turn in trajectory.get("turns", []):
+                    call = turn.get("tool_call")
+                    if isinstance(call, dict) and isinstance(call.get("name"), str):
+                        name = call["name"]
+                        total_tool_calls += 1
+                        if name in tool_calls:
+                            tool_calls[name] += 1
+                            tool_stats[name]["calls"] += 1
+                    error_type = turn.get("error")
+                    if (isinstance(call, dict) and call.get("name") in tool_stats
+                            and error_type is not None):
+                        tool_stats[call["name"]]["errors"] += 1
+                    duplicate_calls += error_type == "duplicate_tool_call"
+                    unknown_image_ids += error_type == "unknown_image_id"
+                    provider_errors += error_type in PROVIDER_ERROR_TYPES
+                    metadata = turn.get("metadata", {})
+                    if metadata.get("cache_hit") is True:
+                        cache_hits += 1
+                        if isinstance(call, dict) and call.get("name") in tool_stats:
+                            tool_stats[call["name"]]["cache_hits"] += 1
+                    elif metadata.get("cache_hit") is False:
+                        cache_misses += 1
+                        if isinstance(call, dict) and call.get("name") in tool_stats:
+                            tool_stats[call["name"]]["cache_misses"] += 1
+                            tool_stats[call["name"]]["real_tool_executions"] += 1
+            total = len(sample_ids)
+            processed = counts["success"] + counts["failed"]
+            return {
+                "total": total, **counts,
+                "processed": processed,
+                "completion_rate": (processed / total if total else None),
+                "total_tool_calls": total_tool_calls,
+                "tool_calls": tool_calls,
+                "tool_stats": tool_stats,
+                "cache_hits": cache_hits,
+                "cache_misses": cache_misses,
+                # Cache wrappers cover the real external tools. A miss means
+                # their backend executed; it is not necessarily one HTTP call.
+                "real_tool_executions": cache_misses,
+                "duplicate_tool_call": duplicate_calls,
+                "unknown_image_id": unknown_image_ids,
+                "provider_errors": provider_errors,
+            }
+
+        sample_ids = list(state["samples"])
+        overall = counts_for(sample_ids)
+        benchmarks = sorted({
+            state["samples"][sample_id].get("benchmark")
+            or records.get(sample_id, {}).get("benchmark") or "unknown"
+            for sample_id in sample_ids
+        })
+        per_benchmark = {}
+        for benchmark in benchmarks:
+            ids = [sample_id for sample_id in sample_ids if (
+                state["samples"][sample_id].get("benchmark")
+                or records.get(sample_id, {}).get("benchmark") or "unknown"
+            ) == benchmark]
+            per_benchmark[benchmark] = counts_for(ids)
+        return {**overall, "per_benchmark": per_benchmark}
 
     def run(self, samples: Sequence[BatchSample], *, retry_failed: bool = False,
             max_samples: int | None = None) -> dict[str, Any]:
@@ -171,22 +235,32 @@ class BatchRunner:
         state = self._load_status(samples)
         records = self._load_records()
         by_id = {sample.sample_id: sample for sample in samples}
-        eligible = [sample.sample_id for sample in samples if (
-            state["samples"][sample.sample_id]["status"] == "pending"
-            or (retry_failed and state["samples"][sample.sample_id]["status"] == "failed")
-        )]
+        invocation_samples = samples
         if max_samples is not None:
             if max_samples < 0:
                 raise ValueError("max_samples must not be negative")
-            eligible = eligible[:max_samples]
+            # A cap identifies a stable prefix of the full run universe. On
+            # restart, do not fill the quota from later samples and silently
+            # cross a planned invocation boundary.
+            invocation_samples = samples[:max_samples]
+        eligible = [sample.sample_id for sample in invocation_samples if (
+            state["samples"][sample.sample_id]["status"] == "pending"
+            or (retry_failed and state["samples"][sample.sample_id]["status"] == "failed")
+        )]
 
         already_successful = sum(
             item["status"] == "success" for item in state["samples"].values()
         )
+        already_failed = sum(
+            item["status"] == "failed" for item in state["samples"].values()
+        )
+        pending = sum(item["status"] == "pending" for item in state["samples"].values())
         print(f"Run ID: {self.run_manifest.get('run_id', 'unknown')}", flush=True)
         print(f"Total samples: {len(state['samples'])}", flush=True)
         print(f"Eligible this invocation: {len(eligible)}", flush=True)
         print(f"Already successful: {already_successful}", flush=True)
+        print(f"Already failed: {already_failed}", flush=True)
+        print(f"Pending: {pending}", flush=True)
         print(f"Retry failed: {str(retry_failed).lower()}", flush=True)
 
         for progress_index, sample_id in enumerate(eligible, 1):
