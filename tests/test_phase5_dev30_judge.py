@@ -122,12 +122,50 @@ def test_judge_retries_transient(monkeypatch, outcomes, calls):
     (Response(401, "bad"), "authentication_error"),
     (Response(403, "bad"), "authentication_error"),
     (Response(400, "bad"), "invalid_request"),
-    (Response(200, "not-json"), "invalid_response"),
 ])
 def test_judge_does_not_retry_non_transient(monkeypatch, response, error):
     session = Session([response])
     result = _judge(session, monkeypatch).judge(JudgeSample("1", "b", "q", "a", "a"))
     assert result.status == "error" and result.error_type == error and session.calls == 1
+
+
+@pytest.mark.parametrize("first", [
+    "",
+    '{"verdict":"correct","reason":"truncated',
+    '{"verdict":"maybe","reason":"invalid schema"}',
+])
+def test_invalid_structured_response_reissues_request_and_recovers(monkeypatch, first):
+    final = '{"verdict":"correct","reason":"valid"}'
+    session = Session([Response(200, first), Response(200, final)])
+    result = _judge(session, monkeypatch).judge(JudgeSample("1", "b", "q", "a", "a"))
+    assert result.status == "success" and result.verdict == "correct"
+    assert result.raw_response == final
+    assert result.metadata["attempt_count"] == 2 and session.calls == 2
+
+
+def test_invalid_response_exhaustion_keeps_final_raw_and_shared_attempt_budget(monkeypatch):
+    outcomes = [Response(200, ""), Response(200, ""), Response(200, "final invalid JSON")]
+    session = Session(outcomes)
+    result = _judge(session, monkeypatch).judge(JudgeSample("1", "b", "q", "a", "a"))
+    assert result.status == "error" and result.error_type == "invalid_response"
+    assert result.metadata["attempt_count"] == 3 and session.calls == 3
+    assert result.raw_response == "final invalid JSON"
+
+
+def test_transport_and_structured_failures_share_one_attempt_budget(monkeypatch):
+    valid = '{"verdict":"correct","reason":"ok"}'
+    session = Session([Response(500, "server"), Response(200, ""), Response(200, valid)])
+    result = _judge(session, monkeypatch).judge(JudgeSample("1", "b", "q", "a", "a"))
+    assert result.status == "success" and result.metadata["attempt_count"] == 3
+    assert session.calls == 3
+
+
+def test_valid_incorrect_verdict_is_success_without_retry(monkeypatch):
+    raw = '{"verdict":"incorrect","reason":"wrong entity"}'
+    session = Session([Response(200, raw)])
+    result = _judge(session, monkeypatch).judge(JudgeSample("1", "b", "q", "a", "wrong"))
+    assert result.status == "success" and result.verdict == "incorrect"
+    assert result.metadata["attempt_count"] == 1 and session.calls == 1
 
 
 def test_missing_key_is_configuration_error_without_call(monkeypatch):
@@ -186,7 +224,7 @@ def test_judge_resume_retry_failed_and_accuracy_denominator(tmp_path):
     assert final["accuracy_among_successful_judges"] == pytest.approx(0.75)
 
 
-def test_systemic_fail_fast_and_upstream_failure_no_provider_call(tmp_path):
+def test_systemic_fail_fast_and_upstream_failure_no_provider_call(tmp_path, capsys):
     class Provider:
         def __init__(self): self.calls = []
         def judge(self, sample):
@@ -199,12 +237,59 @@ def test_systemic_fail_fast_and_upstream_failure_no_provider_call(tmp_path):
     summary = JudgeRunner(provider, tmp_path / "systemic", judge_manifest=_manifest(samples)).run(samples)
     assert provider.calls == ["A", "B"]
     assert (summary["success"], summary["failed"], summary["pending"]) == (1, 1, 2)
+    output = capsys.readouterr().out
+    assert "Judge progress: 2/4" in output
+    assert "Judge stopped early due to systemic error: quota_error" in output
 
     upstream = [JudgeSample("X", "vdr_bench", "q", "r", None, "failed")]
     other = Provider()
     summary = JudgeRunner(other, tmp_path / "upstream", judge_manifest=_manifest(upstream)).run(upstream)
     assert other.calls == [] and summary["upstream_failed"] == 1
     assert summary["incorrect"] == 0
+    record = json.loads((tmp_path / "upstream/judge_results.jsonl").read_text(encoding="utf-8"))
+    assert record["attempt_count"] == 0 and record["error_type"] == "upstream_agent_failure"
+
+
+def test_judge_progress_every_five_and_final_partial_group(tmp_path, capsys):
+    class AlwaysCorrect:
+        def judge(self, sample):
+            return JudgeResult("success", "correct", metadata={"attempt_count": 1})
+    samples = [JudgeSample(str(index), "simplevqa", "q", "r", "m")
+               for index in range(12)]
+    JudgeRunner(AlwaysCorrect(), tmp_path / "progress",
+                judge_manifest=_manifest(samples)).run(samples)
+    output = capsys.readouterr().out
+    assert "Total samples: 12" in output
+    assert "Eligible this invocation: 12" in output
+    assert "Judge progress: 5/12" in output
+    assert "Judge progress: 10/12" in output
+    assert "Judge progress: 12/12" in output
+
+
+def test_retry_failed_progress_uses_eligible_denominator(tmp_path, capsys):
+    class FailsLastFiveOnce:
+        def __init__(self): self.calls = {}
+        def judge(self, sample):
+            count = self.calls.get(sample.sample_id, 0) + 1
+            self.calls[sample.sample_id] = count
+            if int(sample.sample_id) >= 25 and count == 1:
+                return JudgeResult("error", error_type="invalid_response",
+                                   metadata={"attempt_count": 3})
+            return JudgeResult("success", "correct", metadata={"attempt_count": 1})
+    samples = [JudgeSample(str(index), "simplevqa", "q", "r", "m")
+               for index in range(30)]
+    provider = FailsLastFiveOnce()
+    runner = JudgeRunner(provider, tmp_path / "retry-progress",
+                         judge_manifest=_manifest(samples))
+    runner.run(samples)
+    capsys.readouterr()
+    runner.run(samples, retry_failed=True)
+    output = capsys.readouterr().out
+    assert "Total samples: 30" in output
+    assert "Eligible this invocation: 5" in output
+    assert "Already successful: 25" in output
+    assert "Retry failed: true" in output
+    assert "Judge progress: 5/5" in output and "Judge progress: 5/30" not in output
 
 
 def test_reference_answer_is_joined_only_for_judge(tmp_path):

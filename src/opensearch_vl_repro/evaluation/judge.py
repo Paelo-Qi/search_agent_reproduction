@@ -56,10 +56,12 @@ class JudgeResult:
 
 
 class JudgeProviderError(RuntimeError):
-    def __init__(self, error_type: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(self, error_type: str, message: str, *, retryable: bool = False,
+                 raw_response: str | None = None) -> None:
         super().__init__(message)
         self.error_type = error_type
         self.retryable = retryable
+        self.raw_response = raw_response
 
 
 def load_judge_config(path: str | Path) -> JudgeConfig:
@@ -157,7 +159,10 @@ class DeepSeekJudge:
             payload = response.json()
             return str(payload["choices"][0]["message"]["content"])
         except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise JudgeProviderError("invalid_response", "invalid chat completion envelope") from exc
+            raise JudgeProviderError(
+                "invalid_response", "invalid chat completion envelope", retryable=True,
+                raw_response=getattr(response, "text", None),
+            ) from exc
 
     def judge(self, sample: JudgeSample) -> JudgeResult:
         started = self.clock()
@@ -174,19 +179,25 @@ class DeepSeekJudge:
             return JudgeResult("error", error_type="configuration_error",
                                reason=f"missing environment variable {self.config.api_key_env}",
                                metadata={**metadata, "latency_seconds": self.clock() - started})
+        def request_and_parse() -> tuple[str, str, str]:
+            raw = self._request(sample, api_key)
+            try:
+                verdict, reason = parse_judge_response(raw)
+            except ValueError as exc:
+                raise JudgeProviderError(
+                    "invalid_response", str(exc), retryable=True, raw_response=raw,
+                ) from exc
+            return raw, verdict, reason
+
         try:
-            raw, attempts = self.retry.run(lambda: self._request(sample, api_key))
+            (raw, verdict, reason), attempts = self.retry.run(request_and_parse)
             metadata.update(attempt_count=attempts, latency_seconds=self.clock() - started)
         except JudgeProviderError as exc:
             metadata.update(attempt_count=getattr(exc, "attempt_count", 1),
                             latency_seconds=self.clock() - started)
             return JudgeResult("error", reason=str(redact_secrets(str(exc))),
+                               raw_response=redact_secrets(exc.raw_response),
                                error_type=exc.error_type, metadata=metadata)
-        try:
-            verdict, reason = parse_judge_response(raw)
-        except ValueError as exc:
-            return JudgeResult("error", reason=str(exc), raw_response=redact_secrets(raw),
-                               error_type="invalid_response", metadata=metadata)
         return JudgeResult("success", verdict=verdict, reason=reason,
                            raw_response=redact_secrets(raw), metadata=metadata)
 

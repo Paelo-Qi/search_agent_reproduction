@@ -38,16 +38,20 @@ The response contract is a JSON object:
 
 The strict parser strips one optional Markdown fence, requires a JSON object,
 and accepts only `correct` or `incorrect`. Parse failure has
-`status=error,error_type=invalid_response`, is not retried, and is never counted
-as incorrect. The reason is audit text and does not affect the verdict.
+`status=error,error_type=invalid_response` after bounded retry and is never
+counted as incorrect. The reason is audit text and does not affect the verdict.
 `JUDGE_PROMPT_VERSION=1` is part of run identity.
 
 ## Retry, fail-fast, and resume
 
 The adapter reuses Phase 4 `RetryPolicy`. Network errors, timeouts, HTTP 429,
-and HTTP 5xx are retried for at most three attempts with bounded backoff. HTTP
-401/403, configuration/local-input errors, and valid-HTTP structured parse
-failures are not retried. An exhausted 429 is `quota_error`.
+HTTP 5xx, and invalid structured responses are retried with one shared budget
+of at most `max_attempts` fresh requests. Empty, malformed/truncated JSON and
+invalid verdict schemas are retryable; a valid `correct` or `incorrect` is
+final. HTTP 401/403 and configuration/local-input errors are not retried. An
+exhausted 429 is `quota_error`. Result `attempt_count` is the number of provider
+requests in the current `judge()` call; `judge_status.json.attempts` remains the
+number of JudgeRunner invocations for that sample.
 
 Authentication, quota, and configuration errors are systemic: the current
 sample becomes failed and later samples remain pending. Status is persisted as
@@ -69,6 +73,12 @@ Agent failures or missing final answers bypass the provider and become
 `correct / (correct + incorrect)` among successful judge responses only.
 Summaries contain overall and per-benchmark counts and the mean of available
 per-benchmark accuracies as `macro_accuracy`.
+
+JudgeRunner prints a flushed startup summary and progress after each five
+processed eligible samples, plus the final partial group. Its denominator is
+the samples eligible in the current invocation, so `--retry-failed` does not
+look like a full rerun. A systemic error prints a short stop reason after the
+current result and status have been persisted.
 
 ## Commands
 

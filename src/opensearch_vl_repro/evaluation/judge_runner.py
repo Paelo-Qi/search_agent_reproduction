@@ -184,7 +184,17 @@ class JudgeRunner:
             if max_samples < 0:
                 raise ValueError("max_samples must not be negative")
             eligible = eligible[:max_samples]
-        for sample_id in eligible:
+        already_successful = sum(
+            item["status"] == "success" for item in state["samples"].values()
+        )
+        print(f"Judge run: {self.manifest.get('parent_run_id', 'unknown')}", flush=True)
+        print(f"Total samples: {len(state['samples'])}", flush=True)
+        print(f"Eligible this invocation: {len(eligible)}", flush=True)
+        print(f"Already successful: {already_successful}", flush=True)
+        print(f"Retry failed: {str(retry_failed).lower()}", flush=True)
+        invocation_started = self.clock()
+        invocation_success = invocation_failed = 0
+        for processed, sample_id in enumerate(eligible, 1):
             sample, item = by_id[sample_id], state["samples"][sample_id]
             item.update(status="running", error_type=None, error=None,
                         attempts=int(item.get("attempts", 0)) + 1)
@@ -225,7 +235,24 @@ class JudgeRunner:
                         error=redact_secrets(result.reason))
             _atomic_json(self.status_path, state)
             _atomic_json(self.summary_path, self._summary(state, records))
-            if result.error_type in SYSTEMIC_ERROR_TYPES:
+            if final_status == "success":
+                invocation_success += 1
+            else:
+                invocation_failed += 1
+            systemic = result.error_type in SYSTEMIC_ERROR_TYPES
+            if processed % 5 == 0 or processed == len(eligible) or systemic:
+                print(
+                    f"Judge progress: {processed}/{len(eligible)} processed | "
+                    f"success={invocation_success} failed={invocation_failed} "
+                    f"elapsed={self.clock() - invocation_started:.1f}s",
+                    flush=True,
+                )
+            if systemic:
+                print(
+                    "Judge stopped early due to systemic error: "
+                    f"{result.error_type}",
+                    flush=True,
+                )
                 break
         summary = self._summary(state, records)
         _atomic_json(self.summary_path, summary)

@@ -331,6 +331,11 @@ identity, redaction, and the explicit single-sample live-smoke command.
 Judge starts only when the parent Agent status has zero `pending` and zero
 `running` samples and its completed IDs match the trajectory records. Agent
 `failed` samples do not block Judge; they become `upstream_agent_failure`.
+Empty or malformed structured Judge responses now trigger a fresh DeepSeek
+request within the same shared `max_attempts` budget as transport retries.
+Judge batches print flushed progress every five eligible samples and once for
+the final partial group; `--retry-failed` uses only that invocation's eligible
+samples as its denominator.
 
 Phase 5C stabilizes Agent episodes without increasing the eight-turn limit:
 registered `img_n` IDs are explicit in model context, invalid image references
