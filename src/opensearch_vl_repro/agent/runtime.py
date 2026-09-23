@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Protocol, Sequence
 
 from .image_registry import ImageRegistry
-from .reliability import image_sha256
+from .reliability import canonical_json, image_sha256
 from .tool_parser import ParsedAssistantOutput, ParsedToolCall, ToolCallParser
 from .tool_registry import ToolContext, ToolRegistry, ToolResult
 
@@ -15,6 +15,21 @@ class AgentModel(Protocol):
     def generate(
         self, *, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> str: ...
+
+
+AGENT_SYSTEM_GUIDANCE = (
+    "Use image tools only with registered runtime image IDs such as img_1. "
+    "Never use a dataset filename, filesystem path, or HTTP URL as an image ID. "
+    "Do not repeat an identical tool call that has already been executed. "
+    "If a tool call fails, do not retry the same invalid arguments. "
+    "Use additional tools only when they are likely to add new evidence. "
+    "When the available evidence is sufficient, stop using tools and provide the final answer."
+)
+
+IMAGE_REFERENCE_ARGUMENTS = {
+    "image_search": "url", "crop": "image", "layout_parsing": "image",
+    "super_resolution": "image", "sharpen": "image", "perspective_correct": "image",
+}
 
 
 @dataclass
@@ -63,10 +78,15 @@ class AgentRuntime:
         self.parser = ToolCallParser(tool_registry.list_tools())
 
     @staticmethod
-    def _initial_messages(question: str, images: Sequence[Any]) -> list[dict[str, Any]]:
+    def _initial_messages(
+        question: str, images: Sequence[Any], image_ids: Sequence[str],
+    ) -> list[dict[str, Any]]:
         content = [{"type": "image", "image": image} for image in images]
         content.append({"type": "text", "text": question})
-        return [{"role": "user", "content": content}]
+        registered = "\n".join(f"- {image_id}" for image_id in image_ids)
+        system = f"{AGENT_SYSTEM_GUIDANCE}\n\nRegistered input images:\n{registered}"
+        return [{"role": "system", "content": system},
+                {"role": "user", "content": content}]
 
     @staticmethod
     def _structured_assistant_message(
@@ -109,6 +129,23 @@ class AgentRuntime:
     def _execute_call(
         self, call: ParsedToolCall, context: ToolContext
     ) -> ToolResult:
+        reference_argument = IMAGE_REFERENCE_ARGUMENTS.get(call.name)
+        reference = call.arguments.get(reference_argument) if reference_argument else None
+        if isinstance(reference, str) and not context.image_registry.exists(reference):
+            available = ", ".join(
+                entry.image_id for entry in context.image_registry.list_images()
+            ) or "none"
+            return ToolResult(
+                status="error", error_type="unknown_image_id",
+                observation=(
+                    "<observation>\n"
+                    f"Unknown registered image ID: {reference[:240]}\n"
+                    f"Available registered image IDs: {available}\n"
+                    "Use one of the registered IDs above. Do not use filenames, "
+                    "filesystem paths, or HTTP URLs.\n</observation>"
+                ),
+                metadata={"provider_called": False, "available_image_ids": available.split(", ")},
+            )
         try:
             return self.tool_registry.execute(call.name, call.arguments, context)
         except Exception as exc:
@@ -226,14 +263,14 @@ class AgentRuntime:
         if not images:
             raise ValueError("at least one initial image is required")
         image_registry = self.image_registry_factory()
-        for image in images:
-            image_registry.register_initial_image(image)
+        image_ids = [image_registry.register_initial_image(image) for image in images]
         context = ToolContext(
             image_registry=image_registry, sample_id=sample_id, benchmark=benchmark
         )
-        messages = self._initial_messages(question, images)
+        messages = self._initial_messages(question, images, image_ids)
         declarations = self.tool_registry.declarations_for_model()
         turns: list[AgentTurn] = []
+        seen_tool_calls: dict[str, int] = {}
 
         for _ in range(self.max_agent_turns):
             try:
@@ -282,11 +319,28 @@ class AgentRuntime:
             messages.append(self._structured_assistant_message(parsed))
             for call in parsed.tool_calls:
                 tool_started = time.perf_counter()
-                result = (
-                    self._execute_call(call, context)
-                    if self.tool_registry.has(call.name)
-                    else self._error_result("unknown_tool", f"unknown tool: {call.name}")
-                )
+                signature = f"{call.name}\0{canonical_json(call.arguments)}"
+                original_turn = seen_tool_calls.get(signature)
+                if original_turn is not None:
+                    result = ToolResult(
+                        status="error", error_type="duplicate_tool_call",
+                        observation=(
+                            "<observation>\nThis exact tool call has already been executed "
+                            "in this trajectory. Do not repeat the same call. Use the previous "
+                            "evidence, change the query/tool/strategy, or provide a final answer "
+                            "if the evidence is sufficient.\n</observation>"
+                        ),
+                        metadata={"duplicate_tool_call": True,
+                                  "original_tool_call_turn": original_turn,
+                                  "provider_called": False},
+                    )
+                else:
+                    seen_tool_calls[signature] = len(turns) + 1
+                    result = (
+                        self._execute_call(call, context)
+                        if self.tool_registry.has(call.name)
+                        else self._error_result("unknown_tool", f"unknown tool: {call.name}")
+                    )
                 tool_latency_seconds = time.perf_counter() - tool_started
                 try:
                     turn = self._commit_result(

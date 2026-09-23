@@ -22,6 +22,27 @@ The scripted model executes `image_search`, receives a plain-text observation,
 executes `text_search`, receives another observation, and then returns a final
 answer. No API or model weight is used.
 
+## Phase 5C stabilization contract
+
+Each episode exposes the registered input IDs (`img_1`, `img_2`, ...) in the
+model-visible system context. Image tools accept only those runtime IDs, never
+dataset filenames, filesystem paths, or HTTP URLs. Invalid references return
+the currently available IDs so the model can recover. Derived-image IDs remain
+visible through their producing tool observations.
+
+An episode-wide signature of tool name plus canonical JSON arguments prevents
+an exact call from executing twice, including `A-B-A` loops. A duplicate still
+consumes and records an Agent turn, but produces a synthetic observation before
+the registry/cache/provider path, so it cannot call or pollute shared backends.
+Different tools or arguments remain eligible. The system guidance also asks the
+model to stop once evidence is sufficient; `max_agent_turns` remains 8 for the
+formal evaluation configuration.
+
+This policy is identified by `agent_behavior_version` in every run manifest.
+Old manifests without the current version cannot resume under the new runtime.
+Batch execution prints flushed START/DONE lines after the corresponding safe
+persistence points, using the number eligible in that invocation as `[i/N]`.
+
 ## AutoDL CUDA validation
 
 Install the pinned requirements and a matching CUDA build of PyTorch first.

@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 from opensearch_vl_repro.agent.reliability import (
-    CACHE_SCHEMA_VERSION, LAYOUT_BEHAVIOR_VERSION, SEARCH_BEHAVIOR_VERSION,
+    AGENT_BEHAVIOR_VERSION, CACHE_SCHEMA_VERSION, LAYOUT_BEHAVIOR_VERSION, SEARCH_BEHAVIOR_VERSION,
     canonical_json,
 )
 from opensearch_vl_repro.agent.tool_contracts import TOOL_DECLARATIONS
@@ -177,6 +177,7 @@ def create_run_manifest(
         "cache_schema_version": CACHE_SCHEMA_VERSION,
         "search_behavior_version": SEARCH_BEHAVIOR_VERSION,
         "layout_behavior_version": LAYOUT_BEHAVIOR_VERSION,
+        "agent_behavior_version": AGENT_BEHAVIOR_VERSION,
         "tool_contract_fingerprint": tool_fingerprint,
     }
     return {
@@ -215,6 +216,7 @@ IDENTITY_FIELDS = (
     "inference_config_fingerprint", "dataset_path", "dataset_identity", "sample_selection",
     "max_agent_turns", "search_config_fingerprint", "layout_config_fingerprint",
     "cache_schema_version", "search_behavior_version", "layout_behavior_version",
+    "agent_behavior_version",
     "tool_contract_fingerprint",
 )
 

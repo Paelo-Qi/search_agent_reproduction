@@ -14,7 +14,8 @@ from opensearch_vl_repro.agent.layout_parsing import (
 )
 from opensearch_vl_repro.agent.phase3_registry import create_phase3_tool_registry
 from opensearch_vl_repro.agent.reliability import (
-    CACHE_SCHEMA_VERSION, LAYOUT_BEHAVIOR_VERSION, SEARCH_BEHAVIOR_VERSION,
+    AGENT_BEHAVIOR_VERSION, CACHE_SCHEMA_VERSION, LAYOUT_BEHAVIOR_VERSION,
+    SEARCH_BEHAVIOR_VERSION,
     FileSystemToolCache, RetryPolicy, cache_identity, cached_tool_backend,
 )
 from opensearch_vl_repro.agent.runtime import AgentTrajectory, AgentTurn
@@ -406,6 +407,7 @@ def test_batch_resume_retry_failed_and_trajectory_persistence(tmp_path):
     assert persisted_manifest["cache_schema_version"] == CACHE_SCHEMA_VERSION
     assert persisted_manifest["search_behavior_version"] == SEARCH_BEHAVIOR_VERSION
     assert persisted_manifest["layout_behavior_version"] == LAYOUT_BEHAVIOR_VERSION
+    assert persisted_manifest["agent_behavior_version"] == AGENT_BEHAVIOR_VERSION
     lines = (run_dir / "trajectories.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 4
     records = {record["sample_id"]: record for record in map(json.loads, lines)}

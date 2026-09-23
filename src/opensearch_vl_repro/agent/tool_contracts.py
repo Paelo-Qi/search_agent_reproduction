@@ -72,12 +72,12 @@ TOOL_DECLARATIONS = (
     ),
     ToolDeclaration(
         "image_search",
-        "Search using an image URL or an ImageRegistry reference such as img_1.",
+        "Search using a registered runtime image ID such as img_1. The url argument is not a filename, filesystem path, or HTTP URL.",
         _object_schema({"url": "string"}, ("url",)),
     ),
     ToolDeclaration(
         "crop",
-        "Crop a registered image and create a derived image.",
+        "Crop a registered runtime image ID such as img_1 and create a derived image. The image argument is not a filename, filesystem path, or HTTP URL.",
         _object_schema(
             {
                 "image": "string",
@@ -91,7 +91,7 @@ TOOL_DECLARATIONS = (
     ),
     ToolDeclaration(
         "layout_parsing",
-        "Parse text and layout from a registered image.",
+        "Parse text and layout from a registered runtime image ID such as img_1. The image argument is not a filename, filesystem path, or HTTP URL.",
         _object_schema(
             {
                 "image": "string",
@@ -103,12 +103,12 @@ TOOL_DECLARATIONS = (
     ),
     ToolDeclaration(
         "super_resolution",
-        "Create a super-resolution derived image.",
+        "Create a super-resolution image from a registered runtime image ID such as img_1. The image argument is not a filename, filesystem path, or HTTP URL.",
         _object_schema({"image": "string", "scale": "number"}, ("image", "scale")),
     ),
     ToolDeclaration(
         "sharpen",
-        "Create a sharpened derived image.",
+        "Sharpen a registered runtime image ID such as img_1. The image argument is not a filename, filesystem path, or HTTP URL.",
         _object_schema({"image": "string", "amount": "number"}, ("image", "amount")),
     ),
     ToolDeclaration(
@@ -118,11 +118,10 @@ TOOL_DECLARATIONS = (
     ),
     ToolDeclaration(
         "perspective_correct",
-        "Create a perspective-corrected derived image.",
+        "Perspective-correct a registered runtime image ID such as img_1. The image argument is not a filename, filesystem path, or HTTP URL.",
         _object_schema({"image": "string"}, ("image",)),
     ),
 )
 
 
 TOOL_DECLARATIONS_BY_NAME = {tool.name: tool for tool in TOOL_DECLARATIONS}
-

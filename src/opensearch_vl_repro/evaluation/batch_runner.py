@@ -180,12 +180,26 @@ class BatchRunner:
                 raise ValueError("max_samples must not be negative")
             eligible = eligible[:max_samples]
 
-        for sample_id in eligible:
+        already_successful = sum(
+            item["status"] == "success" for item in state["samples"].values()
+        )
+        print(f"Run ID: {self.run_manifest.get('run_id', 'unknown')}", flush=True)
+        print(f"Total samples: {len(state['samples'])}", flush=True)
+        print(f"Eligible this invocation: {len(eligible)}", flush=True)
+        print(f"Already successful: {already_successful}", flush=True)
+        print(f"Retry failed: {str(retry_failed).lower()}", flush=True)
+
+        for progress_index, sample_id in enumerate(eligible, 1):
             sample = by_id[sample_id]
             item = state["samples"][sample_id]
             item.update(status="running", error_type=None, error=None,
                         attempts=int(item.get("attempts", 0)) + 1)
             _atomic_json(self.status_path, state)
+            print(
+                f"[{progress_index}/{len(eligible)}] START "
+                f"{sample.benchmark} / {sample.sample_id}",
+                flush=True,
+            )
             started = self.clock()
             try:
                 trajectory = self.runtime.run(
@@ -213,6 +227,14 @@ class BatchRunner:
             item.update(status=status, error_type=error_type, error=redact_secrets(error))
             _atomic_json(self.status_path, state)
             _atomic_json(self.summary_path, self._summary(state, records))
+            done = (
+                f"[{progress_index}/{len(eligible)}] DONE  "
+                f"{sample.benchmark} / {sample.sample_id} status={status} "
+                f"tools={record['tool_call_count']} elapsed={elapsed:.1f}s"
+            )
+            if status == "failed":
+                done += f" error_type={error_type}"
+            print(done, flush=True)
 
         summary = self._summary(state, records)
         _atomic_json(self.summary_path, summary)

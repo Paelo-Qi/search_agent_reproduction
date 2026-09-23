@@ -332,6 +332,13 @@ Judge starts only when the parent Agent status has zero `pending` and zero
 `running` samples and its completed IDs match the trajectory records. Agent
 `failed` samples do not block Judge; they become `upstream_agent_failure`.
 
+Phase 5C stabilizes Agent episodes without increasing the eight-turn limit:
+registered `img_n` IDs are explicit in model context, invalid image references
+receive recovery guidance, and exact tool+canonical-arguments duplicates are
+blocked before cache/provider execution. `agent_behavior_version` prevents old
+run manifests from resuming under this behavior. Batch runs print flushed
+`[i/N] START` and `DONE` lines where `N` is eligible in the current invocation.
+
 ## Scope boundary
 
 Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate.
