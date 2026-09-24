@@ -1,0 +1,53 @@
+{
+  "accuracy_among_successful_judges": 0.4067796610169492,
+  "accuracy_denominator": "correct + incorrect (successful judges only)",
+  "correct": 120,
+  "end_to_end_accuracy": 0.4,
+  "end_to_end_accuracy_denominator": "all samples including upstream failures",
+  "failed": 5,
+  "incorrect": 175,
+  "macro_accuracy": 0.40494289978826065,
+  "pending": 0,
+  "per_benchmark": {
+    "mmsearch": {
+      "accuracy_among_successful_judges": 0.41414141414141414,
+      "correct": 41,
+      "end_to_end_accuracy": 0.41,
+      "failed": 1,
+      "incorrect": 58,
+      "pending": 0,
+      "running": 0,
+      "success": 99,
+      "total": 100,
+      "upstream_failed": 1
+    },
+    "simplevqa": {
+      "accuracy_among_successful_judges": 0.6666666666666666,
+      "correct": 66,
+      "end_to_end_accuracy": 0.66,
+      "failed": 1,
+      "incorrect": 33,
+      "pending": 0,
+      "running": 0,
+      "success": 99,
+      "total": 100,
+      "upstream_failed": 1
+    },
+    "vdr_bench": {
+      "accuracy_among_successful_judges": 0.13402061855670103,
+      "correct": 13,
+      "end_to_end_accuracy": 0.13,
+      "failed": 3,
+      "incorrect": 84,
+      "pending": 0,
+      "running": 0,
+      "success": 97,
+      "total": 100,
+      "upstream_failed": 3
+    }
+  },
+  "running": 0,
+  "success": 295,
+  "total": 300,
+  "upstream_failed": 5
+}

@@ -1,0 +1,2105 @@
+{
+  "samples": {
+    "1005": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 1092, but the model answered 697, which is a different value and does not match the required fine-grained perception (all) count.",
+      "error_type": null,
+      "status": "success"
+    },
+    "103": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the province as 新疆维吾尔自治区, which is equivalent to the reference answer 新疆.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1044": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 《论人类不平等的起源和基础》 (Discourse on the Origin of Inequality), but the model answered 《社会契约论》 (The Social Contract), which is a different work and was not first published in April 1755 in Amsterdam.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1052": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer accepts 5 as a valid value, and the model correctly solves the equation to find y = 5.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1060": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer computes 2 × 5.90 + 14.00 = 25.80€, which matches the reference answer 25.8/25,8.",
+      "error_type": null,
+      "status": "success"
+    },
+    "107": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the province as 青海省, which matches the reference answer 青海.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1072": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is Australia, but the model answer states Korea as the country with the highest total awareness. This is a direct factual contradiction.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1079": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer correctly concludes that sugar should not be added when mixing egg and milk, matching the reference answer 'no'. The additional explanation about sugar being added in a later step is consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1108": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies February as the month with the highest income, matching the reference answer 'Feb'.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1145": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies Phytoplankton and Seaweed as the producers, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1152": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 'no', but the model answered 'Yes, the trees are taller than the giraffes,' which directly contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1165": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer states the metal fence is green, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1169": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer correctly states that there is no computer in the photo, matching the reference answer 'no'.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1237": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 'blossom end rot,' but the model answer identifies the disease as 'Tomato Early Blight,' which is a different condition. This is a core factual mismatch.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1244": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model identifies Isaac Newton and gives his birth year as 1642 under the Old Style calendar, matching the reference answer of 1642. The additional detail about 1643 New Style is accurate and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1270": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the monastery as Spaso-Andronikov Monastery, which is equivalent to the reference answer Andronikov Monastery.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1309": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 'Santa Caterina', but the model answer identifies the church as 'Iglesia Arciprestal de Santa María', which is a different name and does not match the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1312": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the church as 'Our Lady of Sorrows Church,' which is semantically equivalent to the reference 'Church of Our Lady of Sorrows.' The minor word order difference does not change the name.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1321": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the monument as the Goethe and Schiller Monument in Weimar, Germany, which matches the reference answer 'Goethe- und Schiller-Denkmal (Weimar)'.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1325": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the picture as part of Gettysburg National Military Park, matching the reference answer, with additional non-contradictory detail about Warfield Ridge.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1352": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The Victoria Memorial Museum is the original name of the building that now houses the Canadian Museum of Nature, so the answer is semantically equivalent to the reference. The additional location detail is incorrect but does not change the core identification.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1372": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the bridge as the John A. Roebling Bridge, which is an equivalent name for the Roebling Suspension Bridge referenced in the answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "140": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 九江铁路大桥, while the model answer identifies the bridge as 九江长江大桥. Although related, these are not the same name, and the model's answer does not match the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1407": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the Pyramidenkogel Observation Tower, which is equivalent to the reference answer 'Aussichtsturm Pyramidenkogel' (Aussichtsturm means observation tower). The added location details are consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1411": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is Clark Veterans Cemetery, while the model answer identifies the cemetery as Himlayang Pilipino Memorial Park, which is a different cemetery and therefore factually incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1435": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the location as Laguna de Salinas, which exactly matches the reference answer. The additional details do not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "146": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the artifact as 曾侯乙编钟, matching the reference answer exactly. The additional details are consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1470": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer correctly computes 15 × 15 = 225, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1478": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer correctly computes 10 + 3 = 13, matching the reference answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1490": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer states the artwork is in a private collection, while the model answer claims it is displayed at the Gallerie Accademia in Venice, Italy, which is a contradictory location.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1492": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer 'Pomarancio' is the nickname of Cristoforo Roncalli, which the model correctly identifies as the artist. The additional biographical details are consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1506": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer gives the title as 'The Holy Family,' which is equivalent to the reference answer 'Holy Family' aside from the article 'The'.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1511": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer states the artwork is displayed at Museo Correr, Venice, while the model answer claims it is at the Metropolitan Museum of Art in New York. This is a direct contradiction of the required location.",
+      "error_type": null,
+      "status": "success"
+    },
+    "152": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the artifact as 龙虎纹青铜尊, which is equivalent to the reference answer 龙虎纹尊; the added detail does not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1555": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies Agnolo Bronzino as the creator, which matches the reference answer 'bronzino, agnolo' (same name, different order).",
+      "error_type": null,
+      "status": "success"
+    },
+    "1576": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the title as \"Madonna and Child,\" which matches the core of the reference answer \"Madonna and Child (Detail).\" The added artist and museum details are non-contradictory extra information.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1583": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the Museo Nacional del Prado in Madrid, Spain, which matches the reference answer Museo del Prado, Madrid. The additional detail about the artwork and sources does not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1594": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model identifies the artwork as a religious/Christian devotional painting, which matches the reference answer 'Religious'.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1631": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer states the artwork is displayed at The Hermitage, St. Petersburg, while the model answer claims it is at The Met, the National Gallery of Art, or available via MeisterDrucke. This is a direct contradiction of the required location.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1632": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer gives the title as 'The pieterskerk in leiden', while the model answer states 'Interior of the Oude Kerk in Delft', which is a different church and title. This is a core factual mismatch.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1634": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 'Mythological,' and the model answer identifies the artwork as a 'Baroque mythological painting,' which includes the core type 'mythological' and is semantically equivalent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1653": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer correctly identifies the Chinese text as \"走得很慢\" and provides an accurate translation, matching the reference answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1681": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the person as Andie MacDowell, which exactly matches the reference answer. Additional details do not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1684": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the actor as Kathleen Turner, matching the reference answer exactly. Additional details about the film and role do not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1686": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the actor as Richard Romanus, which exactly matches the reference answer. The additional details do not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1693": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer correctly identifies the actor as Leonard Nimoy, matching the reference answer exactly, with additional non-contradictory detail.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1731": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the actor as Brad Renfro, which matches the reference answer exactly. Additional details about the film and sources do not contradict the core answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "174": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 商代 (Shang dynasty), and the model answer states 商代早期 (early Shang dynasty), which is a more specific but consistent and equivalent period. No contradiction with the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1751": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the actor as Jamie Lee Curtis, which matches the reference answer exactly. The additional detail about the character and film does not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1753": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "Agent rollout did not produce a final answer",
+      "error_type": "upstream_agent_failure",
+      "status": "failed"
+    },
+    "1762": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the person as Sally Field, which matches the reference answer exactly. The additional context does not contradict the correct identification.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1784": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer states the movie originates from the United States, which is equivalent to the reference answer 'USA'. The extra details do not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "180": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer specifies the artifact's name as '亚址鼎', while the model answer only identifies it generically as a '鼎（Ding）' and does not provide the specific name. This is a core factual omission, so the answer is incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1826": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is \"Vale of Glamorgan,\" but the model answer identifies the logo as \"Wales Glamorgan Leisure,\" which is a different name and not equivalent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1911": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 'Archive,' but the model answer states the photo was taken in a government office or legislative setting, which does not match the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1932": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer concludes that the place is a village, which matches the reference answer exactly. The additional descriptive detail is consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1955": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 'Pavilion,' and the model answer identifies a 'wooden pavilion' as a key visual element, which is semantically equivalent. The additional description of a beach resort or seaside leisure area does not contradict the presence of a pavilion.",
+      "error_type": null,
+      "status": "success"
+    },
+    "1991": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 'Stop,' and the model answer correctly states that a red traffic light means you must stop, providing equivalent and non-contradictory detail.",
+      "error_type": null,
+      "status": "success"
+    },
+    "209": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the painting as 《五牛图》 by Han Huang, which matches the reference answer 韩滉五牛图卷; the additional details are non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "232": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 木偶戏 (puppetry), while the model answer identifies the performance as 川剧变脸 (Sichuan Opera face-changing), which is a different traditional performance form. Although the model mentions puppets, its primary answer contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "234": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer identifies the face painting as representing 朱温, while the model answer states it represents 程咬金. This is a direct factual contradiction, so the answer is incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "250": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer identifies the face painting as 胡大海, while the model answer claims it represents 包拯. This is a direct factual contradiction, so the answer is incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "260": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 侗戏 (Dong opera), while the model answer identifies the subject as 侗族舞蹈 (Dong dance), which is a different art form and therefore not equivalent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "263": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 狮舞 (lion dance), and the model answer 舞狮 is an equivalent term for the same traditional dance performance.",
+      "error_type": null,
+      "status": "success"
+    },
+    "283": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the artist as 张大千, matching the reference answer exactly. Additional details do not contradict the core fact.",
+      "error_type": null,
+      "status": "success"
+    },
+    "298": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer states the painting was created in the Tang dynasty (唐朝), while the model answer claims it was created in the Southern Song dynasty (南宋中后期), which directly contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "304": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the artist as 傅抱石, which matches the reference answer exactly. Additional details do not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "334": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the birth year as 1879, matching the reference answer of 1879年.",
+      "error_type": null,
+      "status": "success"
+    },
+    "361": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is “半壁江山,” while the model answer gives “万紫千红,” which is a different idiom and not equivalent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "448": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer identifies the clothing as 门巴族 (Monba), while the model answer states it is 达斡尔族 (Daur). These are different ethnic groups, so the answer is factually incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "472": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 鲁菜 (Lu cuisine), and the model answer identifies the dish as 山东菜 (Shandong cuisine), which is the same as 鲁菜. The additional details about the specific dish do not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "48": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer correctly identifies Ludwig Prandtl as the originator of the boundary layer concept, matching the reference answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "483": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer specifies 粤菜 (Cantonese cuisine), but the model answer only vaguely identifies it as Chinese cuisine or home-style cooking and lists multiple possible regional cuisines without committing to 粤菜. This does not match the required specific answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "489": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 粤菜 (Cantonese cuisine), and the model answer explicitly states the dish belongs to 粤菜系, while also noting it as 客家菜 (a subcategory of Cantonese cuisine). This is consistent with the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "549": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer concludes that the left image is brighter, which matches the reference answer '左侧' (left side).",
+      "error_type": null,
+      "status": "success"
+    },
+    "551": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is '共生' (symbiosis), and the model answer explicitly identifies the relationship as '共生关系' (symbiotic relationship) and '互利共生' (mutualistic symbiosis), which is equivalent and correct.",
+      "error_type": null,
+      "status": "success"
+    },
+    "581": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer concludes that the left and right modules have different shapes, matching the reference answer '不相同' (not the same).",
+      "error_type": null,
+      "status": "success"
+    },
+    "585": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer states the two dolphins are not the same size (不一样), while the model answer concludes they are the same size (一样的), directly contradicting the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "593": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer states the laptop is an Apple product, while the model answer claims it has no specific brand and is a mockup/template image. This directly contradicts the reference and is therefore incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "631": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer states the cultural activity originates from China, while the model answer claims it is Japanese tea ceremony originating from Japan, which contradicts the reference. Although the model notes tea was introduced from China, its final answer identifies Japan as the origin, making it factually inconsistent with the expected answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "640": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "灰熊（Grizzly Bear）是棕熊的一个亚种，模型答案与参考答案“棕熊”在分类上一致，属于可接受的等价回答。",
+      "error_type": null,
+      "status": "success"
+    },
+    "679": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 3, but the model concludes the 1st image is brightest, which contradicts the reference. The model's final answer does not match the correct position.",
+      "error_type": null,
+      "status": "success"
+    },
+    "683": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 3, but the model concludes the 2nd image is brightest. This is a direct contradiction on the core question.",
+      "error_type": null,
+      "status": "success"
+    },
+    "693": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference states the wine bottle is in front of the cat, but the model answer says the cat is to the right of the bottle and describes them as side-by-side, which contradicts the required spatial relationship.",
+      "error_type": null,
+      "status": "success"
+    },
+    "702": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the facility as a 马桶 (toilet), matching the reference answer. The additional details about the seat shape do not contradict the core answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "729": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the profession as 花艺师 (florist) or 花店店主 (flower shop owner), which includes the reference answer 花艺师 and is semantically equivalent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "75": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer states the railway gun entered service in 1930, while the model answer claims 1940, which is a direct factual contradiction. The model's identification and date do not match the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "783": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 后印象派 (Post-Impressionism), and the model answer explicitly includes 后印象派 as one of the styles, so it contains the correct answer despite adding extra detail about Primitivism.",
+      "error_type": null,
+      "status": "success"
+    },
+    "803": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model correctly counts 3 occurrences of the letter 'e' across the two lines of text, matching the reference answer of 3.",
+      "error_type": null,
+      "status": "success"
+    },
+    "810": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 4, but the model counted only 2 occurrences of the letter 'e'. The model's own extracted text contains 'Name' twice, each with an 'e', plus 'Age' twice, each with an 'e', totaling 4, so its final answer of 2 is wrong.",
+      "error_type": null,
+      "status": "success"
+    },
+    "82": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer states the person died in 1934 from tuberculosis, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "835": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "模型答案明确指出海报目的是庆祝圣诞节，与参考答案一致，并补充了合理的节日元素说明，无事实性错误。",
+      "error_type": null,
+      "status": "success"
+    },
+    "864": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer identifies the movie as 《阿甘正传》(Forrest Gump), which matches the reference answer exactly. The additional scene description does not contradict the core identification.",
+      "error_type": null,
+      "status": "success"
+    },
+    "880": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer states the relationship is simply '竞争关系' (competition), while the model answer describes a complex relationship of '竞争与合作并存' (competition and cooperation coexisting), which contradicts the reference by adding a significant cooperative component not supported by the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "890": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer states the four athletes are German, which matches the reference answer '德国' (Germany). The additional details do not contradict the core answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "897": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer identifies the male star as 陈昊森, while the model answer identifies him as 石知田, which is a different person and therefore a core factual error.",
+      "error_type": null,
+      "status": "success"
+    },
+    "933": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is 19.30 t/m³, and the model answer gives 19.32 t/m³ for gold, which is a standard density value and equivalent within reasonable rounding. The slight difference does not constitute a core factual error.",
+      "error_type": null,
+      "status": "success"
+    },
+    "934": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer states 2.70 metric tons per cubic meter, matching the reference answer of 2.70.",
+      "error_type": null,
+      "status": "success"
+    },
+    "942": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The model answer states the window is on the left side from the viewer's perspective, matching the reference answer '左边' (left).",
+      "error_type": null,
+      "status": "success"
+    },
+    "965": {
+      "attempts": 1,
+      "benchmark": "simplevqa",
+      "error": "The reference answer is approximately 120,000, and the model answer states 121,000, which is a reasonable rounding-equivalent value consistent with the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "anime_0": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the school is 'Goha 7th Elementary,' while the model answer claims 'Beyblade High School' and identifies a different character/series, which is a core factual error.",
+      "error_type": null,
+      "status": "success"
+    },
+    "anime_2": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states Chapter 16, which matches the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "anime_4": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is Kazuhiko Inoue, but the model answered Takayuki Kondo, which is a different person and factually wrong for the referenced character.",
+      "error_type": null,
+      "status": "success"
+    },
+    "anime_5": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is DIO, but the model answered Jotaro Kujo. Although the model correctly identified the Stand as 'The World,' it attributed it to the wrong user, which is a core factual error.",
+      "error_type": null,
+      "status": "success"
+    },
+    "anime_6": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the user is 19 years old, while the model answer claims 17 years old, which is a direct factual contradiction.",
+      "error_type": null,
+      "status": "success"
+    },
+    "anime_7": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is SBR Chapter 26, but the model answer identifies Star Platinum's debut in Chapter 114, which is a different Stand and chapter entirely. This is a core factual mismatch.",
+      "error_type": null,
+      "status": "success"
+    },
+    "anime_8": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the Stand first appears in SO Episode 36, while the model answer claims Episode 1 of Stardust Crusaders. This is a direct factual contradiction, so the model answer is incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "anime_9": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the character is an Emitter type Nen user, which matches the reference answer 'Emission'. The extra detail about Meruem is non-contradictory and does not affect the core correctness.",
+      "error_type": null,
+      "status": "success"
+    },
+    "architecture_10": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer identifies NARA Yoshitomo as the artist exhibiting in the building, while the model answer names SHIGA Lieko, which is a different artist and contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "architecture_13": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the building has 3 floors for its Permanent Exhibitions, while the model answer concludes there are only 2 floors, which is a direct factual contradiction.",
+      "error_type": null,
+      "status": "success"
+    },
+    "architecture_2": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the building closes at 10:00 PM, which matches the reference answer of 10pm. The extra details do not contradict the core closing time.",
+      "error_type": null,
+      "status": "success"
+    },
+    "architecture_3": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the building started closing for renovation on June 19, 2023, which matches the reference date 2023-06-19.",
+      "error_type": null,
+      "status": "success"
+    },
+    "architecture_4": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the building opens at 9:00 AM, which matches the reference answer of 9am. Additional details about closing times do not contradict the opening time.",
+      "error_type": null,
+      "status": "success"
+    },
+    "architecture_5": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 'Yes,' but the model answer declines to confirm the presence of a bar, stating there is insufficient visual evidence. This contradicts the reference and fails to provide the correct affirmative answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "architecture_8": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies children 18 and under, and the model answer includes 'Under 18 years old' as a free admission group, which is semantically equivalent. The additional groups listed do not contradict the core correct answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "architecture_9": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer '0' indicates the ticket price is zero, and the model answer states admission is free, which is semantically equivalent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_1": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "Agent rollout did not produce a final answer",
+      "error_type": "upstream_agent_failure",
+      "status": "failed"
+    },
+    "art_11": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer concludes 'Yes,' matching the reference answer, and provides consistent supporting reasoning that both works belong to the Primitivism art style.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_12": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 'yes,' indicating the intended judgment is that both belong to the junk art style. The model rejects the statement by focusing on the word 'paintings' and answering 'No,' which contradicts the reference's affirmative verdict.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_13": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer concludes 'Yes,' matching the reference answer of 'yes.' Although the reasoning is somewhat hedged, the final verdict is equivalent to the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_14": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 'yes,' and the model answer concludes 'Yes' that Espiral del Viento I is made of metal, which is semantically equivalent. The extra detail about iron is consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_18": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 'yes', but the model concludes 'no'. The model's classification of Bicycle Wheel as a readymade/sculpture rather than installation art contradicts the reference, which affirms both belong to installation art.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_2": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the painting was completed in 1959, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_20": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies Southeast Asia, but the model concludes the region is Asia, which is broader and does not match the required specificity. Although the model mentions Southeast Asia as a possibility, its final answer is Asia, making it not equivalent to the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_23": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 1771, but the model answered 1693, which is a factual mismatch. The model's identification and date do not align with the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_24": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies Heidelberg University Library, while the model answer states the library cannot be determined. This is a direct failure to provide the correct answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_3": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 1986, but the model answer states it cannot determine the artist or birth year, so it does not provide the correct answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_5": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the painting was completed in 1894, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_6": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies the painting was completed in 1911, but the model answer states the year cannot be determined, which directly contradicts the known correct answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_7": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the artwork was completed in 1962, which matches the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_8": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the painting was completed in 1911, which matches the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "art_9": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer agrees with the reference answer 'Yes' and correctly identifies both works as oil paintings, adding non-contradictory detail.",
+      "error_type": null,
+      "status": "success"
+    },
+    "astronomy_0": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer gives a right ascension of 16h 17m 13.39s, while the model answer states 21h 07m 1.7s for NGC 7027, which is a different object and value. This is a core factual discrepancy.",
+      "error_type": null,
+      "status": "success"
+    },
+    "astronomy_2": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the nebula belongs to the constellation Draco, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "astronomy_4": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the nebula belongs to the constellation Gemini, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "astronomy_5": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the nebula is over 2900 light-years away, while the model answer identifies it as the Eskimo Nebula at approximately 6,500 light-years. This is a different distance and likely a different nebula, so the answer is not equivalent to the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "astronomy_6": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the radius is 2.5 light-years, while the model answer gives approximately 2.87 light-years (and also inconsistently mentions 1.5 light-years), which does not match the reference value.",
+      "error_type": null,
+      "status": "success"
+    },
+    "astronomy_8": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer identifies the constellation as Orion, matching the reference answer. The additional detail about the Horsehead Nebula is consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "astronomy_9": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the Horsehead Nebula is approximately 1,500 light-years from Earth, matching the reference answer of 1500 light-years. The extra context is non-contradictory and the distance is equivalent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "auto_2": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the maximum power output is 360 kW, while the model answer claims 450 kW, which is a factual discrepancy. The model's identification and value do not match the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "auto_3": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies a peak DC fast-charging rate of 270 kW, while the model answer claims 350 kW, which is a direct factual contradiction.",
+      "error_type": null,
+      "status": "success"
+    },
+    "auto_6": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the drag coefficient is 0.198Cd, while the model answer explicitly says it cannot determine the value. This is a direct failure to provide the correct factual answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "auto_7": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the car is expected to be launched in 2025, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "auto_8": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies 154 km, while the model answer states 200 km for the pure electric range, which is a direct factual contradiction.",
+      "error_type": null,
+      "status": "success"
+    },
+    "auto_9": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the maximum wading depth is 1400mm, which matches the reference answer of 1,400 mm. The extra details do not contradict the core fact.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Architecture_405": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer identifies the original name as 'Prospect Inn,' which matches the reference answer 'The Prospect Inn' aside from the article. The extra details do not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Art&Music_1277": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the musical group as Shinhwa, while the model answer states Super Junior, which is a different group and therefore a factual error.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Art&Music_199": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer is 'Narumi,' but the model answer identifies the work as Hiroshige's 'The Fifty-Three Stations of the Tōkaidō' series, which does not match the specific required answer. This is a core factual mismatch.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Art&Music_46": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the creator as Peter Hansen, while the model answer claims Auguste Brouet. This is a direct factual contradiction, so the answer is incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Game_300": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the game as 'Deserving Life,' while the model answer states 'The Long Dark,' which is a different game and therefore a factual mismatch.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Game_565": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the red object is an 'X-33 space fighter,' while the model answer identifies it as a 'satellite or space station,' which is a different type of spacecraft and contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Movie_110": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the actress as Gunnel Lindblom, while the model answer names Birgitta Valberg, which is a different person and therefore factually incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Nature_685": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "Agent rollout did not produce a final answer",
+      "error_type": "upstream_agent_failure",
+      "status": "failed"
+    },
+    "base_Nature_833": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer is Coreopsis, while the model answer identifies the plant as Lupine. These are different plants, so the model answer is factually incorrect relative to the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Object_1145": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "Agent rollout did not produce a final answer",
+      "error_type": "upstream_agent_failure",
+      "status": "failed"
+    },
+    "base_Object_1230": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the tractor model as 'Antonio Carraro TGF 9400', while the model answer states 'Massey Ferguson 8800'. These are different tractor models, so the answer is factually incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Other_1422": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer states the logo belongs to Aaj News, while the model answer claims it belongs to Express News, which is a contradictory factual claim.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Other_1445": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the Defence area of Karachi, and the model answer identifies Karachi, Pakistan, which is consistent with the location. The model's additional detail about the specific event does not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Other_1448": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer identifies the person in the black top as Sophy Ridge, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Other_1550": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the channel as NTV (Bangladesh), while the model answer states it is Ntv online based in the Philippines, which is a factual contradiction regarding the country and channel identity.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Other_672": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the traditional headdress as 'Taranga', while the model answer identifies it as a 'dupatta with a maang tikka', which is a different headdress and not equivalent to Taranga.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_People_756": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the woman as U Nanthinie, while the model answer fails to provide her name and instead gives a vague, uncertain response. This does not match the required factual answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "base_Sci&Tech_1471": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the full phrase is 'Science is Truth Found Out.', but the model answer only identifies the visible word 'SCIENCE' and fails to provide the complete phrase, which is the core of the question.",
+      "error_type": null,
+      "status": "success"
+    },
+    "entertainment_12": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states Kodansha USA as the English publisher, matching the reference answer exactly. The additional detail about the series and digital format does not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "entertainment_15": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies 'Leaf Tickets' as the in-game currency, which corresponds to Animal Crossing: Pocket Camp, not New Horizons. The model answer identifies the wrong game and currency, so it is factually incorrect relative to the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "entertainment_16": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states Sendhil Ramamurthy, while the model answer claims Jeff Ward. This is a direct factual contradiction, so the model answer is incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "entertainment_17": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is Callum Kerr, but the model answer claims Takuya Kimura and misidentifies the character, so it does not match the correct actor.",
+      "error_type": null,
+      "status": "success"
+    },
+    "entertainment_37": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states 2.1 million, while the model answer claims 2.2 million, which is a factual discrepancy on the specific figure requested.",
+      "error_type": null,
+      "status": "success"
+    },
+    "entertainment_40": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the boss appears in Chapter 1, which matches the reference answer of 1.",
+      "error_type": null,
+      "status": "success"
+    },
+    "esports_1": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 'Zeri', but the model answer states it cannot determine the champion and provides no answer. This fails to match the required factual response.",
+      "error_type": null,
+      "status": "success"
+    },
+    "esports_15": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies the event location as Riyadh, Saudi Arabia, but the model answer states the image is black and the location cannot be determined, which contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "esports_17": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer identifies two Chinese teams, Bilibili Gaming and Top Esports, while the model answer only names Bilibili Gaming and omits Top Esports. This is a substantive omission relative to the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "esports_19": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 21, but the model concludes there are 17 unique esports titles, which is a direct factual mismatch. Although the model lists 21 items, it explicitly excludes some and arrives at a different final count.",
+      "error_type": null,
+      "status": "success"
+    },
+    "esports_5": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies a concrete date (2024-05-12), but the model answer fails to provide it, instead stating the information cannot be determined from the image. This does not match the required factual answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "esports_7": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is Aatrox, while the model answer states Gnar. This is a direct factual contradiction on the core question.",
+      "error_type": null,
+      "status": "success"
+    },
+    "esports_9": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 75%, but the model answer states it cannot determine the win rate and provides no numerical answer, so it is not semantically equivalent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "fashion_0": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the glasses were released on May 1, 2024, which matches the reference answer 2024-05-01.",
+      "error_type": null,
+      "status": "success"
+    },
+    "fashion_1": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model identifies the collaborating brand as DoiTung and states it is based in Thailand, matching the reference answer 'Thailand' for the brand's origin.",
+      "error_type": null,
+      "status": "success"
+    },
+    "fashion_2": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is Marie LeBlanc, but the model answered Isak Andic, which is a different person and does not match the required answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "fashion_4": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the CEO is Bastien Daguzan, while the model answer names Sarah Benady. Although both are associated with Jacquemus, the model's answer contradicts the reference's specific factual claim.",
+      "error_type": null,
+      "status": "success"
+    },
+    "fashion_6": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer identifies the shoes as the New Balance X Miu Miu 530 SL, which includes the reference answer '530 SL Sneakers' and adds the collaboration context without contradiction.",
+      "error_type": null,
+      "status": "success"
+    },
+    "fashion_7": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies the bag is from Spring/Summer 2024, but the model answer fails to identify any specific season and instead gives a vague, uncertain response. This does not match the required factual answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "fashion_8": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies an exact release date of 2024-04-18, while the model answer only states 'Summer 2024' and does not provide the precise date. This is a less specific answer that fails to match the required factual detail.",
+      "error_type": null,
+      "status": "success"
+    },
+    "finance_0": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is Grok-2, launched by xAI, which Elon Musk manages. The model answer incorrectly identifies OpenAI as the company and lists GPT-4o and other products instead of Grok-2.",
+      "error_type": null,
+      "status": "success"
+    },
+    "finance_2": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer identifies Anysphere, which matches the reference answer exactly. The additional context about Andreessen Horowitz and the funding round is consistent with the question and does not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "finance_27": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is simply 'No,' but the model's answer is internally contradictory and ultimately claims the comparison cannot be determined because August 2nd data is missing. This does not match the reference's definitive 'No' and fails to establish the required comparison.",
+      "error_type": null,
+      "status": "success"
+    },
+    "finance_4": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is Yann LeCun, but the model answer states the name cannot be determined and does not provide Yann LeCun. This fails to match the required factual answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "finance_5": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is University of California, Berkeley, while the model answered Princeton University. The model also misidentified the relevant co-founder, so the answer is factually wrong.",
+      "error_type": null,
+      "status": "success"
+    },
+    "finance_6": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the maximum fine is 7% of global annual turnover, matching the reference answer of 7 percent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "finance_8": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is Tokyo, but the model answer fails to provide any city and instead states it cannot determine the answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_19": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the custom-built fishing boat was listed at $999,000, which matches the reference answer of $999000. The extra detail about other vessels does not contradict the core fact.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_24": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states George Santos needs to pay at least $373,000, but the model answer provides no compensation amount and instead says the information is unavailable. This fails to answer the question correctly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_26": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states that Gavin Newsom signed 10 bills into law to combat retail crime, which matches the reference answer of 10.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_27": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states 16 years, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_28": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies 80 mph, but the model answer provides different values (75 mph and 100 mph) and does not match the reference. This is a core factual discrepancy.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_29": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The question asks what charges Brooke Jenkins herself has been accused of, and the reference answer is 'nepotism.' The model answer instead lists criminal charges she filed as a prosecutor, which is a different subject and does not address the accusation against her.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_32": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies that Perdue Foods recalled frozen chicken nuggets and tenders from three brands sold nationwide, but the model answer fails to identify those three brands and instead discusses only Perdue's own brands, missing the core factual content.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_34": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 1889, but the model answer states it cannot provide a number and gives no numeric answer, so it does not match the required value.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_35": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 4, but the model answer states approximately 20 media organizations, which is a direct contradiction of the expected count.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_42": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the shutdown occurred on August 22, 2024, which matches the reference date 2024-08-22. The additional context about the lockout and labor dispute does not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_45": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies evacuations in parts of Khan Younis and Al-Maghazi refugee camp, while the model answer claims Gaza City and explicitly states no other areas were mentioned, which contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_46": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is California, but the model answer states it cannot determine the answer and provides no state. This fails to match the required factual answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "general_47": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer specifies Le Bourget airport, while the model answer states the information cannot be determined and provides no airport name. This fails to match the required factual answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Architecture_703_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer identifies the building as the Prince Building and its purpose as a dry goods store, whereas the reference specifies the Havemeyer Building and a manufacturing facility. These are different names and purposes, so the answer is not equivalent to the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Architecture_861_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model failed to provide the required facts: the 1925 elevation to Patriarchate and the February 4, 2025 proclamation of 16 new saints. Instead, it stated the information could not be found, which contradicts the reference answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Architecture_872_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer identifies the significant historical collection as medieval manuscripts, matching the reference. Although it provides extensive additional architectural detail beyond the reference's brief 'Baroque modifications,' the core required elements—architectural changes in the 17th/18th centuries and the medieval manuscript collection—are present and consistent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Architecture_902_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the brand as Ritz-Carlton, while the model answer states Hotel Arts under Accor, which is a different brand and contradicts the reference. Although the model mentions catering and meeting facilities, the core brand identification is wrong.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Architecture_954_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies Constructivist style and reinforced concrete, but the model answer instead claims the building is part of Loket Castle with Romanesque/Gothic styles and stone material, directly contradicting the required facts.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Art&Music_44_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the technique as needlework and the region as Nottingham, England, whereas the model answer states needlepoint and the United States. Both key elements differ from the reference, making the answer factually incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Art&Music_904_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer identifies Ela Taubert, matching the reference answer exactly. The additional supporting details do not contradict the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Art&Music_984_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer correctly identifies the 1675 action as Pope Innocent XI bestowing a consecrated sword upon Polish King John III Sobieski, which matches the reference answer's core fact. The additional context about the alliance against the Ottoman Empire is consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Art&Music_988_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model's explanation of both name parts is factually wrong: 'Tupac' refers to Tupac Amaru (indigenous resistance), not the Aztec god Tlaloc, and 'Shakur' is an Arabic name meaning 'thankful to God,' not derived from the Hebrew Shasu or meaning 'blessed.' These core errors contradict the reference answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Game_1490_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the transformation was into a hated race and the unique starting item is the Alchemy Lab card, while the model answer instead describes generic ability/equipment changes and names 'Alchemist's Supply,' which contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Game_275_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer states the developer is Forest Games, but the model answer identifies David Ausloos as the developer, which is a core factual mismatch. Although the game name Panic Station is correct, the developer portion is wrong.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Game_516_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The developer name 'Take Toad' matches, but the model gives the initial release date as October 11, 2019, whereas the reference answer states October 10, 2019. This is a factual discrepancy on the release date.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Movie_1061_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the film as 'Hobal' set in the early 1990s, while the model answer names a different film ('The Road to Mecca') and a different period (early 20th century/1920s), which is a core factual mismatch.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Movie_1392_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer is 'Major, SS', but the model identifies the rank as SS-Untersturmführer and gives the equivalent as Feldwebel, which is factually wrong. The correct equivalent for SS-Untersturmführer is Leutnant, not Feldwebel, and the reference specifies Major.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Movie_337_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer is 'Shambles,' but the model answer fails to provide this title and instead states it cannot determine the series. This is a core factual failure to answer correctly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Movie_974_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer fails to provide the required information (Major; photographer and aerial gunner) and instead states it cannot answer, which does not match the reference answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Nature_383_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference specifies the onset of winter in Arctic breeding grounds as the primary factor and states that 25% of the Eastern Population uses the Upper Mississippi River during fall migration. The model answer instead cites temperature and food availability generally and omits the specific Upper Mississippi River/25% detail, so it does not match the reference's core facts.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Object_1180_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the tower is Seljuk style with an interior of rough stone and white plaster, while the model answer claims it is Ottoman with a marble interior, which are core factual contradictions. The model's identification of the Galata Tower and its characteristics does not match the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Object_1216_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the model as 'Royal Enfield Bullet,' but the model answer only identifies the brand as 'Royal Enfield' and suggests it could be a Classic 350 or similar, failing to provide the correct model name.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Object_381_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies silk lining and a width of 3.5 to 5 inches, but the model answer discusses plush velvet versus standard velvet and gives a size range of 10-15 inches wide by 12-18 inches long, which contradicts the reference. The model fails to mention silk lining and provides incorrect size information.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Other_1500_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model identifies the ceremony as 'Yamaboko no Mairi' and describes the fire's purpose as purification and protection, whereas the reference specifies 'Chinka-sai (Fire Extinguishing Festival)' with the symbolic purpose of 'turning negative energies into positive ones.' The named ceremony and stated purpose do not match the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Other_797_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference specifies the Boat Race (Channel 4) as the second event, but the model instead names The Open (Golf) and does not provide the new channel, so it fails to match the required answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_People_1525_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The official title is correct, but the year of the first postage stamp featuring Jefferson Davis's portrait is wrong; the reference answer states 1862, not 1861.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sci&Tech_1179_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model identifies the aircraft as the Gossamer Albatross and cites lightweight design and 1979, whereas the reference answer specifies a pressurized cockpit and 1972. These are core factual mismatches, so the answer is incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sci&Tech_1256_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies a 360 HP Vedeneyev M-14P radial engine, but the model answer fails to provide any engine type or horsepower figure, instead stating the information cannot be determined. This does not match the required factual content.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sci&Tech_1330_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer is 'IVB system' (a group of iron meteorites), while the model answered 'carbonaceous chondrites,' which is a different meteorite classification. The model's answer contradicts the reference and is therefore incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sci&Tech_676_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer includes the reference's key facts—1492 and Pope Innocent VIII—and adds non-contradictory detail about the procedure and later history. This satisfies the question's request for the first documented attempt and who was involved.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sports_192_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies 'Built in T-joint technology' as the primary advancement for the first generation of this specific racket model, while the model answer claims ISOMETRIC technology, which is a different and unrelated innovation. This is a core factual mismatch.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sports_534_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer correctly identifies Katie Ledecky representing the United States and highlights her historic significance, including winning four consecutive Olympic gold medals in the 800m freestyle, which aligns with the reference's key point about winning an event at four consecutive Summer Games. The additional detail about the 1500m freestyle is non-contradictory and does not undermine the core correctness.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sports_580_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer incorrectly identifies the cricketer as Rohit Sharma and claims the achievement was India's 2019 World Cup semi-final victory with a score of 100, whereas the reference specifies Namibia reaching the Super 12s for the first time and an unbeaten 66 off 40 balls. The core facts are entirely different and wrong.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sports_586_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model correctly identifies Virat Kohli but fails to provide the required outcome: the reference states the change backfired against Australia in Perth. Instead, the model says the specific Test match outcome is not mentioned, so the answer is incomplete and misses the key fact.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sports_605_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer fails to provide the required achievement and match outcome, instead claiming the information is unavailable. The reference answer specifies the achievement (first MLS team to win after being down by two goals in the second half) and the outcome (won 1-0), which the model did not state.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sports_653_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer describes a player who won a Grand Slam title each year from 2005-2014 and held the No. 1 doubles ranking for a record 308 weeks, which matches Bob Bryan, not Novak Djokovic. The model answer incorrectly identifies the person as Novak Djokovic and provides wrong facts about both the Grand Slam achievement and the doubles ranking record.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard1_Sports_987_fir": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies Chelsea and manager of England Under-21s, but the model answer fails to provide either fact, instead stating the club and role are not specified. This does not match the required answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Architecture_782_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model correctly identifies the columns as Neoclassical (or Greek Revival), but the reference answer specifies the park's design philosophy as Prairie School, while the model instead claims French formal garden. This is a core factual mismatch on the second part of the question.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Architecture_823_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer correctly identifies stone slabs as the primary exterior material and explains the symbolic meaning as connecting to Poland's cultural heritage through Renaissance forms, matching the reference answer's core claims.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Architecture_928_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the Chu Festival as a Ming dynasty event honoring ancestral spirits and integrating local traditions with imperial Buddhist patronage, but the model answer fails to mention the Chu Festival and instead discusses general Buddhist festivals, concluding the festival cannot be determined. This does not match the required answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Architecture_936_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference specifies the primary structural system as a 'diagrid framework' and the purpose as accommodating European Council and EU Council meetings. The model answer instead says 'steel frame or truss system' and gives a vague purpose about creating a cohesive architectural complex, missing the specific diagrid and council meeting functions.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Art&Music_1011_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies overcrowding within the city walls due to an influx of rural refugees as the environmental condition, whereas the model answer attributes the condition to narrow streets and steep staircases, which is a different cause not supported by the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Art&Music_1103_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the relationship as 'Mother' and the originating civilization as 'Phoenician,' but the model answer states the figure is the son and attributes the myth to ancient Greece, which contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Art&Music_1141_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies three types of participants and the term 'fanformance art,' while the model answer states 15 participants and gives different terms like 'fan engagement,' which contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Art&Music_1141_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies six figures and the term 'fanformance art,' while the model answer states 15 figures and 'Tifo,' which are different facts. Although the model provides a plausible alternative term, it does not match the reference's required answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Art&Music_1260_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the original creator as Matthias Bernard Braun and the current location as the Lapidarium of the National Museum, while the model answer instead discusses Judith of Thuringia, an unnamed Italian architect, and a different location, none of which match the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Art&Music_160_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer is '3.6 miles,' but the model answer states the information is not available and does not provide the required length. This is a direct failure to answer the question correctly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Game_17_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the developer as 'Eponymouse' and the relevant software concept as the 'Curry' function, while the model answer claims the developer is 'Higher Plain Games' and the concept is 'Unity', which are different and not equivalent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Game_3_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model identifies the game as The Secret of Monkey Island by LucasArts, whereas the reference states the studio is Cryo Interactive and the 2000 sequel is Atlantis 2: Beyond Atlantis. This is a core factual mismatch.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Game_463_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer identifies the developer as Atelier ATIC and fails to provide the correct technological subject, whereas the reference answer states the developer is Yuzuki Project and the subject is robotics and artificial intelligence. This is a core factual mismatch.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Game_517_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference states the guard system consumes one bomb and doubles the lives bonus, while the model answer claims it consumes Auto-Guard and affects points rather than the lives bonus. This contradicts the core facts in the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Game_571_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer fails to provide the requested information about the company's video case studies and latest case study content, instead stating it cannot determine the answer from the image. The reference answer specifies strategic storytelling through video marketing and a 90-second anthem video with dynamic graphic effects, which the model did not provide.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Game_581_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model correctly identifies citric acid but names Haribo as the company that developed the production method, whereas the reference answer specifies Bluetechni. This is a core factual error.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Movie_1045_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer fails to provide the required information about the reproductive mechanism (chaos phage), its relation to the guide role, and the chaotic home plane (Limbo), instead stating the image lacks relevant details. This does not match the reference answer's factual content.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Movie_1073_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer correctly identifies the differing critical receptions: the earlier production received mixed reviews that praised the actor's voice but not the racial portrayal, while the later production was more favorably received and celebrated his casting as a Black actor. This matches the reference answer's core points.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Movie_1566_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer is Gracie Films and Big, but the model answer rejects the premise and provides no matching production company or film. It fails to give the required answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Nature_1066_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer identifies the wrong species (Calochortus amabilis) and gives a global ranking of 'Apparently Secure' instead of the reference's G2 (Imperiled), and it fails to provide the state ranking of 1B.2. It also does not state that the global ranking is more severe, contradicting the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Nature_1069_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference specifies acidic organic soil and states the flower blooms as the related Lilium superbum is finishing, but the model answer instead describes loamy soil and compares blooming time to Lilium columbianum, a different species, with no mention of Lilium superbum or the 'finishing' bloom timing.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Nature_1249_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference specifies soil textures of clay loam, loam, sandy loam, and loamy sand, while the model only states 'well-drained, loamy soils,' omitting the other required textures. The model also identifies the species as Calochortus luteus, which is not established by the reference and leads to a different answer than the reference's genus-level heavy metal tolerance note.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Nature_901_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer fails to provide the specific germination temperature peaks (22/28°C or 32/38°C) and the most effective dormancy-breaking treatment (immersion in 14 M H₂SO₄ for 20 minutes followed by presoaking) given in the reference. Instead, it gives generic, non-specific information and misidentifies the plant, so it does not answer the question correctly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Object_1126_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer fails to provide the requested engine power range and model variant, instead stating the image lacks car information. The reference answer specifies '95 KM – 182 KM, Grand C-MAX', which the model did not supply.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Object_1171_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference specifies the distinguishing features as animated movement, voice, and singing, and the collection name as 'Extinct & Endangered.' The model answer instead gives generic descriptions and incorrect collection names ('The Great Animal Collection' or 'The Animal Kingdom'), so it does not match the required facts.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Object_1203_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies ignition coil failure starting after 100,000 miles, while the model answer provides generic issues like brake wear and oil leaks with different timelines, failing to match the required fact.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Object_362_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies 'Fashion-Flex' as the material and 'Robert Verdi' as the designer style, while the model answer fails to identify either, instead giving generic speculation about luxury brands and materials. This does not match the required factual content.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Object_691_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies 24 cabins and a capacity of 49, but the model answer states it cannot determine these values from the image. This fails to provide the required factual information.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Object_691_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer states 24 cabins have a bathroom with a shower and 24 are on the lower deck, while the model answer provides no numerical answer and claims the information is unavailable. This fails to match the required factual content.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Object_744_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "Agent rollout did not produce a final answer",
+      "error_type": "upstream_agent_failure",
+      "status": "failed"
+    },
+    "hard2_Other_674_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model correctly identifies the product line as 'Wills Clublife' and states the men's casual shirt material is cotton, matching the reference answer '100% cotton' in substance.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_People_1047_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer states the series is 'Drag Race France' and the song is 'Passion' from Kingdom Hearts 2, while the model answer gives 'RuPaul's Drag Race' and 'Heart to Break' by Kim Petras, which are different facts.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_People_1091_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model correctly identifies the primary demographic as white men and lists endorsements including Delta Airlines, Jamaica Tourist Board, and Miller Lite, which match the reference. The additional mention of Chrysler and fashion designers is extra non-contradictory detail.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_People_1364_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer identifies the person in the top-right panel as Shashwat Sachdev, while the model answer names Vishal Bhardwaj, which is a different person and therefore factually incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_People_906_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the film 'The Devil's Bath' and a research focus on 'German-speaking cases,' but the model instead names 'Marianne and Juliane' and describes a focus on representations of women, which does not match the required answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sci&Tech_1003_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies '2.8 mm lens and 1 high-power IR LED,' but the model answer fails to provide these exact specifications, instead giving general ranges and stating it cannot determine the exact values.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sci&Tech_1148_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer fails to provide the correct service manual designation (OP 820), instead giving a nonsensical fabricated string. While the licensing reason is roughly equivalent, the manual designation is a core factual error.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sci&Tech_1164_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer provides specific values (1,294 tonne-meters and 300 feet), while the model answer states the information cannot be determined and provides no values. This is a direct failure to answer the question correctly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sci&Tech_1240_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the innovation was relocating the chronograph mechanism to the back of the watch, but the model answer only restates the question's phrasing without identifying the back-of-watch position and instead attributes it to Gérald Genta, which is not supported by the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sci&Tech_1309_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer fails to provide the requested facts, instead disputing the premise and giving incorrect information (e.g., claiming Titan II used RP-1/LOX). The reference answer requires a 43% thrust increase and nitrogen tetroxide/UDMH propellants, which the model does not state.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sci&Tech_1575_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies a radar-guided decoy countermeasure with an operational range of several kilometers, while the model answer describes a radar jammer/EW system with a range of 10-50 km, which contradicts the reference's system type and range.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sports_1454_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer states the opponent's semifinal outcome was a win against Kazakhstan, but the model answer claims the opponent lost 4-0 and represented Australia, which contradicts the reference. The model also confuses the final opponent with the semifinal opponent.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sports_168_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model failed to provide the requested information, whereas the reference answer specifies a bronze medal and the pair Chris Adcock and Gabby Adcock. Since the model gave no substantive answer, it is incorrect.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sports_219_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer states the world ranking was 58th and that she represented Israel, matching the reference answer 'World No. 58; Israel'.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sports_228_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the HEAD Speed Pro Legend endorsed by Novak Djokovic, while the model answer identifies the HEAD Gravity endorsed by Ashleigh Barty, which is a different racket and player.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sports_299_thi": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer is Yorkshire and ODI, but the model answer states Somerset and the 2004 Women's Cricket World Cup, which are factually wrong and contradict the reference. The model also fails to provide the correct team or debut series format.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sports_526_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The reference answer specifies the tournament as 'Japan Masters,' but the model answer identifies it as the 'BWF India Open,' which is a factual error. The country 'India' is correct, but the tournament name is wrong.",
+      "error_type": null,
+      "status": "success"
+    },
+    "hard2_Sports_533_sec": {
+      "attempts": 1,
+      "benchmark": "vdr_bench",
+      "error": "The model answer does not provide the requested values and instead states it cannot determine them, whereas the reference answer specifies '1 point, 61'.",
+      "error_type": null,
+      "status": "success"
+    },
+    "paper_11": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer explicitly identifies the three new modules from the reference—Memory Encoder, Memory Bank, and Memory Attention—as key components of SAM 2's memory mechanism. This matches the reference answer semantically despite additional non-contradictory detail.",
+      "error_type": null,
+      "status": "success"
+    },
+    "paper_14": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is GRIT, but the model answer claims no specific external dataset is used and instead describes synthetic self-generated data, which contradicts the reference. This is a core factual error.",
+      "error_type": null,
+      "status": "success"
+    },
+    "paper_15": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 'self augmenting,' but the model answered 'gathering task-specific knowledge,' which is a different process and does not match the expected answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "paper_4": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer says 'camera position and image points,' and the model answer says 'camera positions and 3D point locations.' In the context of structure-from-motion, image points correspond to 3D point locations, so the model answer is semantically equivalent to the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "paper_7": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer states the authors call the colored lines 'Shape of Motion,' but the model answer says they are called 'explicit, persistent 3D motion trajectories' / '3D motion trajectories,' which does not match the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "paper_8": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer correctly identifies the abbreviation as FCR, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "paper_9": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is NeuTex, but the model answered 'Non neural approach', which is a different method and contradicts the reference.",
+      "error_type": null,
+      "status": "success"
+    },
+    "technology_0": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer states the conference ran from September 29 to October 4, 2024, which matches the reference dates 2024-09-29 to 2024-10-04. The additional detail about workshops and main conference is consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "technology_10": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer identifies the Galaxy Z Flip6 Olympic Edition, which matches the reference answer 'Galaxy Z Flip6'. The additional details are non-contradictory and do not affect correctness.",
+      "error_type": null,
+      "status": "success"
+    },
+    "technology_2": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 'Web Monetization,' a specific browser technology, while the model answer discusses third-party extensions like 'Tippin Extension' and explicitly denies a native browser feature, which contradicts the reference. The model fails to identify the correct technology.",
+      "error_type": null,
+      "status": "success"
+    },
+    "technology_3": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer identifies the product as the MO/GO pant, which matches the reference answer MO/GO. The additional details about Arc'teryx and the exoskeleton design are consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    },
+    "traditional sports_1": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer identifies Tamirat Tola as the men's marathon champion at the Paris 2024 Olympics, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "traditional sports_13": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The reference answer is 'Deadpool & Wolverine,' but the model explicitly concludes that no movie is associated with the livery change, directly contradicting the correct answer.",
+      "error_type": null,
+      "status": "success"
+    },
+    "traditional sports_15": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer identifies Leny Yoro as the player bought from Lille in summer 2024, matching the reference answer exactly.",
+      "error_type": null,
+      "status": "success"
+    },
+    "traditional sports_2": {
+      "attempts": 1,
+      "benchmark": "mmsearch",
+      "error": "The model answer correctly identifies LeBron James as the man wearing the number 6 jersey, matching the reference answer. Additional details about his team and jersey number are consistent and non-contradictory.",
+      "error_type": null,
+      "status": "success"
+    }
+  },
+  "version": 1
+}

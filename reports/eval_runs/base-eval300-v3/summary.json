@@ -1,0 +1,338 @@
+{
+  "cache_hits": 329,
+  "cache_misses": 94,
+  "completion_rate": 1.0,
+  "duplicate_tool_call": 30,
+  "failed": 5,
+  "pending": 0,
+  "per_benchmark": {
+    "mmsearch": {
+      "cache_hits": 101,
+      "cache_misses": 33,
+      "completion_rate": 1.0,
+      "duplicate_tool_call": 6,
+      "failed": 1,
+      "pending": 0,
+      "processed": 100,
+      "provider_errors": 1,
+      "real_tool_executions": 33,
+      "running": 0,
+      "success": 99,
+      "tool_calls": {
+        "crop": 31,
+        "image_search": 46,
+        "layout_parsing": 9,
+        "perspective_correct": 1,
+        "sharpen": 7,
+        "super_resolution": 2,
+        "text_search": 57,
+        "web_search": 28
+      },
+      "tool_stats": {
+        "crop": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 31,
+          "errors": 23,
+          "real_tool_executions": 0
+        },
+        "image_search": {
+          "cache_hits": 42,
+          "cache_misses": 2,
+          "calls": 46,
+          "errors": 3,
+          "real_tool_executions": 2
+        },
+        "layout_parsing": {
+          "cache_hits": 5,
+          "cache_misses": 4,
+          "calls": 9,
+          "errors": 0,
+          "real_tool_executions": 4
+        },
+        "perspective_correct": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 1,
+          "errors": 0,
+          "real_tool_executions": 0
+        },
+        "sharpen": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 7,
+          "errors": 0,
+          "real_tool_executions": 0
+        },
+        "super_resolution": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 2,
+          "errors": 0,
+          "real_tool_executions": 0
+        },
+        "text_search": {
+          "cache_hits": 44,
+          "cache_misses": 10,
+          "calls": 57,
+          "errors": 3,
+          "real_tool_executions": 10
+        },
+        "web_search": {
+          "cache_hits": 10,
+          "cache_misses": 17,
+          "calls": 28,
+          "errors": 1,
+          "real_tool_executions": 17
+        }
+      },
+      "total": 100,
+      "total_tool_calls": 181,
+      "unknown_image_id": 1
+    },
+    "simplevqa": {
+      "cache_hits": 117,
+      "cache_misses": 17,
+      "completion_rate": 1.0,
+      "duplicate_tool_call": 1,
+      "failed": 1,
+      "pending": 0,
+      "processed": 100,
+      "provider_errors": 0,
+      "real_tool_executions": 17,
+      "running": 0,
+      "success": 99,
+      "tool_calls": {
+        "crop": 13,
+        "image_search": 64,
+        "layout_parsing": 18,
+        "perspective_correct": 0,
+        "sharpen": 1,
+        "super_resolution": 0,
+        "text_search": 39,
+        "web_search": 13
+      },
+      "tool_stats": {
+        "crop": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 13,
+          "errors": 6,
+          "real_tool_executions": 0
+        },
+        "image_search": {
+          "cache_hits": 62,
+          "cache_misses": 2,
+          "calls": 64,
+          "errors": 0,
+          "real_tool_executions": 2
+        },
+        "layout_parsing": {
+          "cache_hits": 16,
+          "cache_misses": 2,
+          "calls": 18,
+          "errors": 0,
+          "real_tool_executions": 2
+        },
+        "perspective_correct": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 0,
+          "errors": 0,
+          "real_tool_executions": 0
+        },
+        "sharpen": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 1,
+          "errors": 0,
+          "real_tool_executions": 0
+        },
+        "super_resolution": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 0,
+          "errors": 0,
+          "real_tool_executions": 0
+        },
+        "text_search": {
+          "cache_hits": 26,
+          "cache_misses": 13,
+          "calls": 39,
+          "errors": 0,
+          "real_tool_executions": 13
+        },
+        "web_search": {
+          "cache_hits": 13,
+          "cache_misses": 0,
+          "calls": 13,
+          "errors": 0,
+          "real_tool_executions": 0
+        }
+      },
+      "total": 100,
+      "total_tool_calls": 148,
+      "unknown_image_id": 0
+    },
+    "vdr_bench": {
+      "cache_hits": 111,
+      "cache_misses": 44,
+      "completion_rate": 1.0,
+      "duplicate_tool_call": 23,
+      "failed": 3,
+      "pending": 0,
+      "processed": 100,
+      "provider_errors": 1,
+      "real_tool_executions": 44,
+      "running": 0,
+      "success": 97,
+      "tool_calls": {
+        "crop": 44,
+        "image_search": 60,
+        "layout_parsing": 11,
+        "perspective_correct": 0,
+        "sharpen": 9,
+        "super_resolution": 1,
+        "text_search": 81,
+        "web_search": 26
+      },
+      "tool_stats": {
+        "crop": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 44,
+          "errors": 12,
+          "real_tool_executions": 0
+        },
+        "image_search": {
+          "cache_hits": 42,
+          "cache_misses": 18,
+          "calls": 60,
+          "errors": 1,
+          "real_tool_executions": 18
+        },
+        "layout_parsing": {
+          "cache_hits": 10,
+          "cache_misses": 1,
+          "calls": 11,
+          "errors": 0,
+          "real_tool_executions": 1
+        },
+        "perspective_correct": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 0,
+          "errors": 0,
+          "real_tool_executions": 0
+        },
+        "sharpen": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 9,
+          "errors": 0,
+          "real_tool_executions": 0
+        },
+        "super_resolution": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "calls": 1,
+          "errors": 0,
+          "real_tool_executions": 0
+        },
+        "text_search": {
+          "cache_hits": 43,
+          "cache_misses": 18,
+          "calls": 81,
+          "errors": 20,
+          "real_tool_executions": 18
+        },
+        "web_search": {
+          "cache_hits": 16,
+          "cache_misses": 7,
+          "calls": 26,
+          "errors": 3,
+          "real_tool_executions": 7
+        }
+      },
+      "total": 100,
+      "total_tool_calls": 232,
+      "unknown_image_id": 0
+    }
+  },
+  "processed": 300,
+  "provider_errors": 2,
+  "real_tool_executions": 94,
+  "running": 0,
+  "success": 295,
+  "tool_calls": {
+    "crop": 88,
+    "image_search": 170,
+    "layout_parsing": 38,
+    "perspective_correct": 1,
+    "sharpen": 17,
+    "super_resolution": 3,
+    "text_search": 177,
+    "web_search": 67
+  },
+  "tool_stats": {
+    "crop": {
+      "cache_hits": 0,
+      "cache_misses": 0,
+      "calls": 88,
+      "errors": 41,
+      "real_tool_executions": 0
+    },
+    "image_search": {
+      "cache_hits": 146,
+      "cache_misses": 22,
+      "calls": 170,
+      "errors": 4,
+      "real_tool_executions": 22
+    },
+    "layout_parsing": {
+      "cache_hits": 31,
+      "cache_misses": 7,
+      "calls": 38,
+      "errors": 0,
+      "real_tool_executions": 7
+    },
+    "perspective_correct": {
+      "cache_hits": 0,
+      "cache_misses": 0,
+      "calls": 1,
+      "errors": 0,
+      "real_tool_executions": 0
+    },
+    "sharpen": {
+      "cache_hits": 0,
+      "cache_misses": 0,
+      "calls": 17,
+      "errors": 0,
+      "real_tool_executions": 0
+    },
+    "super_resolution": {
+      "cache_hits": 0,
+      "cache_misses": 0,
+      "calls": 3,
+      "errors": 0,
+      "real_tool_executions": 0
+    },
+    "text_search": {
+      "cache_hits": 113,
+      "cache_misses": 41,
+      "calls": 177,
+      "errors": 23,
+      "real_tool_executions": 41
+    },
+    "web_search": {
+      "cache_hits": 39,
+      "cache_misses": 24,
+      "calls": 67,
+      "errors": 4,
+      "real_tool_executions": 24
+    }
+  },
+  "total": 300,
+  "total_tool_calls": 561,
+  "unknown_image_id": 1
+}

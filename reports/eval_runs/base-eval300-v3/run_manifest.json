@@ -1,0 +1,51 @@
+{
+  "agent_behavior_version": 4,
+  "cache_schema_version": 1,
+  "checkpoint_identity": {
+    "identifier": "Qwen/Qwen3-VL-4B-Instruct",
+    "kind": "remote",
+    "revision": "ebb281ec70b05090aa6165b016eac8ec08e71b17"
+  },
+  "created_at": "2026-09-24T12:13:57.638983+00:00",
+  "dataset_identity": {
+    "frozen_manifest_fingerprint": "c06e24ddb702170bf9d2365e26269dbcf56b6ffa730619090f35c9b7d590bf0d",
+    "frozen_manifest_identity": {
+      "combined_output_file": "combined_eval_300.parquet",
+      "combined_output_sha256": "f9d0ca74f98d3f73cd6ad1f60b7f2294c5e5d59d4956b60ad95084dc8ee36cf4",
+      "dataset": "Osilly/Vision-DeepResearch-Eval",
+      "dataset_revision": "deeaf45779a3bbd407d8f0ccb9b4831fc78e81c9",
+      "manifest_version": 2
+    },
+    "sha256": "f9d0ca74f98d3f73cd6ad1f60b7f2294c5e5d59d4956b60ad95084dc8ee36cf4"
+  },
+  "dataset_path": "/root/autodl-tmp/search_agent_reproduction/data/eval/combined_eval_300.parquet",
+  "inference_config_fingerprint": "299a8cab030ddb1ad38a13a1e8766556a467963af636acdefd85ca88b51b36fd",
+  "layout_behavior_version": 1,
+  "layout_config_fingerprint": "1cb610ba7c4f714865f08c2c27da3c98d44f16a0460dbeae9385cddc8ae65aba",
+  "manifest_version": 1,
+  "max_agent_turns": 16,
+  "model_name_or_path": "Qwen/Qwen3-VL-4B-Instruct",
+  "model_revision": "ebb281ec70b05090aa6165b016eac8ec08e71b17",
+  "run_config_fingerprint": "2ffe9ef289c1880c9be4320e7477c1c36c9e5d60aab28091c5fb15d6bc493f3f",
+  "run_id": "base-eval300-v3",
+  "sample_selection": {
+    "dataset_sha256": "f9d0ca74f98d3f73cd6ad1f60b7f2294c5e5d59d4956b60ad95084dc8ee36cf4",
+    "first_batch_counts": {
+      "mmsearch": 67,
+      "simplevqa": 67,
+      "vdr_bench": 66
+    },
+    "ordered_ids_checksum": "1513e69f2a31103c42d591f8f4e766fc73e9389b8d03d2db3dd3091e969ee19b",
+    "sample_count": 300,
+    "second_batch_counts": {
+      "mmsearch": 33,
+      "simplevqa": 33,
+      "vdr_bench": 34
+    },
+    "selection_mode": "full_eval300_balanced_batches",
+    "selection_version": 1
+  },
+  "search_behavior_version": 2,
+  "search_config_fingerprint": "66da11f8a36cbccb946d847f0a1aecf182a76fe6750ac5bff24d0a452fbbe901",
+  "tool_contract_fingerprint": "366084c22ef628dfd14cd8d17e4b6bb7657bddd726ea2a843966126c2989d1c7"
+}
