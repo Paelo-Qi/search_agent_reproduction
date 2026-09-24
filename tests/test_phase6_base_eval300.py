@@ -11,13 +11,70 @@ import requests
 from opensearch_vl_repro.agent.runtime import AgentTrajectory, AgentTurn
 from opensearch_vl_repro.evaluation import (
     BatchRunner, BatchSample, FIRST_BATCH_COUNTS, FROZEN_EVAL300_SHA256,
-    SECOND_BATCH_COUNTS, build_eval300_plan, create_run_manifest,
+    SECOND_BATCH_COUNTS, build_eval300_plan, build_run_manifest, create_run_manifest,
 )
 from opensearch_vl_repro.evaluation.judge_runner import JudgeRunner
+from opensearch_vl_repro.evaluation.run_manifest import manifest_mismatches
+from opensearch_vl_repro.inference import load_inference_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET = ROOT / "data/eval/combined_eval_300.parquet"
+
+
+def test_formal_eval300_generation_and_turn_limits():
+    config = load_inference_config(ROOT / "configs/eval_base_300.yaml")
+    assert config.max_agent_turns == 16
+    assert config.max_new_tokens == 512
+    assert config.temperature == 0.0
+    assert config.do_sample is False
+    assert config.top_p == 1.0
+
+
+def test_old_run_id_cannot_resume_with_new_formal_config(tmp_path):
+    current_path = ROOT / "configs/eval_base_300.yaml"
+    old_path = tmp_path / "old_eval_base_300.yaml"
+    old_path.write_text(
+        current_path.read_text(encoding="utf-8")
+        .replace("max_new_tokens: 512", "max_new_tokens: 256")
+        .replace("max_agent_turns: 16", "max_agent_turns: 8"),
+        encoding="utf-8",
+    )
+    dataset_path = tmp_path / "dataset.parquet"
+    dataset_path.write_bytes(b"manifest identity fixture")
+    common = {
+        "run_id": "base-eval300-v2",
+        "model_name_or_path": "Qwen/Qwen3-VL-4B-Instruct",
+        "model_revision": "fixed-revision",
+        "dataset_path": dataset_path,
+        "eval_manifest_path": None,
+        "start": None,
+        "limit": None,
+        "sample_selection": {"selection_mode": "eval300", "sample_count": 300},
+        "search_config_path": ROOT / "configs/search_backends.example.yaml",
+        "layout_config_path": ROOT / "configs/layout_parsing.example.yaml",
+    }
+    old_manifest = build_run_manifest(
+        **common, inference_config_path=old_path, max_agent_turns=8,
+    )
+    new_manifest = build_run_manifest(
+        **common, inference_config_path=current_path, max_agent_turns=16,
+    )
+    mismatches = manifest_mismatches(old_manifest, new_manifest)
+    assert "inference_config_fingerprint" in mismatches
+    assert "max_agent_turns" in mismatches
+    generation_only_path = tmp_path / "old_generation_only.yaml"
+    generation_only_path.write_text(
+        current_path.read_text(encoding="utf-8")
+        .replace("max_new_tokens: 512", "max_new_tokens: 256"),
+        encoding="utf-8",
+    )
+    generation_only_manifest = build_run_manifest(
+        **common, inference_config_path=generation_only_path, max_agent_turns=16,
+    )
+    assert manifest_mismatches(generation_only_manifest, new_manifest) == [
+        "inference_config_fingerprint"
+    ]
 
 
 def _counts(entries):

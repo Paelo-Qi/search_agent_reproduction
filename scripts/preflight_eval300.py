@@ -45,11 +45,11 @@ def build_preflight_report(
         "dtype": "bfloat16",
         "device": "cuda:0",
         "attn_implementation": "sdpa",
-        "max_new_tokens": 256,
+        "max_new_tokens": 512,
         "temperature": 0.0,
         "do_sample": False,
         "top_p": 1.0,
-        "max_agent_turns": 8,
+        "max_agent_turns": 16,
     }
     actual_model = {name: getattr(config, name) for name in expected_model}
     env_names = {
@@ -90,7 +90,7 @@ def build_preflight_report(
         "model_loaded": False,
         "dataset_path": str(config.data_path),
         "dataset_sha256": plan.dataset_sha256,
-        "run_id": "base-eval300-v1",
+        "run_id": "base-eval300-v3",
         "selection_identity": plan.selection_identity(),
         "counts": {
             "full": _counts(plan.entries),

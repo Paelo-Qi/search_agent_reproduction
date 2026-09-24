@@ -136,6 +136,15 @@ def _json(response: Any) -> dict[str, Any]:
     return raw
 
 
+def _serpapi_json(response: Any) -> dict[str, Any]:
+    try:
+        return _json(response)
+    except SearchBackendError as exc:
+        if exc.error_type == "provider_error":
+            raise SearchBackendError("provider_error", str(exc), retryable=True) from None
+        raise
+
+
 def _request(method: Any, *args: Any, **kwargs: Any) -> Any:
     try:
         return _response(method(*args, **kwargs))
@@ -273,31 +282,29 @@ class SerpApiLensBackend:
         key = _credential(self.config["api_key_env"])
         encoded = self._encoded_image(image)
         try:
-            upload, upload_attempts = self.retry.run(lambda: _request(
+            upload_raw, upload_attempts = self.retry.run(lambda: _serpapi_json(_request(
                 self.session.post, self.config["upload_endpoint"],
                 data={"api_key": key}, files={"image": encoded.multipart_file()},
                 timeout=self.config["timeout_seconds"],
-            ))
+            )))
             self.last_attempt_count = upload_attempts
         except SearchBackendError as exc:
             self.last_attempt_count = getattr(exc, "attempt_count", 1)
             raise
-        upload_raw = _json(upload)
         image_id = upload_raw.get("image_id")
         if not isinstance(image_id, str) or not image_id.strip():
             raise SearchBackendError("invalid_response", "upload response is missing image_id")
         try:
-            lens, lens_attempts = self.retry.run(lambda: _request(
+            raw, lens_attempts = self.retry.run(lambda: _serpapi_json(_request(
                 self.session.get, self.config["lens_endpoint"],
                 params={"engine": "google_lens", "type": "visual_matches",
                         "image_id": image_id, "api_key": key},
                 timeout=self.config["timeout_seconds"],
-            ))
+            )))
             self.last_attempt_count = max(upload_attempts, lens_attempts)
         except SearchBackendError as exc:
             self.last_attempt_count = max(upload_attempts, getattr(exc, "attempt_count", 1))
             raise
-        raw = _json(lens)
         matches = raw.get("visual_matches")
         metadata = raw.get("search_metadata")
         if matches is None and isinstance(metadata, dict) and metadata.get("status") == "Success":

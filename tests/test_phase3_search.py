@@ -141,6 +141,19 @@ def test_serper_failure_mapping(config, keys, failure, expected):
     assert "serper-secret" not in str(caught.value)
 
 
+def test_serper_json_error_remains_nonretryable(config, keys):
+    session = Session(posts=[Response({"error": "permanent provider error"})])
+    backend = SerperSearchBackend(
+        config.serper, session=session,
+        retry=RetryPolicy(max_attempts=3, backoff_seconds=(0,), sleeper=lambda _: None),
+    )
+    with pytest.raises(SearchBackendError) as caught:
+        backend.search("q", hl=None, limit=1)
+    assert caught.value.error_type == "provider_error"
+    assert caught.value.retryable is False
+    assert len(session.calls) == 1
+
+
 def test_reader_text_auth_and_optional_key(config, keys, monkeypatch):
     session = Session(gets=[Response(text="  Page body  "), Response(text="No key")])
     reader = JinaReaderBackend(config.jina_reader, session=session)
@@ -360,6 +373,72 @@ def test_image_tool_exposes_upload_metadata(config, keys):
     assert result.metadata["uploaded_width"] == 40
     assert result.metadata["upload_bytes"] <= 500_000
     assert result.metadata["resized_for_upload"] is False
+
+
+@pytest.mark.parametrize("error_stage", ["upload", "lens"])
+def test_serpapi_json_error_retries_then_image_search_succeeds(config, keys, error_stage):
+    temporary_error = Response({"error": "temporary provider error"})
+    upload_success = Response({"image_id": "retry-id"})
+    lens_success = Response({"visual_matches": []})
+    session = Session(
+        posts=([temporary_error, upload_success] if error_stage == "upload"
+               else [upload_success]),
+        gets=([temporary_error, lens_success] if error_stage == "lens"
+              else [lens_success]),
+    )
+    backend = SerpApiLensBackend(
+        config.serpapi, session=session,
+        retry=RetryPolicy(max_attempts=3, backoff_seconds=(0,), sleeper=lambda _: None),
+    )
+    result = SearchTools(config, lens=backend).image_search({"url": "img_1"}, _context())
+    assert result.status == "success"
+    assert result.metadata["attempt_count"] == backend.last_attempt_count == 2
+    method = "post" if error_stage == "upload" else "get"
+    assert [call[0] for call in session.calls].count(method) == 2
+
+
+def test_serpapi_json_error_exhausts_retry_budget(config, keys):
+    session = Session(
+        posts=[Response({"image_id": "retry-id"})],
+        gets=[Response({"error": "temporary provider error"}) for _ in range(3)],
+    )
+    backend = SerpApiLensBackend(
+        config.serpapi, session=session,
+        retry=RetryPolicy(max_attempts=3, backoff_seconds=(0,), sleeper=lambda _: None),
+    )
+    result = SearchTools(config, lens=backend).image_search({"url": "img_1"}, _context())
+    assert result.status == "error"
+    assert result.error_type == "provider_error"
+    assert result.metadata["attempt_count"] == backend.last_attempt_count == 3
+    assert [call[0] for call in session.calls] == ["post", "get", "get", "get"]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_serpapi_auth_http_error_does_not_retry(config, keys, status):
+    session = Session(posts=[Response(status=status)])
+    backend = SerpApiLensBackend(
+        config.serpapi, session=session,
+        retry=RetryPolicy(max_attempts=3, backoff_seconds=(0,), sleeper=lambda _: None),
+    )
+    result = SearchTools(config, lens=backend).image_search({"url": "img_1"}, _context())
+    assert result.status == "error"
+    assert result.error_type == "authentication_error"
+    assert result.metadata["attempt_count"] == 1
+    assert len(session.calls) == 1
+
+
+def test_serpapi_missing_key_does_not_retry(config, monkeypatch):
+    monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
+    session = Session()
+    backend = SerpApiLensBackend(
+        config.serpapi, session=session,
+        retry=RetryPolicy(max_attempts=3, backoff_seconds=(0,), sleeper=lambda _: None),
+    )
+    result = SearchTools(config, lens=backend).image_search({"url": "img_1"}, _context())
+    assert result.status == "error"
+    assert result.error_type == "configuration_error"
+    assert result.metadata["attempt_count"] == 1
+    assert session.calls == []
 
 
 @pytest.mark.parametrize("upload,lens,expected", [

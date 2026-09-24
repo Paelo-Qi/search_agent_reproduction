@@ -208,6 +208,15 @@ def test_agent_runtime_handles_malformed_unknown_and_max_turns() -> None:
     ]
 
 
+def test_truncated_tool_call_remains_invalid() -> None:
+    trajectory = AgentRuntime(
+        model=ScriptedAgentModel(['<tool_call>\n{"name": "crop", "arguments": {']),
+        tool_registry=create_mock_tool_registry(), max_agent_turns=1,
+    ).run(question="test", images=[Image.new("RGB", (2, 2))])
+    assert trajectory.turns[0].error == "invalid_tool_call"
+    assert "incomplete tool_call block" in trajectory.turns[0].observation
+
+
 def test_agent_runtime_converts_backend_exception_to_observation() -> None:
     def broken_backend(arguments, context):
         del arguments, context

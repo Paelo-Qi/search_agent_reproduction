@@ -8,14 +8,14 @@ model:
   image_max_pixels: 1048576
 
 generation:
-  max_new_tokens: 256
+  max_new_tokens: 512
   temperature: 0.0
   do_sample: false
   top_p: 1.0
 
 runtime:
   seed: 20260506
-  max_agent_turns: 8
+  max_agent_turns: 16
 
 data:
   path: data/eval/combined_eval_300.parquet
