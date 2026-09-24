@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Protocol, Sequence
 
 from .image_registry import ImageRegistry
+from .question_normalization import normalize_model_question
 from .reliability import canonical_json, image_sha256
 from .tool_parser import ParsedAssistantOutput, ParsedToolCall, ToolCallParser
 from .tool_registry import ToolContext, ToolRegistry, ToolResult
@@ -23,7 +24,7 @@ Core policy — Verify, Don't Guess:
 Before each action, assess what the user asks, image quality, what is directly visible, what information is missing, and the next useful action. Prefer a tool when it can clarify a small or unclear visual detail or verify a needed fact. A clear image with a directly answerable question needs no tool call. For complex questions, chain useful tools and inspect each observation before deciding whether another step is needed; do not stop after the first tool call while a relevant gap remains.
 
 Tool selection:
-- crop: Isolate a relevant object, text region, or chart section that is small relative to the full image or surrounded by distracting content.
+- crop: Isolate a relevant object, text region, or chart section that is small relative to the full image or surrounded by distracting content. Use pixel coordinates of the referenced img_n: consult its listed width and height, choose x and y within those image bounds, and choose width and height that define a meaningful non-empty region.
 - layout_parsing: Extract text and structure from document-like images, receipts, labels, tables, or charts when accurate reading or layout matters. Check its observation rather than inventing text it did not return.
 - perspective_correct: Straighten a document or text region photographed at an angle or visibly skewed.
 - super_resolution: Enlarge a genuinely low-resolution or pixelated image or relevant region.
@@ -89,13 +90,17 @@ class AgentRuntime:
         self.image_registry_factory = image_registry_factory
         self.parser = ToolCallParser(tool_registry.list_tools())
 
-    @staticmethod
+    @classmethod
     def _initial_messages(
-        question: str, images: Sequence[Any], image_ids: Sequence[str],
+        cls, question: str, images: Sequence[Any], image_ids: Sequence[str],
     ) -> list[dict[str, Any]]:
         content = [{"type": "image", "image": image} for image in images]
         content.append({"type": "text", "text": question})
-        registered = "\n".join(f"- {image_id}" for image_id in image_ids)
+        registered_lines = []
+        for image_id, image in zip(image_ids, images, strict=True):
+            width, height = cls._image_size(image)
+            registered_lines.append(f"- {image_id}: width={width}, height={height}")
+        registered = "\n".join(registered_lines)
         system = f"{AGENT_SYSTEM_GUIDANCE}\n\nRegistered input images:\n{registered}"
         return [{"role": "system", "content": system},
                 {"role": "user", "content": content}]
@@ -238,7 +243,10 @@ class AgentRuntime:
         observation = result.observation
         if derived:
             ids_text = "\n".join(
-                f"New image ID: {item['image_id']}." for item in derived
+                f"New image ID: {item['image_id']}. "
+                f"Image size: width={item['result_size'][0]}, "
+                f"height={item['result_size'][1]}."
+                for item in derived
             )
             if "</observation>" in observation:
                 observation = observation.replace(
@@ -279,7 +287,7 @@ class AgentRuntime:
         context = ToolContext(
             image_registry=image_registry, sample_id=sample_id, benchmark=benchmark
         )
-        messages = self._initial_messages(question, images, image_ids)
+        messages = self._initial_messages(normalize_model_question(question), images, image_ids)
         declarations = self.tool_registry.declarations_for_model()
         turns: list[AgentTurn] = []
         seen_tool_calls: dict[str, int] = {}

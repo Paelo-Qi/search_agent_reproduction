@@ -76,7 +76,7 @@ def test_tool_descriptions_add_triggers_without_changing_argument_contracts():
         assert "http url" in descriptions[name]
 
 
-def test_agent_behavior_version_3_rejects_version_2_run_identity():
+def test_agent_behavior_version_4_rejects_version_3_run_identity():
     current = create_run_manifest(
         run_id="base-dev30-v3", model_name_or_path="Qwen/model", model_revision="r",
         inference_config_fingerprint="i", dataset_path="eval.parquet",
@@ -85,6 +85,6 @@ def test_agent_behavior_version_3_rejects_version_2_run_identity():
         layout_config_fingerprint="l", checkpoint={"kind": "remote"},
         tool_fingerprint="tool-contract", created_at="fixed",
     )
-    previous = dict(current, agent_behavior_version=2)
-    assert AGENT_BEHAVIOR_VERSION == current["agent_behavior_version"] == 3
+    previous = dict(current, agent_behavior_version=3)
+    assert AGENT_BEHAVIOR_VERSION == current["agent_behavior_version"] == 4
     assert "agent_behavior_version" in manifest_mismatches(previous, current)

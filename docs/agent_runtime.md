@@ -74,6 +74,41 @@ python scripts/run_judge.py \
   --dataset data/eval/combined_eval_300.parquet
 ```
 
+## Phase 6B.1 image and question contract
+
+`AGENT_BEHAVIOR_VERSION=4` makes the actual width and height of each registered
+input image visible in the system message. Tool observations now give the new
+`img_n` ID and the actual derived image dimensions, including after crop
+clipping. The crop guidance asks for pixel coordinates within the listed image
+bounds and a meaningful nonempty region; backend clipping and validation are
+unchanged.
+
+Before model generation, the Agent removes only a leading dataset wrapper of
+the form `image_id: <filename.jpg/png/...> Question: <question>` (allowing
+whitespace and case variations). The frozen question remains unmodified in the
+batch trajectory record's `question` field. Other question text is preserved.
+This prevents dataset filenames from competing with registered `img_n` IDs in
+the model's input.
+
+Use a new Dev-30 run ID for the version 4 protocol; existing v3 artifacts
+cannot resume under this version. The model, selection manifest, tool configs,
+cache directory, eight-turn limit, and Judge configuration remain the same:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_agent_batch.py \
+  --run-id base-dev30-v4 \
+  --config configs/eval_4b.yaml \
+  --search-config configs/search_backends.example.yaml \
+  --layout-config configs/layout_parsing.example.yaml \
+  --cache-dir .eval-runtime/cache \
+  --selection-manifest data/eval/dev30/dev30_manifest.json
+
+python scripts/run_judge.py \
+  --run-id base-dev30-v4 \
+  --config configs/judge.example.yaml \
+  --dataset data/eval/combined_eval_300.parquet
+```
+
 ## AutoDL CUDA validation
 
 Install the pinned requirements and a matching CUDA build of PyTorch first.
