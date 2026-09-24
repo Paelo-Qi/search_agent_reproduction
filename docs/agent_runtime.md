@@ -39,9 +39,40 @@ model to stop once evidence is sufficient; `max_agent_turns` remains 8 for the
 formal evaluation configuration.
 
 This policy is identified by `agent_behavior_version` in every run manifest.
-Old manifests without the current version cannot resume under the new runtime.
+Older manifests with a different version cannot resume under the new runtime.
 Batch execution prints flushed START/DONE lines after the corresponding safe
 persistence points, using the number eligible in that invocation as `[i/N]`.
+
+## Phase 6B tool-use guidance
+
+The earlier reproduction prompt was intentionally minimal. Phase 6B expands
+the model-facing instructions toward the original OpenSearch-VL Visual
+Investigation Agent policy: assess the question and image quality, verify
+external facts, choose tools for specific information gaps, and chain useful
+steps such as `crop -> layout_parsing` or `image_search -> text_search`.
+The reproduction's registered `img_n` contract and actual search output formats
+remain authoritative. It does not adopt the original prompt's path/URL image
+arguments, summarization component, or mandatory output tags.
+
+`AGENT_BEHAVIOR_VERSION=3` separates these trajectories from earlier Agent
+runs. Base, SFT, and RL comparisons made after this change must use the same
+prompt version. Previous `base-dev30-v2` and `base-eval300-v1` artifacts must
+not be resumed under version 3; use a new run ID. For Dev-30 validation:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_agent_batch.py \
+  --run-id base-dev30-v3 \
+  --config configs/eval_4b.yaml \
+  --search-config configs/search_backends.example.yaml \
+  --layout-config configs/layout_parsing.example.yaml \
+  --cache-dir .eval-runtime/cache \
+  --selection-manifest data/eval/dev30/dev30_manifest.json
+
+python scripts/run_judge.py \
+  --run-id base-dev30-v3 \
+  --config configs/judge.example.yaml \
+  --dataset data/eval/combined_eval_300.parquet
+```
 
 ## AutoDL CUDA validation
 

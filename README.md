@@ -346,6 +346,11 @@ run manifests from resuming under this behavior. Batch runs print flushed
 
 ## Phase 6A Base Eval-300 preparation
 
+The commands below document the earlier Agent behavior. Phase 6B changes the
+model-facing prompt and sets `AGENT_BEHAVIOR_VERSION=3`; use a new run ID for
+future formal runs after validating `base-dev30-v3` (see
+`docs/agent_runtime.md`). Existing `base-eval300-v1` artifacts remain untouched.
+
 The formal Base run is `base-eval300-v1`: one full 300-sample manifest, with an
 invocation-only balanced first batch of 67 SimpleVQA + 67 MMSearch + 66
 VDR-Bench samples and a pending remainder of 33 + 33 + 34. The same run is then

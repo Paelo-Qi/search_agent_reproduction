@@ -1,5 +1,10 @@
 # Phase 6A: Base Eval-300 formal-run preparation
 
+This document records the Phase 6A workflow under the earlier Agent prompt.
+Phase 6B sets `AGENT_BEHAVIOR_VERSION=3`; validate the new prompt on
+`base-dev30-v3` first, then use a new run ID for any later full Eval-300 run.
+Do not reuse existing `base-eval300-v1` artifacts with the new behavior.
+
 Phase 6A scales the already accepted Base Agent protocol to the frozen
 `data/eval/combined_eval_300.parquet`; it does not change Agent generation,
 tools, cache/retry behavior, or Judge semantics. The one formal run ID is

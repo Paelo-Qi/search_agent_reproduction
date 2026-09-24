@@ -65,19 +65,19 @@ def _object_schema(
 TOOL_DECLARATIONS = (
     ToolDeclaration(
         "text_search",
-        "Search text passages for a query.",
+        "Look up a known entity, specific fact, or context not visible in the image. Returns web result titles, URLs, snippets, and page passages when available; use after image_search when detailed facts about a likely match are needed.",
         _object_schema(
             {"q": "string", "hl": "string", "top_k": "number"}, ("q",)
         ),
     ),
     ToolDeclaration(
         "image_search",
-        "Search using a registered runtime image ID such as img_1. The url argument is not a filename, filesystem path, or HTTP URL.",
+        "Visually identify an unknown landmark, object, artwork, product, or scene using reverse-image-style matches and source links. Pass a registered runtime image ID such as img_1 in the url argument, not a filename, filesystem path, or HTTP URL. Follow with text_search if the question needs detailed facts about a likely match.",
         _object_schema({"url": "string"}, ("url",)),
     ),
     ToolDeclaration(
         "crop",
-        "Crop a registered runtime image ID such as img_1 and create a derived image. The image argument is not a filename, filesystem path, or HTTP URL.",
+        "Isolate a relevant object, small text region, or chart section when the full image contains distracting detail. Creates a new registered image for closer inspection or layout_parsing. Pass a registered runtime image ID such as img_1 in image, not a filename, filesystem path, or HTTP URL.",
         _object_schema(
             {
                 "image": "string",
@@ -91,7 +91,7 @@ TOOL_DECLARATIONS = (
     ),
     ToolDeclaration(
         "layout_parsing",
-        "Parse text and layout from a registered runtime image ID such as img_1. The image argument is not a filename, filesystem path, or HTTP URL.",
+        "Extract readable text and layout from document-like images, receipts, labels, tables, or charts when accurate wording or structure matters. A prior crop or image enhancement may help. Pass a registered runtime image ID such as img_1 in image, not a filename, filesystem path, or HTTP URL.",
         _object_schema(
             {
                 "image": "string",
@@ -103,22 +103,22 @@ TOOL_DECLARATIONS = (
     ),
     ToolDeclaration(
         "super_resolution",
-        "Create a super-resolution image from a registered runtime image ID such as img_1. The image argument is not a filename, filesystem path, or HTTP URL.",
+        "Enlarge a genuinely low-resolution or pixelated image or region when small details need inspection. Creates a new registered image. Pass a registered runtime image ID such as img_1 in image, not a filename, filesystem path, or HTTP URL.",
         _object_schema({"image": "string", "scale": "number"}, ("image", "scale")),
     ),
     ToolDeclaration(
         "sharpen",
-        "Sharpen a registered runtime image ID such as img_1. The image argument is not a filename, filesystem path, or HTTP URL.",
+        "Improve blurred text or soft edges when sharper detail may make evidence readable. Creates a new registered image. Pass a registered runtime image ID such as img_1 in image, not a filename, filesystem path, or HTTP URL.",
         _object_schema({"image": "string", "amount": "number"}, ("image", "amount")),
     ),
     ToolDeclaration(
         "web_search",
-        "Search the web for a text query.",
+        "Find concise web result titles, URLs, and snippets for a text query. Useful for locating a source or quick context; use text_search when the question needs fuller page passages.",
         _object_schema({"q": "string", "hl": "string"}, ("q",)),
     ),
     ToolDeclaration(
         "perspective_correct",
-        "Perspective-correct a registered runtime image ID such as img_1. The image argument is not a filename, filesystem path, or HTTP URL.",
+        "Straighten a document or text region photographed at an angle or visibly skewed before reading it. Creates a new registered image. Pass a registered runtime image ID such as img_1 in image, not a filename, filesystem path, or HTTP URL.",
         _object_schema({"image": "string"}, ("image",)),
     ),
 )
