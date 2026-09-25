@@ -381,7 +381,9 @@ resumable two-GPU LoRA training infrastructure, read-only preflight audits,
 and optional Base+adapter evaluation loading. AutoDL 4B smoke A/B has passed;
 formal 1k training and SFT Eval-300 have **not** run. Formal 4B SFT now uses
 FlashAttention-2 with fixed micro-batch 1/accumulation 4, and the longest
-`main_a_1k` sample still needs the single-GPU stress test before training.
+`main_a_1k` sample passed single-GPU forward/backward but has little VRAM
+headroom. A separate two-GPU DDP/AdamW longest-sample stress test is required
+before considering formal training; it is not itself a training run.
 See [the SFT-0 runbook](docs/sft_main_training.md) for exact commands,
 artifacts, scheduler phases, and human review points.
 

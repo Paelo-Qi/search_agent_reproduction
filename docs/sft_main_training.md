@@ -260,7 +260,16 @@ CUDA_VISIBLE_DEVICES=0 python scripts/diagnose_sft_vram.py \
   --config configs/sft_main.yaml --data data/sft_main/main_a_1k.json \
   --select-longest --with-backward
 
-# 5. Fresh-process Base+smoke-adapter generation on an official SFT smoke
+# 5. Final worst-case two-GPU DDP/AdamW stress check. Each rank deliberately
+# receives the SAME longest sample; this is NOT the formal sampler or an
+# effective-global-batch-8 optimizer step. No scheduler/checkpoint is created.
+CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
+  scripts/diagnose_sft_ddp_stress.py \
+  --config configs/sft_main.yaml \
+  --data data/sft_main/main_a_1k.json \
+  --select-longest
+
+# 6. Fresh-process Base+smoke-adapter generation on an official SFT smoke
 # sample, not on the held-out Eval-300.
 CUDA_VISIBLE_DEVICES=0 python scripts/reload_sft_adapter.py \
   --config configs/eval_base_300.yaml \
@@ -289,8 +298,21 @@ reserved VRAM. On an 80 GiB card, a backward OOM or peak reserved VRAM close
 to capacity is a stop signal; retain substantial headroom (roughly 8–10 GiB
 or more) for DDP, optimizer state, and run-to-run variation. Passing this
 single-card stress test is necessary evidence, not a guarantee of formal
-two-GPU completion. Do not launch `main_a_1k` until its preflight gate and
-this stress test have been reviewed.
+two-GPU completion. The actual single-card longest sample (`livevqa:7073`,
+index 177, 30,977 tokens) passed forward/backward but reached 75.545 GiB
+allocated and 76.494 GiB reserved on a 79.250 GiB GPU. That leaves too little
+evidence about DDP wrapping and AdamW's first-step state allocation; the
+two-rank command above is the final pre-run check. It scans with the real
+processor on each rank, uses the same sample on both ranks as a worst-case
+VRAM stressor, and performs only **one** micro-batch forward, backward,
+`optimizer.step()`, and `zero_grad()`. It does not accumulate four micro-batches,
+write a checkpoint, or launch `main_a_1k`. Inspect every rank's stage lines
+and rank 0's `[SUMMARY]` (`passed=true`, finite losses, both optimizer steps,
+per-rank/overall peak allocated and reserved). An `[OOM]` line identifies its
+rank and stage (`ddp_wrap`, `forward`, `backward`, or `optimizer_step`) before
+torchrun fails. Even a pass at near-capacity peak reserved VRAM requires
+manual headroom review; this diagnostic is not formal training acceptance.
+Do not launch `main_a_1k` until preflight and both stress tests are reviewed.
 
 The next commands are **conditional**, not permission to ignore a failed
 preflight. First inspect `reports/sft_preflight/*.json`, verify effective

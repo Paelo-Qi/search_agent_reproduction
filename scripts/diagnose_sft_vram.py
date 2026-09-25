@@ -168,6 +168,23 @@ def resolved_model_flags(model: Any, language_model: Any,
     }
 
 
+def resolved_attention_flags(model: Any, language_model: Any, layers: list[Any],
+                             requested_attention: str) -> dict[str, Any]:
+    """Check both model config and the first decoder's actual attention config."""
+    flags = resolved_model_flags(model, language_model, requested_attention)
+    first_attention = getattr(layers[0], "self_attn", None)
+    flags["first_attention_class"] = (type(first_attention).__module__ + "."
+                                      + type(first_attention).__name__
+                                      if first_attention is not None else None)
+    flags["first_attention_config_implementation"] = getattr(
+        getattr(first_attention, "config", None), "_attn_implementation", None)
+    if flags["first_attention_config_implementation"] is not None:
+        flags["effective_attention_implementation"] = flags["first_attention_config_implementation"]
+        flags["attention_matches_request"] = (
+            flags["effective_attention_implementation"] == requested_attention)
+    return flags
+
+
 def cuda_memory(torch: Any, device: Any) -> dict[str, float]:
     return {
         "allocated_gib": round(torch.cuda.memory_allocated(device) / GIB, 3),
@@ -294,17 +311,7 @@ def main() -> int:
           f"{sum(bool(getattr(layer, 'gradient_checkpointing', False)) for layer in layers)}/{len(layers)}",
           flush=True)
     requested_attention = config["model"].get("attn_implementation", "sdpa")
-    flags = resolved_model_flags(model, language_model, requested_attention)
-    first_attention = getattr(layers[0], "self_attn", None)
-    flags["first_attention_class"] = (type(first_attention).__module__ + "."
-                                      + type(first_attention).__name__
-                                      if first_attention is not None else None)
-    flags["first_attention_config_implementation"] = getattr(
-        getattr(first_attention, "config", None), "_attn_implementation", None)
-    if flags["first_attention_config_implementation"] is not None:
-        flags["effective_attention_implementation"] = flags["first_attention_config_implementation"]
-        flags["attention_matches_request"] = (
-            flags["effective_attention_implementation"] == requested_attention)
+    flags = resolved_attention_flags(model, language_model, layers, requested_attention)
     print(f"[MODEL] flags={flags}", flush=True)
     if not flags["attention_matches_request"]:
         raise RuntimeError("resolved attention implementation does not match requested config")
