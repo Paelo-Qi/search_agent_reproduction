@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+from opensearch_vl_repro.data import RoleTokenSpan
+
 from opensearch_vl_repro.agent.tool_contracts import TOOL_DECLARATIONS_BY_NAME
 from opensearch_vl_repro.evaluation.run_manifest import create_run_manifest, manifest_mismatches
 from opensearch_vl_repro.inference.adapter import adapter_identity
@@ -180,10 +182,13 @@ def test_tool_canonicalization_preserves_expert_call_observation_and_final():
 
 
 def test_sequence_audit_counts_zero_targets_and_cut_assistant_span():
-    full = [1, 2, 7, 8, 9]
-    intact = token_audit(full, full, [1, 2], 9)
-    cut = token_audit(full, full[:3], [1, 2], 9)
-    zero = token_audit(full, full[:2], [1, 2], 9)
+    full = list(map(ord, "abXYZ"))
+    tokenizer = SimpleNamespace(decode=lambda values, **kwargs: "".join(map(chr, values)))
+    spans = [RoleTokenSpan(0, 2, 5)]
+    messages = [{"role": "assistant", "content": "XYZ"}]
+    intact = token_audit(full, full, spans, messages, tokenizer)
+    cut = token_audit(full, full[:3], spans, messages, tokenizer)
+    zero = token_audit(full, full[:2], spans, messages, tokenizer)
     assert intact["supervised_tokens_after_truncation"] == 3
     assert cut["partial_assistant_span_cut"] is True
     assert zero["zero_supervised_tokens"] is True
@@ -195,10 +200,13 @@ def test_sequence_audit_counts_zero_targets_and_cut_assistant_span():
 
 
 def test_token_cut_boundaries_and_formal_report_only_drop():
-    # Two complete assistant turns; the second includes one tool call.
-    full = [1, 2, 3, 9, 1, 2, 5, 7, 6, 8, 9]
+    full = list(map(ord, "aaA!bb<tool_call>X</tool_call>Y!"))
+    tokenizer = SimpleNamespace(decode=lambda values, **kwargs: "".join(map(chr, values)))
+    spans = [RoleTokenSpan(0, 2, 4), RoleTokenSpan(1, 6, len(full))]
+    messages = [{"role": "assistant", "content": "A!"},
+                {"role": "assistant", "content": "<tool_call>X</tool_call>Y!"}]
     def audit(cutoff):
-        return token_audit(full, full[:cutoff], [1, 2], 9, [5], [6])
+        return token_audit(full, full[:cutoff], spans, messages, tokenizer)
 
     assert audit(0)["zero_supervised_tokens"] is True
     assert audit(2)["zero_supervised_tokens"] is True  # exactly at assistant body start
@@ -206,10 +214,10 @@ def test_token_cut_boundaries_and_formal_report_only_drop():
     assert audit(4)["complete_assistant_span_dropped"] == 1
     assert audit(6)["complete_assistant_span_dropped"] == 1  # second body start
     assert audit(3)["partial_assistant_span_cut"] is True
-    assert audit(7)["partial_tool_call_cut"] is True
-    assert audit(7)["partial_assistant_span_cut"] is True
-    assert audit(9)["partial_tool_call_cut"] is False
-    assert audit(11)["complete_assistant_span_dropped"] == 0
+    assert audit(16)["partial_tool_call_cut"] is True
+    assert audit(16)["partial_assistant_span_cut"] is True
+    assert audit(len(full) - 1)["partial_tool_call_cut"] is False
+    assert audit(len(full))["complete_assistant_span_dropped"] == 0
     summary = sequence_summary([audit(4)], 4)
     checks = formal_preflight_checks(
         {"effective_declaration_drift_count": 0, "actual_call_drift_count": 0},

@@ -18,7 +18,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-from .data import OpenSearchVLCollator, load_json_records
+from .data import SFT_MASK_VERSION, OpenSearchVLCollator, load_json_records
 from .model import (add_lora, freeze_vision_components, load_base_model,
                     load_processor, move_batch, parameter_audit, select_probe_parameter)
 from .reporting import environment_report, write_json
@@ -31,6 +31,23 @@ from .sft_train_plan import (STAGE_NAMES, STAGE_ORDER, StagePlan, cosine_factor,
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CHECKPOINT_FILES = ("adapter/adapter_config.json", "optimizer.pt", "scheduler.pt",
                     "rng.pt", "trainer_state.json", "metadata.json")
+
+
+def _duration(seconds: float) -> str:
+    total = max(0, round(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}h{minutes:02d}m{seconds:02d}s" if hours else f"{minutes}m{seconds:02d}s"
+
+
+def format_sft_progress(*, stage: str, stage_step: int, stage_total: int,
+                        global_step: int, loss: float, lr: float,
+                        step_time: float, elapsed: float,
+                        steps_this_invocation: int, remaining_steps: int) -> str:
+    eta = elapsed / max(1, steps_this_invocation) * remaining_steps
+    return (f"[SFT] stage={stage} step={stage_step}/{stage_total} "
+            f"global_step={global_step} loss={loss:.4f} lr={lr:.3e} "
+            f"step_time={step_time:.2f}s elapsed={_duration(elapsed)} eta={_duration(eta)}")
 
 
 def check_checkpoint(path: str | Path) -> dict[str, Any]:
@@ -200,7 +217,8 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
         if not preflight_path.is_file():
             raise RuntimeError("full SFT preflight audit must run before formal training")
         preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
-        if (not preflight.get("passed") or not preflight.get("sequence_complete")
+        if (preflight.get("mask_version") != SFT_MASK_VERSION
+                or not preflight.get("passed") or not preflight.get("sequence_complete")
                 or not preflight.get("tool_contract_passed") or not preflight.get("leakage_complete")
                 or not isinstance(preflight.get("checks"), dict)
                 or set(preflight["checks"]) != {
@@ -322,6 +340,12 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
         if stage != "smoke" or not initial_step < stop_after_steps <= target:
             raise ValueError("--stop-after-steps is only for an in-progress 4B smoke")
         target = stop_after_steps
+    if rank == 0:
+        print(f"[SFT] start stage={stage} samples={plan.shard_samples} epochs={plan.epochs} "
+              f"world_size={plan.world_size} micro_batch={plan.micro_batch} "
+              f"grad_accum={plan.gradient_accumulation} global_batch={plan.effective_global_batch} "
+              f"planned_steps={plan.stage_steps} scheduler={plan.scheduler_phase}/"
+              f"{plan.phase_total_steps} resume={resume_path or 'none'}", flush=True)
     step_losses, step_lrs, step_times = [], [], []
     accumulated_loss = 0.0
     micro_in_step = 0
@@ -380,17 +404,28 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
                 writer.add_scalar("train/loss", step_loss, state["global_step"])
                 writer.add_scalar("train/learning_rate", state["current_lr"], state["global_step"])
                 writer.add_scalar("train/step_time_seconds", step_time, state["global_step"])
+            if rank == 0 and state["global_step"] % int(config["training"].get("logging_steps", 1)) == 0:
+                print(format_sft_progress(
+                    stage=stage, stage_step=state["global_step"] - plan.global_start_step,
+                    stage_total=plan.stage_steps, global_step=state["global_step"],
+                    loss=step_loss, lr=state["current_lr"], step_time=step_time,
+                    elapsed=time.perf_counter() - started,
+                    steps_this_invocation=state["global_step"] - initial_step,
+                    remaining_steps=target - state["global_step"]), flush=True)
             accumulated_loss = 0.0
             micro_in_step = 0
             save_every = int(config["training"].get("save_every_steps", 0))
             if save_every and state["global_step"] % save_every == 0 and state["global_step"] < target:
-                _save_checkpoint(root / "periodic" / stage / f"step-{state['global_step']}",
+                periodic_path = root / "periodic" / stage / f"step-{state['global_step']}"
+                _save_checkpoint(periodic_path,
                                  model=wrapped, processor=processor, optimizer=optimizer,
                                  scheduler=scheduler, state=state, plan=plan, config=config,
                                  pool_sha256=pool_sha, shard_sha256=shard_sha,
                                  resumed_from=str(resume_path) if resume_path else None,
                                  complete_stage=False, torch=torch, np=np, dist=dist,
                                  rank=rank, device=local_rank)
+                if rank == 0:
+                    print(f"[SFT] checkpoint saved: {periodic_path}", flush=True)
             step_started = time.perf_counter()
             if state["global_step"] >= target:
                 if state["microbatch_offset"] == len(loader):
@@ -426,6 +461,10 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
                      resumed_from=str(resume_path) if resume_path else None,
                      complete_stage=complete_stage, torch=torch, np=np, dist=dist,
                      rank=rank, device=local_rank)
+    if rank == 0:
+        print(f"[SFT] checkpoint saved: {final_checkpoint}", flush=True)
+        print(f"[SFT] finished stage={stage} elapsed={_duration(time.perf_counter() - started)} "
+              f"global_step={state['global_step']}", flush=True)
     if writer is not None:
         writer.flush()
         writer.close()

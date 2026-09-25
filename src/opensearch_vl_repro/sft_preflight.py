@@ -15,7 +15,38 @@ from .agent.question_normalization import normalize_model_question
 from .agent.reliability import image_sha256
 from .agent.tool_contracts import TOOL_DECLARATIONS, TOOL_DECLARATIONS_BY_NAME
 from .agent.tool_parser import ToolCallParser
-from .data import assistant_token_spans, build_messages, find_subsequence, parse_tools, render_prompt
+from .data import (SFT_MASK_VERSION, RoleTokenSpan, build_messages, message_role_spans, parse_tools,
+                   render_prompt)
+
+
+RESERVED_CHAT_LITERALS = ("<|im_start|>", "<|im_end|>")
+
+
+def reserved_literal_audit(records_by_shard: dict[str, list[dict[str, Any]]],
+                           max_examples: int = 20) -> dict[str, Any]:
+    """Read-only role-wise count of reserved spellings in source message bodies."""
+    counts: dict[str, Counter[str]] = defaultdict(Counter)
+    examples: list[dict[str, Any]] = []
+    role_names = {"human": "user", "gpt": "assistant", "observation": "tool"}
+    for shard, records in records_by_shard.items():
+        for record in records:
+            turns = ([(-1, "system", record.get("system", ""))]
+                     + [(index, role_names[turn["from"]], turn["value"])
+                        for index, turn in enumerate(record["conversations"])])
+            for turn_index, role, text in turns:
+                for literal in RESERVED_CHAT_LITERALS:
+                    count = text.count(literal)
+                    if not count:
+                        continue
+                    counts[role][literal] += count
+                    if len(examples) < max_examples:
+                        examples.append({"sample_id": record["_sample_id"], "shard": shard,
+                                         "turn_index": turn_index, "role": role,
+                                         "literal": literal, "count": count})
+    return {"literals": list(RESERVED_CHAT_LITERALS),
+            "counts_by_role": {role: dict(counts[role])
+                               for role in ("system", "user", "assistant", "tool")},
+            "example_count": len(examples), "examples": examples}
 
 
 def normalized_question(value: str) -> str:
@@ -166,39 +197,40 @@ def tool_contract_audit(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 
 def token_audit(input_ids: list[int], truncated_ids: list[int],
-                assistant_start_ids: list[int], end_id: int,
-                tool_open_ids: list[int] | None = None,
-                tool_close_ids: list[int] | None = None) -> dict[str, Any]:
+                spans: list[RoleTokenSpan], messages: list[dict[str, Any]],
+                tokenizer: Any) -> dict[str, Any]:
+    """Audit truncation against the same role-derived spans used by the collator."""
     if truncated_ids != input_ids[:len(truncated_ids)]:
         raise ValueError("multimodal processor truncation is not a right-hand prefix")
-    try:
-        full_spans = assistant_token_spans(input_ids, assistant_start_ids, end_id)
-    except RuntimeError:
-        full_spans = []
-    try:
-        truncated_spans = assistant_token_spans(truncated_ids, assistant_start_ids, end_id)
-    except RuntimeError:
-        truncated_spans = []
-    supervised = sum(end - start for start, end in truncated_spans)
     cutoff = len(truncated_ids)
-    partial = any(start < cutoff < end for start, end in full_spans)
-    dropped = sum(start >= cutoff for start, _ in full_spans)
+    supervised = sum(max(0, min(span.body_end, cutoff) - span.body_start)
+                     for span in spans)
+    partial = any(span.body_start < cutoff < span.body_end for span in spans)
+    dropped = sum(span.body_start >= cutoff for span in spans)
     partial_tool = False
     dropped_tool = 0
     tool_spans = 0
-    if tool_open_ids and tool_close_ids:
-        for start, end in full_spans:
-            cursor = start
-            while (opening := find_subsequence(input_ids, tool_open_ids, cursor)) >= 0 and opening < end:
-                closing = find_subsequence(input_ids, tool_close_ids,
-                                           opening + len(tool_open_ids))
-                if closing < 0 or closing + len(tool_close_ids) > end:
-                    break
-                close_end = closing + len(tool_close_ids)
-                tool_spans += 1
-                partial_tool |= opening < cutoff < close_end
-                dropped_tool += int(start >= cutoff)
-                cursor = close_end
+    for span in spans:
+        message = messages[span.message_index]
+        content = message["content"]
+        raw_text = (content if isinstance(content, str) else "".join(
+            part.get("text", "") for part in content if part.get("type") == "text"))
+        full_text = tokenizer.decode(input_ids[span.body_start:span.body_end],
+                                     skip_special_tokens=False,
+                                     clean_up_tokenization_spaces=False)
+        calls = list(re.finditer(r"<tool_call>.*?</tool_call>", full_text, re.DOTALL))
+        expected = raw_text.count("<tool_call>")
+        if (len(calls) != expected or full_text.count("<tool_call>") != expected
+                or full_text.count("</tool_call>") != expected):
+            raise RuntimeError(f"assistant tool-call text is not preserved at message {span.message_index}")
+        tool_spans += len(calls)
+        if span.body_start >= cutoff:
+            dropped_tool += len(calls)
+        elif span.body_start < cutoff < span.body_end and calls:
+            visible = tokenizer.decode(input_ids[span.body_start:cutoff],
+                                       skip_special_tokens=False,
+                                       clean_up_tokenization_spaces=False)
+            partial_tool |= any(call.start() < len(visible) < call.end() for call in calls)
     return {
         "token_length": len(input_ids), "truncated_length": len(truncated_ids),
         "supervised_tokens_after_truncation": supervised,
@@ -209,7 +241,7 @@ def token_audit(input_ids: list[int], truncated_ids: list[int],
         "complete_tool_call_turn_dropped": dropped_tool,
         "tool_call_span_count": tool_spans,
         "last_complete_assistant_end_before_cutoff": max(
-            (end for _, end in full_spans if end <= cutoff), default=None),
+            (span.body_end for span in spans if span.body_end <= cutoff), default=None),
     }
 
 
@@ -247,10 +279,6 @@ def sequence_audit(records_by_shard: dict[str, list[dict[str, Any]]],
                    processor: Any, data_dir: str | Path,
                    max_length: int = 32000) -> dict[str, Any]:
     """Use the actual multimodal processor/template, never text-only estimates."""
-    start_ids = processor.tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
-    end_id = processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
-    tool_open_ids = processor.tokenizer.encode("<tool_call>", add_special_tokens=False)
-    tool_close_ids = processor.tokenizer.encode("</tool_call>", add_special_tokens=False)
     rows_by_shard: dict[str, list[dict[str, Any]]] = {}
     for shard, records in records_by_shard.items():
         rows = []
@@ -262,18 +290,16 @@ def sequence_audit(records_by_shard: dict[str, list[dict[str, Any]]],
                              truncation=False, return_tensors="pt")
             truncated = processor(text=[prompt], images=[images], padding=False,
                                   truncation=True, max_length=max_length, return_tensors="pt")
-            row = token_audit(full["input_ids"][0].tolist(),
-                              truncated["input_ids"][0].tolist(), start_ids, end_id,
-                              tool_open_ids, tool_close_ids)
-            expected_tool_spans = sum(turn["value"].count("<tool_call>")
-                                      for turn in record["conversations"] if turn["from"] == "gpt")
-            if row["tool_call_span_count"] != expected_tool_spans:
-                raise RuntimeError(f"cannot resolve tokenized tool-call boundaries: {record['_sample_id']}")
+            full_ids = full["input_ids"][0].tolist()
+            spans = message_role_spans(processor, messages, images, tools, full_ids)
+            row = token_audit(full_ids, truncated["input_ids"][0].tolist(),
+                              spans, messages, processor.tokenizer)
             row.update(sample_id=record["_sample_id"], source=record["_source"], shard=shard)
             rows.append(row)
         rows_by_shard[shard] = rows
     all_rows = [row for rows in rows_by_shard.values() for row in rows]
-    return {"shards": {shard: sequence_summary(rows, max_length)
+    return {"mask_version": SFT_MASK_VERSION,
+            "shards": {shard: sequence_summary(rows, max_length)
                        for shard, rows in rows_by_shard.items()},
             "full_8k": sequence_summary(all_rows, max_length),
             "problem_samples": [row for row in all_rows if row["zero_supervised_tokens"]

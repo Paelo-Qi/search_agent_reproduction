@@ -10,6 +10,7 @@ from PIL import Image
 
 ROLE_MAP = {"human": "user", "gpt": "assistant", "observation": "tool"}
 IMAGE_MARKER = "<image>"
+SFT_MASK_VERSION = "structured-message-prefix-v1"
 
 
 def load_json_records(path: str | Path) -> list[dict[str, Any]]:
@@ -168,10 +169,9 @@ def assistant_token_spans(
 ) -> list[tuple[int, int]]:
     """Return half-open spans for assistant bodies, including ``message_end_id``.
 
-    This pure-Python helper deliberately knows nothing about torch. It makes the
-    loss-mask boundary behavior testable on hosts that do not have the GPU
-    training stack installed. User and tool/observation regions are excluded
-    because only explicit assistant boundary sequences open a target span.
+    Legacy token-only helper, retained for existing diagnostics. Training and
+    formal SFT preflight use ``message_role_spans`` instead: token scanning
+    cannot distinguish a template boundary from the same literal in content.
     """
 
     values = list(token_ids)
@@ -203,14 +203,83 @@ def assistant_token_spans(
     return spans
 
 
-def assistant_token_mask(input_ids: Any, tokenizer: Any, attention_mask: Any | None = None) -> Any:
-    """Mask only Qwen assistant message bodies, including their end token.
+@dataclass(frozen=True)
+class RoleTokenSpan:
+    message_index: int
+    body_start: int
+    body_end: int  # Includes the real template end token, not trailing whitespace.
 
-    Qwen3-VL's published chat template does not expose Jinja ``generation``
-    blocks, so Transformers cannot return an assistant mask. The template does
-    provide stable ``<|im_start|>assistant\n ... <|im_end|>`` boundaries; this
-    scanner uses those token boundaries and fails closed if a block is malformed.
+
+def _message_image_count(messages: Sequence[dict[str, Any]]) -> int:
+    return sum(part.get("type") == "image" for message in messages
+               if isinstance(message.get("content"), list)
+               for part in message["content"] if isinstance(part, dict))
+
+
+def _processor_ids(processor: Any, messages: list[dict[str, Any]],
+                   images: list[Image.Image], tools: list[dict[str, Any]]) -> list[int]:
+    prompt = render_prompt(processor, messages, tools)
+    batch = processor(text=[prompt], images=[images] if images else None,
+                      padding=False, truncation=False, return_tensors="pt")
+    return batch["input_ids"][0].tolist()
+
+
+def message_role_spans(processor: Any, messages: list[dict[str, Any]],
+                       images: list[Image.Image], tools: list[dict[str, Any]],
+                       full_input_ids: Sequence[int]) -> list[RoleTokenSpan]:
+    """Locate assistant bodies from message roles and verified template prefixes.
+
+    For each assistant turn, rendering an empty assistant gives its header end;
+    rendering the actual turn gives its true final template end. The last
+    ``<|im_end|>`` in each *message prefix* is structural, even if preceding
+    content contains identical literal tokens. Every prefix is checked against
+    the real multimodal processor sequence; incompatible templates fail closed.
     """
+    end_id = processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
+    if end_id is None or end_id == processor.tokenizer.unk_token_id:
+        raise RuntimeError("Qwen message end token is unavailable")
+    full = list(full_input_ids)
+    spans: list[RoleTokenSpan] = []
+    for index, message in enumerate(messages):
+        if message["role"] != "assistant":
+            continue
+        prior = messages[:index]
+        prior_images = images[:_message_image_count(prior)]
+        empty = prior + [{**message, "content": ""}]
+        empty_ids = _processor_ids(processor, empty, prior_images, tools)
+        if end_id not in empty_ids:
+            raise RuntimeError(f"assistant template end missing at message {index}")
+        body_start = len(empty_ids) - 1 - empty_ids[::-1].index(end_id)
+        if full[:body_start] != empty_ids[:body_start]:
+            raise RuntimeError(f"assistant header is not a multimodal token prefix at message {index}")
+
+        through = messages[:index + 1]
+        actual_images = images[:_message_image_count(through)]
+        actual_ids = _processor_ids(processor, through, actual_images, tools)
+        if full[:len(actual_ids)] != actual_ids:
+            raise RuntimeError(f"message tokens are not a multimodal prefix at message {index}")
+        if end_id not in actual_ids:
+            raise RuntimeError(f"assistant template end missing at message {index}")
+        body_end = len(actual_ids) - actual_ids[::-1].index(end_id)
+        if actual_ids[body_end:] != empty_ids[body_start + 1:]:
+            raise RuntimeError(f"assistant template suffix changed at message {index}")
+        if not body_start < body_end:
+            raise RuntimeError(f"empty assistant target at message {index}")
+        spans.append(RoleTokenSpan(index, body_start, body_end))
+    if not spans:
+        raise RuntimeError("structured trajectory has no assistant turn")
+    return spans
+
+
+def supervised_positions(spans: Sequence[RoleTokenSpan], cutoff: int) -> set[int]:
+    """Pure-Python source of truth for right-truncated assistant supervision."""
+    return {position for span in spans
+            for position in range(span.body_start, min(span.body_end, cutoff))}
+
+
+def assistant_token_mask(input_ids: Any, spans_by_row: Sequence[Sequence[RoleTokenSpan]],
+                         attention_mask: Any | None = None) -> Any:
+    """Apply structured assistant spans to padded processor output."""
 
     import torch
 
@@ -220,17 +289,14 @@ def assistant_token_mask(input_ids: Any, tokenizer: Any, attention_mask: Any | N
     if attention_mask is not None:
         attn_rows = attention_mask.unsqueeze(0) if attention_mask.ndim == 1 else attention_mask
 
-    start_ids = tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
-    end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
-    if not start_ids or end_id is None or end_id == tokenizer.unk_token_id:
-        raise RuntimeError("Qwen assistant boundary tokens are unavailable")
-
     result = torch.zeros_like(rows, dtype=torch.bool)
     for row_index, row in enumerate(rows):
-        valid_len = int(attn_rows[row_index].sum().item()) if attn_rows is not None else row.numel()
-        values = row[:valid_len].tolist()
-        for body_start, body_end in assistant_token_spans(values, start_ids, end_id):
-            result[row_index, body_start:body_end] = True
+        valid = (torch.nonzero(attn_rows[row_index], as_tuple=True)[0]
+                 if attn_rows is not None else torch.arange(row.numel(), device=row.device))
+        for span in spans_by_row[row_index]:
+            stop = min(span.body_end, len(valid))
+            if span.body_start < stop:
+                result[row_index, valid[span.body_start:stop]] = True
     return result[0] if squeeze else result
 
 
@@ -245,10 +311,14 @@ class OpenSearchVLCollator:
 
         prompts: list[str] = []
         image_batches: list[list[Image.Image]] = []
+        message_batches: list[list[dict[str, Any]]] = []
+        tool_batches: list[list[dict[str, Any]]] = []
         for feature in features:
             messages, images, tools = build_messages(feature, self.dataset_path)
             prompts.append(render_prompt(self.processor, messages, tools))
             image_batches.append(images)
+            message_batches.append(messages)
+            tool_batches.append(tools)
 
         batch = self.processor(
             text=prompts,
@@ -259,8 +329,24 @@ class OpenSearchVLCollator:
             return_tensors="pt",
         )
         batch.pop("token_type_ids", None)
+        full_batch = self.processor(text=prompts, images=image_batches, padding=True,
+                                    truncation=False, return_tensors="pt")
+        spans_by_row = []
+        for index, messages in enumerate(message_batches):
+            full_valid = full_batch["input_ids"][index]
+            if "attention_mask" in full_batch:
+                full_valid = full_valid[full_batch["attention_mask"][index].bool()]
+            full_ids = full_valid.tolist()
+            truncated_valid = batch["input_ids"][index]
+            if "attention_mask" in batch:
+                truncated_valid = truncated_valid[batch["attention_mask"][index].bool()]
+            truncated_ids = truncated_valid.tolist()
+            if truncated_ids != full_ids[:len(truncated_ids)]:
+                raise RuntimeError("multimodal processor truncation is not a right-hand prefix")
+            spans_by_row.append(message_role_spans(
+                self.processor, messages, image_batches[index], tool_batches[index], full_ids))
         mask = assistant_token_mask(
-            batch["input_ids"], self.processor.tokenizer, batch.get("attention_mask")
+            batch["input_ids"], spans_by_row, batch.get("attention_mask")
         )
         labels = batch["input_ids"].clone()
         labels[~mask] = -100

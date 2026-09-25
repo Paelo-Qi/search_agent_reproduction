@@ -85,9 +85,12 @@ declaration transformation only in training memory.
 
 ## Read-only preflight and current blockers
 
-`scripts/preflight_sft_main.py` writes four reports under
+`scripts/preflight_sft_main.py` writes five reports under
 `reports/sft_preflight/`:
 
+- `reserved_literals.json`: read-only counts of literal `<|im_start|>` and
+  `<|im_end|>` in structured message bodies, by source role, plus bounded
+  sample/shard/turn examples. Literals are not a reason to delete samples.
 - `leakage.json`: normalized question matches and decoded-image-content SHA256
   matches against the unchanged fixed Eval-300, with training ID, source,
   Eval ID, benchmark, and image hash. The final formal pool requires **zero
@@ -107,7 +110,17 @@ declaration transformation only in training memory.
 - `summary.json`: bound to the pool manifest and frozen Eval SHA256; blocks
   formal training unless media/sequence audits are complete, effective tool
   and call drift are zero, question/image overlap is zero, and all hard
-  truncation counts are zero. There is no leakage-acknowledgement bypass.
+  truncation counts are zero. It includes `structured-message-prefix-v1`,
+  which the trainer requires so an older mask audit cannot authorize training.
+  There is no leakage-acknowledgement bypass.
+
+The label mask and sequence preflight derive assistant bodies from structured
+message roles. For each assistant, the real multimodal processor renders a
+message prefix and an empty-body prefix; verified token-prefix positions give
+the assistant body and its true template end. Literal Qwen boundary spellings
+inside user/tool/assistant content are never used to infer a role. Tool-call
+truncation is checked by decoding only these role-derived assistant spans,
+not by searching a flattened sequence for a separately encoded marker.
 
 The previous pool exposed 32,000 raw declaration-schema drifts (four per
 sample), but no parsed expert call drift. These raw differences remain
@@ -158,6 +171,9 @@ overall peak VRAM, step time, samples/sec, environment versions, and
 TensorBoard scalar logs. Tokens/sec is **not** reported because the multimodal
 processor's variable image-token expansion and padding do not yet support a
 reliable, comparable counter.
+Rank 0 also prints a flushed stage-start summary, loss/LR/step time/elapsed/ETA
+at each configured optimizer-step logging interval (default every step),
+checkpoint paths after save, and stage completion. Other ranks stay quiet.
 
 ## Local/static commands (no model download, GPU, or API)
 
@@ -194,6 +210,17 @@ python scripts/preflight_sft_main.py
 python scripts/prepare_sft_main.py --leakage-report reports/sft_preflight/leakage.json \
   --extract-images --download-images
 python scripts/preflight_sft_main.py
+
+# Verify the formerly ambiguous sample using the actual Qwen processor and
+# collator, without loading 4B model weights or starting training.
+python scripts/diagnose_sft_mask.py --sample-id livevqa:5212
+
+# Check summary.json: passed=true, leakage_complete=true,
+# question_overlap_count=image_overlap_count=0,
+# effective_declaration_drift_count=actual_call_drift_count=0,
+# zero_supervised_count=partial_assistant_span_cut_count=
+# partial_tool_call_cut_count=0. The diagnostic must report
+# mask_matches_structured_roles=true and tool_call_span_count as expected.
 
 # 2. Materialize the independent 4B official 100-sample smoke set.
 python scripts/prepare_sft_4b_smoke.py

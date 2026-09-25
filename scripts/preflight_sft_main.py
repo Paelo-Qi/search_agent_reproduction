@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from opensearch_vl_repro.data import load_json_records  # noqa: E402
+from opensearch_vl_repro.data import SFT_MASK_VERSION, load_json_records  # noqa: E402
 from opensearch_vl_repro.inference.eval_reader import read_eval_samples_by_ids  # noqa: E402
 from opensearch_vl_repro.evaluation.eval300 import build_eval300_plan  # noqa: E402
 from opensearch_vl_repro.model import load_processor  # noqa: E402
@@ -19,7 +19,8 @@ from opensearch_vl_repro.reporting import write_json  # noqa: E402
 from opensearch_vl_repro.sft_main_data import SHARD_SIZES, load_sft_manifest  # noqa: E402
 from opensearch_vl_repro.sft_tool_audit import sha256_file  # noqa: E402
 from opensearch_vl_repro.sft_preflight import (  # noqa: E402
-    formal_preflight_checks, leakage_audit, sequence_audit, tool_contract_audit,
+    formal_preflight_checks, leakage_audit, reserved_literal_audit,
+    sequence_audit, tool_contract_audit,
 )
 
 
@@ -34,11 +35,14 @@ def main() -> int:
     pool_sha256 = sha256_file(args.data_dir / "manifest.json")
     write_json(args.report_dir / "summary.json", {
         "passed": False, "reason": "SFT preflight is incomplete",
+        "mask_version": SFT_MASK_VERSION,
         "pool_manifest_sha256": pool_sha256,
     })
     by_shard = {shard: load_json_records(args.data_dir / manifest["shards"][shard]["path"])
                 for shard in SHARD_SIZES}
     records = [record for shard in SHARD_SIZES for record in by_shard[shard]]
+    reserved = reserved_literal_audit(by_shard)
+    write_json(args.report_dir / "reserved_literals.json", reserved)
     tool_report = tool_contract_audit(records)
     write_json(args.report_dir / "tool_contract.json", tool_report)
     eval_plan = build_eval300_plan(args.eval)
@@ -49,6 +53,7 @@ def main() -> int:
     if leakage["missing_image_count"]:
         checks = formal_preflight_checks(tool_report, leakage, None)
         summary = {"passed": False, "reason": "SFT images are missing; sequence/image audit incomplete",
+                   "mask_version": SFT_MASK_VERSION,
                    "tool_contract_passed": tool_report["passed"], "leakage_complete": False,
                    "sequence_complete": False, "pool_manifest_sha256": pool_sha256,
                    "eval_sha256": eval_plan.dataset_sha256,
@@ -69,6 +74,7 @@ def main() -> int:
     checks = formal_preflight_checks(tool_report, leakage, sequence)
     summary = {
         "passed": all(checks.values()), "checks": checks,
+        "mask_version": SFT_MASK_VERSION,
         "tool_contract_passed": tool_report["passed"], "leakage_complete": True,
         "raw_declaration_drift_count": tool_report["raw_declaration_drift_count"],
         "effective_declaration_drift_count": tool_report["effective_declaration_drift_count"],
