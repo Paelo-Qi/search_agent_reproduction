@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Single-GPU, forward-only VRAM trace for official 4B SFT smoke index 85.
+"""Single-GPU VRAM stress test for official 4B SFT smoke or formal shards.
 
 This script deliberately uses the production processor, collator, model/LoRA
-helpers, and BF16 forward path. It never starts DDP, backward, or an optimizer.
+helpers, and BF16 forward path. Optional backward never steps an optimizer.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import random
 import sys
@@ -18,12 +19,16 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from opensearch_vl_repro.data import OpenSearchVLCollator, load_json_records  # noqa: E402
+from opensearch_vl_repro.data import (  # noqa: E402
+    OpenSearchVLCollator, build_messages, load_json_records, render_prompt,
+)
 from opensearch_vl_repro.model import (  # noqa: E402
     add_lora, freeze_vision_components, load_base_model, load_processor,
     move_batch, parameter_audit,
 )
-from opensearch_vl_repro.sft_main_data import canonicalize_tool_declarations  # noqa: E402
+from opensearch_vl_repro.sft_main_data import (  # noqa: E402
+    SHARD_SIZES, canonicalize_tool_declarations,
+)
 from opensearch_vl_repro.sft_long_training import activate_sft_training_mode  # noqa: E402
 from opensearch_vl_repro.sft_train_plan import load_main_config  # noqa: E402
 
@@ -34,15 +39,74 @@ SAMPLE_INDEX = 85
 GIB = 1024 ** 3
 
 
-def select_official_sample(config: dict[str, Any], records: list[dict[str, Any]],
-                           *, project_root: Path = ROOT) -> dict[str, Any]:
-    configured = (project_root / config["data"]["path"]).resolve()
-    expected = (project_root / "data/sft_4b_smoke_100.json").resolve()
-    if configured != expected:
-        raise ValueError(f"config must use the official 4B smoke file: {expected}")
-    if len(records) != 100 or int(config["data"]["expected_samples"]) != 100:
-        raise ValueError("4B smoke diagnostic requires exactly 100 official records")
-    return canonicalize_tool_declarations(records[SAMPLE_INDEX])
+def validate_dataset(config: dict[str, Any], data_path: str | Path,
+                     *, project_root: Path = ROOT) -> tuple[Path, int]:
+    """Allow only the independent smoke set or a fixed formal SFT shard."""
+    path = (project_root / data_path).resolve()
+    smoke = (project_root / "data/sft_4b_smoke_100.json").resolve()
+    if path == smoke:
+        configured = config["data"].get("path")
+        if configured is None or (project_root / configured).resolve() != smoke:
+            raise ValueError("config must use the official 4B smoke file")
+        if int(config["data"].get("expected_samples", -1)) != 100:
+            raise ValueError("4B smoke diagnostic requires exactly 100 official records")
+        return path, 100
+    pool_dir = config["data"].get("pool_dir")
+    if pool_dir is None:
+        raise ValueError("formal shard requires a formal SFT config with data.pool_dir")
+    allowed = {(project_root / pool_dir / f"{name}.json").resolve(): count
+               for name, count in SHARD_SIZES.items()}
+    if path not in allowed:
+        raise ValueError(f"data must be the official smoke file or a formal SFT shard: {path}")
+    return path, allowed[path]
+
+
+def training_record(raw: dict[str, Any]) -> dict[str, Any]:
+    """Use the runtime tool schema without mutating a raw or prepared record."""
+    record = canonicalize_tool_declarations(raw)
+    if "_source_tools" in raw:
+        record["_source_tools"] = raw["_source_tools"]
+    return record
+
+
+def processor_token_length(processor: Any, record: dict[str, Any],
+                           dataset_path: Path) -> int:
+    """Use the preflight/collator message template and untruncated processor IDs."""
+    messages, images, tools = build_messages(record, dataset_path)
+    prompt = render_prompt(processor, messages, tools)
+    encoded = processor(text=[prompt], images=[images], padding=False,
+                        truncation=False, return_tensors="pt")
+    return len(encoded["input_ids"][0])
+
+
+def select_sample(records: list[dict[str, Any]], *, sample_index: int | None,
+                  select_longest: bool, token_length: Any) -> tuple[int, dict[str, Any], int]:
+    """Choose by actual processor length; ties keep the first dataset index."""
+    if not records:
+        raise ValueError("diagnostic dataset is empty")
+    if select_longest:
+        if sample_index is not None:
+            raise ValueError("--sample-index and --select-longest are mutually exclusive")
+        best_index, best_length = 0, -1
+        for index, record in enumerate(records):
+            length = int(token_length(record))
+            if length > best_length:
+                best_index, best_length = index, length
+        return best_index, records[best_index], best_length
+    index = SAMPLE_INDEX if sample_index is None else sample_index
+    if not 0 <= index < len(records):
+        raise ValueError(f"sample index {index} is outside 0..{len(records) - 1}")
+    record = records[index]
+    return index, record, int(token_length(record))
+
+
+def should_run_backward(with_backward: bool, loss_value: float | None) -> bool:
+    """Keep the optional backward decision testable without a GPU."""
+    if not with_backward:
+        return False
+    if loss_value is None or not math.isfinite(loss_value):
+        raise ValueError("backward requires a finite forward loss")
+    return True
 
 
 def find_language_decoder_layers(model: Any, expected: int = 36) -> tuple[str, Any, list[Any]]:
@@ -148,6 +212,11 @@ def register_layer_hooks(layers: list[Any], torch: Any, device: Any
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--data", type=Path, default=SMOKE_DATA)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--sample-index", type=int)
+    selection.add_argument("--select-longest", action="store_true")
+    parser.add_argument("--with-backward", action="store_true")
     args = parser.parse_args()
     if not args.config.is_file():
         parser.error(f"config is missing: {args.config}; pass --config for your AutoDL copy")
@@ -163,11 +232,14 @@ def main() -> int:
     if not torch.cuda.is_bf16_supported():
         raise RuntimeError("VRAM diagnosis requires BF16-capable CUDA")
     device = torch.device("cuda:0")
+    properties = torch.cuda.get_device_properties(device)
+    print(f"[CUDA] device={properties.name} total_gib={properties.total_memory / GIB:.3f}",
+          flush=True)
     config = load_main_config(args.config, base_eval_config=ROOT / "configs/eval_base_300.yaml")
-    records = load_json_records(SMOKE_DATA)
-    sample = select_official_sample(config, records)
-    print(f"[SAMPLE] index={SAMPLE_INDEX} path={SMOKE_DATA} "
-          f"sample_id={sample.get('_sample_id', 'unassigned')}", flush=True)
+    data_path, expected_samples = validate_dataset(config, args.data)
+    records = load_json_records(data_path)
+    if len(records) != expected_samples:
+        raise ValueError(f"expected {expected_samples} official records in {data_path}, got {len(records)}")
 
     # Rank 1 encountered index 85. Match its seed without launching DDP.
     seed = int(config["project"]["seed"]) + 1
@@ -178,6 +250,25 @@ def main() -> int:
     torch.backends.cuda.matmul.allow_tf32 = bool(config["training"].get("tf32", True))
 
     processor = load_processor(config)
+    scanned = 0
+    def length_of(raw: dict[str, Any]) -> int:
+        nonlocal scanned
+        length = processor_token_length(processor, training_record(raw), data_path)
+        scanned += 1
+        if args.select_longest and scanned % 100 == 0:
+            print(f"[SCAN] processor_lengths_completed={scanned}/{len(records)}", flush=True)
+        return length
+
+    sample_index, raw_sample, actual_length = select_sample(
+        records, sample_index=args.sample_index,
+        select_longest=args.select_longest, token_length=length_of)
+    sample = training_record(raw_sample)
+    identity = {key: sample[key] for key in (
+        "_sample_id", "_source", "_source_index", "_original_index",
+        "source", "original_index") if key in sample}
+    print(f"[SAMPLE] index={sample_index} path={data_path} identity={identity} "
+          f"actual_token_length={actual_length} image_count={len(sample.get('images', []))}",
+          flush=True)
     model = load_base_model(config, for_training=True)
     print_memory(torch, device, "model_loaded")
     frozen_names = freeze_vision_components(model)
@@ -218,14 +309,15 @@ def main() -> int:
     if not flags["attention_matches_request"]:
         raise RuntimeError("resolved attention implementation does not match requested config")
 
-    collator = OpenSearchVLCollator(processor, SMOKE_DATA,
+    collator = OpenSearchVLCollator(processor, data_path,
                                    int(config["data"]["max_length"]))
     batch = collator([sample])
     print_memory(torch, device, "collated_on_cpu")
     valid_length = int(batch.get("attention_mask", torch.ones_like(batch["input_ids"]))[0].sum())
     shapes = {name: list(value.shape) for name, value in batch.items()
               if hasattr(value, "shape")}
-    print(f"[BATCH] sample_index={SAMPLE_INDEX} actual_token_length={valid_length} "
+    print(f"[BATCH] sample_index={sample_index} actual_token_length={actual_length} "
+          f"training_input_length={valid_length} "
           f"max_length={config['data']['max_length']} "
           f"input_ids_shape={shapes.get('input_ids')} "
           f"pixel_values_shape={shapes.get('pixel_values')} all_shapes={shapes}", flush=True)
@@ -239,19 +331,41 @@ def main() -> int:
         with torch.enable_grad():
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 result = model(**batch)
-        print_memory(torch, device, "forward_complete")
+        torch.cuda.synchronize(device)
+        forward_memory = print_memory(torch, device, "forward_complete")
         loss = getattr(result, "loss", None)
-        print(f"[RESULT] forward_passed=True loss={float(loss.detach().float().item()) if loss is not None else None}",
-              flush=True)
-        return 0
+        loss_value = float(loss.detach().float().item()) if loss is not None else None
+        if loss_value is None or not math.isfinite(loss_value):
+            raise RuntimeError(f"forward did not produce a finite loss: {loss_value}")
+        print(f"[RESULT] forward_passed=True loss={loss_value} "
+              f"forward_peak_allocated_gib={forward_memory['max_allocated_gib']}", flush=True)
     except torch.OutOfMemoryError:
-        print(f"[OOM] sample_index={SAMPLE_INDEX} last_entered={hook_state['last_entered']} "
+        print(f"[OOM] stage=forward sample_index={sample_index} "
+              f"last_entered={hook_state['last_entered']} "
               f"last_exited={hook_state['last_exited']}", flush=True)
         print_memory(torch, device, "forward_oom")
         raise
     finally:
         for handle in handles:
             handle.remove()
+
+    if should_run_backward(args.with_backward, loss_value):
+        torch.cuda.reset_peak_memory_stats(device)
+        print_memory(torch, device, "before_backward")
+        try:
+            # One unscaled micro-batch loss, as requested; no DDP or optimizer.
+            loss.backward()
+            torch.cuda.synchronize(device)
+            backward_memory = print_memory(torch, device, "backward_complete")
+            print(f"[RESULT] backward_passed=True "
+                  f"backward_peak_allocated_gib={backward_memory['max_allocated_gib']}", flush=True)
+        except torch.OutOfMemoryError:
+            print(f"[OOM] stage=backward sample_index={sample_index}", flush=True)
+            print_memory(torch, device, "backward_oom")
+            raise
+    else:
+        print("[RESULT] backward_skipped=True", flush=True)
+    return 0
 
 
 if __name__ == "__main__":

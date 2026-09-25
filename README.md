@@ -378,10 +378,11 @@ semantics, cache reuse, and overall/per-benchmark metrics.
 
 SFT-0 now provides the pinned 8k split, independent 4B transition smoke,
 resumable two-GPU LoRA training infrastructure, read-only preflight audits,
-and optional Base+adapter evaluation loading. It has **not** run 4B GPU
-training or SFT Eval-300. The current local preflight reports declaration-
-schema drift and missing official images, so formal 1k training remains
-gated. See [the SFT-0 runbook](docs/sft_main_training.md) for exact commands,
+and optional Base+adapter evaluation loading. AutoDL 4B smoke A/B has passed;
+formal 1k training and SFT Eval-300 have **not** run. Formal 4B SFT now uses
+FlashAttention-2 with fixed micro-batch 1/accumulation 4, and the longest
+`main_a_1k` sample still needs the single-GPU stress test before training.
+See [the SFT-0 runbook](docs/sft_main_training.md) for exact commands,
 artifacts, scheduler phases, and human review points.
 
 Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate.

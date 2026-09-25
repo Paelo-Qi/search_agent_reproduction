@@ -1,7 +1,7 @@
 # SFT-0: fixed data, resumable 4B LoRA, and adapter evaluation
 
-This is an engineering plan, **not evidence that 4B GPU training has passed**. The
-paper's full-parameter, large-scale SFT is intentionally replaced by a small
+The 4B smoke A/B runs have passed on AutoDL; **formal main_a_1k training and
+SFT Eval-300 have not run**. The paper's full-parameter, large-scale SFT is intentionally replaced by a small
 BF16 LoRA experiment to isolate the contribution of SFT and later RL under the
 same fixed Eval-300 protocol. No QLoRA or full fine-tuning is used.
 
@@ -15,12 +15,30 @@ same fixed Eval-300 protocol. No QLoRA or full fine-tuning is used.
 - Training: 2 BF16 CUDA GPUs; no quantization; LoRA rank 16/alpha 32/dropout
   0.05 on language `q/k/v/o/gate/up/down_proj`; vision tower and multimodal
   projector frozen; `image_max_pixels=262144`, `max_length=32000`, gradient
-  checkpointing on. The default micro-batch 1 × accumulation 4 may be changed
-  to micro-batch 2 × accumulation 2 **before** the formal run; both are global
-  batch 8. Do not change micro-batch halfway through a lineage.
+  checkpointing on. Formal training is fixed at micro-batch **1** × accumulation
+  **4** × 2 GPUs = global batch 8. Do not change this batch configuration
+  during the formal lineage. Micro-batch 2 × accumulation 2 was tested but is
+  not the chosen formal setting.
 - Base Eval inference retains `image_max_pixels=1048576`, 16 Agent turns,
   `max_new_tokens=512`, temperature 0, deterministic decoding, and the same
   prompt/tools/backends/Judge. Only the optional adapter changes.
+
+Formal 4B SFT uses `flash_attention_2` and requires a working `flash-attn`
+installation in the GPU training environment. The verified AutoDL stack is
+`flash-attn==2.8.3` with `torch==2.7.1+cu126`, Transformers 5.17.0 and PEFT
+0.21.0. Install/verify this compiled extension against that environment before
+loading the model. It is documented here rather than forced into the regular
+`pyproject.toml` dependencies because wheel/build compatibility depends on
+the CUDA/PyTorch platform. This changes **only SFT training**; the frozen
+`configs/eval_base_300.yaml` inference attention backend remains SDPA.
+
+The prior gradient-checkpointing failure (outer model training, inner language
+model eval) has been fixed: training now sets `model.train()` and checks the
+language model plus all 36 decoder layers. On the 16,723-token smoke sample,
+forward peak allocation fell from about 77 GiB to 35 GiB. Smoke A
+(micro 1/accum 4) completed step 10 → resume → step 20 with `passed=true`,
+about 43.98 GiB peak allocated and 14.17 s/optimizer step. Smoke B
+(micro 2/accum 2) also passed but used about 78.68 GiB and was slower.
 
 ## Deterministic 8k pool
 
@@ -225,27 +243,22 @@ python scripts/diagnose_sft_mask.py --sample-id livevqa:5212
 # 2. Materialize the independent 4B official 100-sample smoke set.
 python scripts/prepare_sft_4b_smoke.py
 
-# 3A. Benchmark micro=1/accum=4; intentionally pause at step 10, inspect,
-# then verify full optimizer/scheduler/RNG resume to step 20.
-CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
-  scripts/train_sft_main.py --config configs/sft_4b_smoke.yaml \
-  --stage smoke --run-tag micro1_accum4 --micro-batch 1 --grad-accum 4 \
-  --stop-after-steps 10
-CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
-  scripts/train_sft_main.py --config configs/sft_4b_smoke.yaml \
-  --stage smoke --run-tag micro1_accum4 --micro-batch 1 --grad-accum 4 \
-  --resume-from outputs/sft_4b_smoke/micro1_accum4/checkpoint-step-10
-
-# 3B. Independently benchmark micro=2/accum=2 (same global batch).
-CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
-  scripts/train_sft_main.py --config configs/sft_4b_smoke.yaml \
-  --stage smoke --run-tag micro2_accum2 --micro-batch 2 --grad-accum 2
-
-# 4. Compare without auto-selecting a winner: finite loss, OOM, per-GPU peak
-# allocated/reserved VRAM, step time, samples/sec, and checkpoint reload.
+# 3. Smoke A/B already passed on the verified FA2 AutoDL stack. Their reports
+# document why formal training fixes micro=1/accum=4; do not rerun B as a
+# candidate formal batch size. The historical smoke config is left unchanged.
 python scripts/compare_sft_4b_smoke.py \
   --a reports/sft_4b_smoke/micro1_accum4/smoke_step20.json \
   --b reports/sft_4b_smoke/micro2_accum2/smoke_step20.json
+
+# 4. Scan main_a_1k with the real untruncated multimodal processor, then run
+# the selected longest sample through the unchanged training collator/model.
+# This is single-GPU, no DDP/optimizer/scheduler/checkpoint, not formal training.
+CUDA_VISIBLE_DEVICES=0 python scripts/diagnose_sft_vram.py \
+  --config configs/sft_main.yaml --data data/sft_main/main_a_1k.json \
+  --select-longest
+CUDA_VISIBLE_DEVICES=0 python scripts/diagnose_sft_vram.py \
+  --config configs/sft_main.yaml --data data/sft_main/main_a_1k.json \
+  --select-longest --with-backward
 
 # 5. Fresh-process Base+smoke-adapter generation on an official SFT smoke
 # sample, not on the held-out Eval-300.
@@ -264,11 +277,26 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_4b_agent_smoke.py \
 
 ```
 
+The longest-sample scan measures **untruncated** processor IDs; for the
+current `main_a_1k` preflight the maximum is approximately 30,977 tokens,
+but the diagnostic discovers the index and length again rather than hard-coding
+either. The selected record is then passed to `OpenSearchVLCollator` with the
+formal 32,000 limit. The two commands each rescan the shard. The second runs
+one BF16 forward and direct backward for a single micro-batch; it does **not**
+measure a full DDP/optimizer step. Check finite loss, requested/effective FA2,
+36/36 decoder training/checkpointing flags, and both peak allocated **and**
+reserved VRAM. On an 80 GiB card, a backward OOM or peak reserved VRAM close
+to capacity is a stop signal; retain substantial headroom (roughly 8–10 GiB
+or more) for DDP, optimizer state, and run-to-run variation. Passing this
+single-card stress test is necessary evidence, not a guarantee of formal
+two-GPU completion. Do not launch `main_a_1k` until its preflight gate and
+this stress test have been reviewed.
+
 The next commands are **conditional**, not permission to ignore a failed
 preflight. First inspect `reports/sft_preflight/*.json`, verify effective
 declaration/call drift and both overlap counts are zero, and review any 32k
 partial-cut/zero-target findings and report-only complete drops.
-Select A or B based on the two smoke reports, keep that choice fixed for the
+Use the fixed A batch configuration throughout the
 whole lineage, and inspect finite losses, LR, LoRA delta, frozen vision,
 checkpoint completeness, throughput, VRAM and malformed-data/long-sequence
 errors at checkpoint-1k before continuing.

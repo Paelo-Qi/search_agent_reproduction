@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,21 +17,88 @@ diagnostic = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(diagnostic)
 
 
-def test_exact_smoke_index_and_in_memory_canonicalization(tmp_path):
+def test_smoke_default_and_explicit_sample_index_do_not_mutate_records(tmp_path):
     records = [{"tools": "[]", "conversations": [{"from": "gpt", "value": str(index)}]}
                for index in range(100)]
+    original = copy.deepcopy(records)
     config = {"data": {"path": "data/sft_4b_smoke_100.json", "expected_samples": 100}}
-    selected = diagnostic.select_official_sample(config, records, project_root=tmp_path)
-    assert selected["conversations"][0]["value"] == "85"
-    assert selected["_source_tools"] == "[]"
-    assert len(selected["tools"]) > 0
-    assert records[85]["tools"] == "[]"  # No source-data mutation.
+    path, count = diagnostic.validate_dataset(
+        config, "data/sft_4b_smoke_100.json", project_root=tmp_path)
+    assert path == (tmp_path / "data/sft_4b_smoke_100.json").resolve() and count == 100
+    index, raw, length = diagnostic.select_sample(
+        records, sample_index=None, select_longest=False, token_length=lambda _: 17)
+    assert (index, length) == (85, 17)
+    assert raw["conversations"][0]["value"] == "85"
+    index, raw, _ = diagnostic.select_sample(
+        records, sample_index=7, select_longest=False, token_length=lambda _: 17)
+    assert index == 7 and raw["conversations"][0]["value"] == "7"
+    selected = diagnostic.training_record(raw)
+    assert selected["_source_tools"] == "[]" and len(selected["tools"]) > 0
+    assert records == original
     with pytest.raises(ValueError, match="exactly 100"):
-        diagnostic.select_official_sample(config, records[:-1], project_root=tmp_path)
+        diagnostic.validate_dataset(
+            {"data": {"path": "data/sft_4b_smoke_100.json", "expected_samples": 99}},
+            "data/sft_4b_smoke_100.json", project_root=tmp_path)
     with pytest.raises(ValueError, match="official 4B smoke file"):
-        diagnostic.select_official_sample(
+        diagnostic.validate_dataset(
             {"data": {"path": "data/other.json", "expected_samples": 100}},
-            records, project_root=tmp_path)
+            "data/sft_4b_smoke_100.json", project_root=tmp_path)
+
+
+def test_formal_shard_path_and_longest_processor_selection(tmp_path):
+    config = {"data": {"pool_dir": "data/sft_main"}}
+    path, count = diagnostic.validate_dataset(
+        config, "data/sft_main/main_a_1k.json", project_root=tmp_path)
+    assert path == (tmp_path / "data/sft_main/main_a_1k.json").resolve()
+    assert count == 1000
+    with pytest.raises(ValueError, match="official smoke file or a formal SFT shard"):
+        diagnostic.validate_dataset(config, "data/other.json", project_root=tmp_path)
+    records = [{"id": index, "tools": "[]"} for index in range(4)]
+    original = copy.deepcopy(records)
+    lengths = [6, 30977, 8, 30977]
+    index, raw, actual = diagnostic.select_sample(
+        records, sample_index=None, select_longest=True,
+        token_length=lambda record: lengths[record["id"]])
+    assert (index, raw["id"], actual) == (1, 1, 30977)  # Stable first tie.
+    assert records == original
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        diagnostic.select_sample(records, sample_index=1, select_longest=True,
+                                 token_length=lambda _: 1)
+
+
+def test_processor_length_uses_untruncated_multimodal_template(monkeypatch):
+    monkeypatch.setattr(diagnostic, "build_messages",
+                        lambda record, path: ([{"role": "user"}], ["real image"], [{"name": "tool"}]))
+    monkeypatch.setattr(diagnostic, "render_prompt",
+                        lambda processor, messages, tools: "rendered official prompt")
+    def processor(**kwargs):
+        assert kwargs == {"text": ["rendered official prompt"], "images": [["real image"]],
+                          "padding": False, "truncation": False, "return_tensors": "pt"}
+        return {"input_ids": [[1] * 31]}
+    assert diagnostic.processor_token_length(processor, {}, Path("data/shard.json")) == 31
+
+
+def test_formal_record_canonicalization_preserves_source_metadata():
+    raw = {"tools": "[]", "_source_tools": "original declarations", "_sample_id": "fvqa:1"}
+    original = copy.deepcopy(raw)
+    prepared = diagnostic.training_record(raw)
+    assert raw == original
+    assert prepared is not raw
+    assert prepared["_source_tools"] == "original declarations"
+    assert len(prepared["tools"]) > 0
+
+
+def test_backward_switch_and_pinned_attention_configuration():
+    assert diagnostic.should_run_backward(False, None) is False
+    assert diagnostic.should_run_backward(True, 1.25) is True
+    with pytest.raises(ValueError, match="finite forward loss"):
+        diagnostic.should_run_backward(True, float("nan"))
+    formal = yaml.safe_load((ROOT / "configs/sft_main.yaml").read_text(encoding="utf-8"))
+    evaluation = yaml.safe_load((ROOT / "configs/eval_base_300.yaml").read_text(encoding="utf-8"))
+    assert formal["model"]["attn_implementation"] == "flash_attention_2"
+    assert formal["training"]["per_device_train_batch_size"] == 1
+    assert formal["training"]["gradient_accumulation_steps"] == 4
+    assert evaluation["model"]["attn_implementation"] == "sdpa"
 
 
 def test_find_exact_language_decoder_stack():
