@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -51,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Invocation-only cap; does not change the run manifest sample universe.",
     )
     parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument("--adapter", type=Path,
+                        help="Validated formal SFT checkpoint adapter; omitted for Base-only evaluation")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", args.run_id):
         parser.error("--run-id must be a safe 1-80 character identifier")
@@ -63,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--max-samples is for ID/full-run selections, not continuous --limit")
 
     config = load_inference_config(args.config)
+    if args.adapter is not None:
+        config = replace(config, adapter_path=args.adapter.expanduser().resolve())
     entries = selection_manifest = None
     if args.eval300:
         plan = build_eval300_plan(config.data_path)
@@ -91,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         max_agent_turns=config.max_agent_turns,
         search_config_path=args.search_config,
         layout_config_path=args.layout_config,
+        adapter_path=config.adapter_path,
     )
     bundle = load_inference_bundle(config)
     runtime = AgentRuntime(

@@ -19,6 +19,11 @@ data/sft_smoke_100.meta.json
 data/dev_media/
 data/sft_dev_4.json
 data/sft_dev_4.meta.json
+data/sft_4b_smoke_100.json
+data/sft_4b_smoke_100.meta.json
+data/sft_4b_media/
+data/sft_main/*
+!data/sft_main/manifest.json
 data/eval/source/
 data/eval/*.parquet
 outputs/
@@ -27,6 +32,9 @@ reports/*.jsonl
 reports/eval_runs/
 reports/phase4_smoke/
 reports/phase5_judge_smoke/
+reports/sft_main/
+reports/sft_4b_smoke/
+reports/sft_preflight/
 !reports/eval_subset_report.json
 logs/
 

@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Layout API config for Phase 2/3; Phase 3 defaults to configs/layout_parsing.example.yaml.",
     )
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--adapter", type=Path,
+                        help="Validated formal SFT checkpoint adapter; Base-only when omitted")
     args = parser.parse_args(argv)
     if args.phase3_search_tools != bool(args.phase3_tool):
         parser.error("--phase3-search-tools and --phase3-tool must be used together")
@@ -195,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
     stage = "config_load"
     try:
         config = load_inference_config(args.config)
+        if args.adapter is not None:
+            config = replace(config, adapter_path=args.adapter.expanduser().resolve())
         report["environment"] = {
             "model": config.model_name_or_path,
             "model_revision": config.revision,

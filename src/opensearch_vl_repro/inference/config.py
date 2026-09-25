@@ -23,6 +23,7 @@ class InferenceConfig:
     seed: int
     max_agent_turns: int
     data_path: Path
+    adapter_path: Path | None = None
 
     def generation_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -70,6 +71,15 @@ def load_inference_config(path: str | Path) -> InferenceConfig:
     data_path = Path(str(data["path"]))
     if not data_path.is_absolute():
         data_path = (project_root / data_path).resolve()
+    adapter = raw.get("adapter")
+    adapter_path = None
+    if adapter is not None:
+        if not isinstance(adapter, dict) or not isinstance(adapter.get("path"), str):
+            raise ValueError("adapter.path must be a string when adapter is configured")
+        adapter_path = Path(adapter["path"]).expanduser()
+        if not adapter_path.is_absolute():
+            adapter_path = project_root / adapter_path
+        adapter_path = adapter_path.resolve()
     config = InferenceConfig(
         model_name_or_path=str(model["model_name_or_path"]),
         revision=str(model["revision"]),
@@ -85,6 +95,7 @@ def load_inference_config(path: str | Path) -> InferenceConfig:
         seed=int(runtime["seed"]),
         max_agent_turns=int(runtime["max_agent_turns"]),
         data_path=data_path,
+        adapter_path=adapter_path,
     )
     if not config.model_name_or_path or not config.revision:
         raise ValueError("model name and pinned revision must not be empty")

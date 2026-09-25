@@ -376,6 +376,14 @@ semantics, cache reuse, and overall/per-benchmark metrics.
 
 ## Scope boundary
 
+SFT-0 now provides the pinned 8k split, independent 4B transition smoke,
+resumable two-GPU LoRA training infrastructure, read-only preflight audits,
+and optional Base+adapter evaluation loading. It has **not** run 4B GPU
+training or SFT Eval-300. The current local preflight reports declaration-
+schema drift and missing official images, so formal 1k training remains
+gated. See [the SFT-0 runbook](docs/sft_main_training.md) for exact commands,
+artifacts, scheduler phases, and human review points.
+
 Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate.
 Phase 4 includes reliability and batch-execution infrastructure but does not
 run formal baseline scoring, the 300-item benchmark, judging, 3K SFT, RL, full

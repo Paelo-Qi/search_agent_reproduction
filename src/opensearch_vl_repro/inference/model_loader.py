@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import InferenceConfig
+from .adapter import adapter_identity
 
 
 @dataclass
@@ -61,6 +62,7 @@ def load_inference_bundle(
     processor_class: Any | None = None,
     torch_module: Any | None = None,
     transformers_module: Any | None = None,
+    peft_model_class: Any | None = None,
 ) -> InferenceBundle:
     if torch_module is None:
         import torch as torch_module
@@ -76,6 +78,10 @@ def load_inference_bundle(
         processor_class = AutoProcessor
 
     validate_device(config, torch_module)
+    adapter = None
+    if config.adapter_path is not None:
+        adapter = adapter_identity(config.adapter_path, base_model=config.model_name_or_path,
+                                   base_revision=config.revision)
     processor = processor_class.from_pretrained(
         config.model_name_or_path,
         revision=config.revision,
@@ -91,12 +97,21 @@ def load_inference_bundle(
         trust_remote_code=config.trust_remote_code,
         low_cpu_mem_usage=True,
     )
+    if config.adapter_path is not None:
+        if peft_model_class is None:
+            from peft import PeftModel
+
+            peft_model_class = PeftModel
+        model = peft_model_class.from_pretrained(model, config.adapter_path,
+                                                 is_trainable=False)
     model.eval()
     model.requires_grad_(False)
+    environment = inference_environment(config, torch_module, transformers_module)
+    if adapter is not None:
+        environment["adapter_identity"] = adapter
     return InferenceBundle(
         config=config,
         model=model,
         processor=processor,
-        environment=inference_environment(config, torch_module, transformers_module),
+        environment=environment,
     )
-

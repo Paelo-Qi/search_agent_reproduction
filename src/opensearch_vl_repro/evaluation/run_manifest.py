@@ -16,6 +16,7 @@ from opensearch_vl_repro.agent.reliability import (
 )
 from opensearch_vl_repro.agent.tool_contracts import TOOL_DECLARATIONS
 from opensearch_vl_repro.eval_subset import sha256_file
+from opensearch_vl_repro.inference.adapter import adapter_identity
 
 
 RUN_MANIFEST_VERSION = 1
@@ -156,6 +157,7 @@ def create_run_manifest(
     tool_fingerprint: str | None = None,
     created_at: str | None = None,
     sample_selection: dict[str, Any] | None = None,
+    adapter: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     checkpoint = checkpoint or checkpoint_identity(model_name_or_path, model_revision)
     tool_fingerprint = tool_fingerprint or tool_contract_fingerprint()
@@ -180,6 +182,8 @@ def create_run_manifest(
         "agent_behavior_version": AGENT_BEHAVIOR_VERSION,
         "tool_contract_fingerprint": tool_fingerprint,
     }
+    if adapter is not None:
+        identity["adapter_identity"] = adapter
     return {
         "manifest_version": RUN_MANIFEST_VERSION,
         "run_id": run_id,
@@ -195,6 +199,7 @@ def build_run_manifest(
     eval_manifest_path: str | Path | None, start: int | None, limit: int | None,
     max_agent_turns: int, search_config_path: str | Path,
     layout_config_path: str | Path, sample_selection: dict[str, Any] | None = None,
+    adapter_path: str | Path | None = None,
 ) -> dict[str, Any]:
     return create_run_manifest(
         run_id=run_id,
@@ -208,6 +213,9 @@ def build_run_manifest(
         max_agent_turns=max_agent_turns,
         search_config_fingerprint=_config_fingerprint(search_config_path),
         layout_config_fingerprint=_config_fingerprint(layout_config_path),
+        adapter=(adapter_identity(adapter_path, base_model=model_name_or_path,
+                                  base_revision=model_revision or "")
+                 if adapter_path is not None else None),
     )
 
 
@@ -218,6 +226,7 @@ IDENTITY_FIELDS = (
     "cache_schema_version", "search_behavior_version", "layout_behavior_version",
     "agent_behavior_version",
     "tool_contract_fingerprint",
+    "adapter_identity",
 )
 
 

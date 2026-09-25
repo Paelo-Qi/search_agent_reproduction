@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Load the pinned model/processor and report environment/VRAM without generation.",
     )
     parser.add_argument("--report", type=Path, default=PROJECT_ROOT / "reports" / "4b_smoke.json")
+    parser.add_argument("--adapter", type=Path,
+                        help="Validated formal SFT checkpoint adapter; Base-only when omitted")
     args = parser.parse_args(argv)
     indices = args.indices if args.indices is not None else [args.index if args.index is not None else 0]
     report: dict[str, Any] = {
@@ -59,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     stage = "config_load"
     try:
         config = load_inference_config(args.config)
+        if args.adapter is not None:
+            config = replace(config, adapter_path=args.adapter.expanduser().resolve())
         report["environment"] = {
             "model": config.model_name_or_path,
             "model_revision": config.revision,
