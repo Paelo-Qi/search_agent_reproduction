@@ -13,9 +13,9 @@ from PIL import Image
 
 from .agent.question_normalization import normalize_model_question
 from .agent.reliability import image_sha256
-from .agent.tool_contracts import TOOL_DECLARATIONS_BY_NAME
+from .agent.tool_contracts import TOOL_DECLARATIONS, TOOL_DECLARATIONS_BY_NAME
 from .agent.tool_parser import ToolCallParser
-from .data import assistant_token_spans, build_messages, parse_tools, render_prompt
+from .data import assistant_token_spans, build_messages, find_subsequence, parse_tools, render_prompt
 
 
 def normalized_question(value: str) -> str:
@@ -62,20 +62,18 @@ def leakage_audit(records: Iterable[dict[str, Any]], eval_samples: Iterable[Any]
     }
 
 
-def tool_contract_audit(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    parser = ToolCallParser(TOOL_DECLARATIONS_BY_NAME)
-    calls = Counter()
+def _declaration_mismatches(value: Any, identity: dict[str, str]) -> list[dict[str, Any]]:
     mismatches = []
-    declared = Counter()
-    for record in records:
-        identity = {"training_sample_id": record["_sample_id"], "source": record["_source"]}
-        for declared_tool in parse_tools(record.get("tools")):
+    parsed = parse_tools(value)
+    expected_tools = [tool.as_chat_template_tool() for tool in TOOL_DECLARATIONS]
+    if parsed == expected_tools:
+        return []
+    for declared_tool in parsed:
             function = declared_tool.get("function", {}) if isinstance(declared_tool, dict) else {}
             name = function.get("name")
             if not isinstance(name, str):
                 mismatches.append({**identity, "kind": "invalid_declaration", "tool": repr(name)})
                 continue
-            declared[name] += 1
             runtime = TOOL_DECLARATIONS_BY_NAME.get(name)
             if runtime is None:
                 mismatches.append({**identity, "kind": "undeclared_runtime_tool", "tool": name})
@@ -112,6 +110,27 @@ def tool_contract_audit(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
                     "dataset_required": sorted(actual_required),
                     "runtime_required": sorted(runtime_required),
                 })
+    # The full chat-template declaration includes descriptions, order, and
+    # metadata, not merely parameter types. Detect any otherwise unreported drift.
+    if not mismatches:
+        mismatches.append({**identity, "kind": "declaration_template_drift"})
+    return mismatches
+
+
+def tool_contract_audit(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    parser = ToolCallParser(TOOL_DECLARATIONS_BY_NAME)
+    calls = Counter()
+    raw_mismatches, effective_mismatches, call_mismatches = [], [], []
+    declared = Counter()
+    for record in records:
+        identity = {"training_sample_id": record["_sample_id"], "source": record["_source"]}
+        raw_mismatches.extend(_declaration_mismatches(
+            record.get("_source_tools", record.get("tools")), identity))
+        effective_mismatches.extend(_declaration_mismatches(record.get("tools"), identity))
+        for declared_tool in parse_tools(record.get("tools")):
+            name = declared_tool.get("function", {}).get("name") if isinstance(declared_tool, dict) else None
+            if isinstance(name, str):
+                declared[name] += 1
         for turn_index, turn in enumerate(record["conversations"]):
             if turn["from"] != "gpt":
                 continue
@@ -119,7 +138,7 @@ def tool_contract_audit(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
             if parsed.kind == "final_answer":
                 continue
             if parsed.kind != "valid_tool_call":
-                mismatches.append({**identity, "kind": parsed.kind, "turn_index": turn_index,
+                call_mismatches.append({**identity, "kind": parsed.kind, "turn_index": turn_index,
                                    "detail": parsed.error})
                 continue
             for call in parsed.tool_calls:
@@ -128,11 +147,18 @@ def tool_contract_audit(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 try:
                     runtime.validate_arguments(call.arguments)
                 except ValueError as exc:
-                    mismatches.append({**identity, "kind": "call_schema_drift",
+                    call_mismatches.append({**identity, "kind": "call_schema_drift",
                                        "turn_index": turn_index, "tool": call.name,
                                        "detail": str(exc), "arguments": call.arguments})
+    mismatches = effective_mismatches + call_mismatches
     return {"passed": not mismatches, "tool_call_counts": dict(sorted(calls.items())),
             "declared_tool_counts": dict(sorted(declared.items())),
+            "raw_declaration_drift_count": len(raw_mismatches),
+            "effective_declaration_drift_count": len(effective_mismatches),
+            "actual_call_drift_count": len(call_mismatches),
+            "raw_declaration_mismatches": raw_mismatches,
+            "effective_declaration_mismatches": effective_mismatches,
+            "actual_call_mismatches": call_mismatches,
             "mismatch_count": len(mismatches),
             "mismatch_kind_counts": dict(Counter(item["kind"] for item in mismatches)),
             "mismatch_tool_counts": dict(Counter(item.get("tool", "unknown") for item in mismatches)),
@@ -140,7 +166,11 @@ def tool_contract_audit(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 
 def token_audit(input_ids: list[int], truncated_ids: list[int],
-                assistant_start_ids: list[int], end_id: int) -> dict[str, Any]:
+                assistant_start_ids: list[int], end_id: int,
+                tool_open_ids: list[int] | None = None,
+                tool_close_ids: list[int] | None = None) -> dict[str, Any]:
+    if truncated_ids != input_ids[:len(truncated_ids)]:
+        raise ValueError("multimodal processor truncation is not a right-hand prefix")
     try:
         full_spans = assistant_token_spans(input_ids, assistant_start_ids, end_id)
     except RuntimeError:
@@ -150,12 +180,36 @@ def token_audit(input_ids: list[int], truncated_ids: list[int],
     except RuntimeError:
         truncated_spans = []
     supervised = sum(end - start for start, end in truncated_spans)
-    damaged = any(end > len(truncated_ids) for _, end in full_spans)
+    cutoff = len(truncated_ids)
+    partial = any(start < cutoff < end for start, end in full_spans)
+    dropped = sum(start >= cutoff for start, _ in full_spans)
+    partial_tool = False
+    dropped_tool = 0
+    tool_spans = 0
+    if tool_open_ids and tool_close_ids:
+        for start, end in full_spans:
+            cursor = start
+            while (opening := find_subsequence(input_ids, tool_open_ids, cursor)) >= 0 and opening < end:
+                closing = find_subsequence(input_ids, tool_close_ids,
+                                           opening + len(tool_open_ids))
+                if closing < 0 or closing + len(tool_close_ids) > end:
+                    break
+                close_end = closing + len(tool_close_ids)
+                tool_spans += 1
+                partial_tool |= opening < cutoff < close_end
+                dropped_tool += int(start >= cutoff)
+                cursor = close_end
     return {
         "token_length": len(input_ids), "truncated_length": len(truncated_ids),
         "supervised_tokens_after_truncation": supervised,
         "zero_supervised_tokens": supervised == 0,
-        "assistant_span_cut": damaged,
+        "partial_assistant_span_cut": partial,
+        "partial_tool_call_cut": partial_tool,
+        "complete_assistant_span_dropped": dropped,
+        "complete_tool_call_turn_dropped": dropped_tool,
+        "tool_call_span_count": tool_spans,
+        "last_complete_assistant_end_before_cutoff": max(
+            (end for _, end in full_spans if end <= cutoff), default=None),
     }
 
 
@@ -180,7 +234,12 @@ def sequence_summary(rows: list[dict[str, Any]], max_length: int) -> dict[str, A
         "p99": _percentile(lengths, .99), "max": lengths[-1],
         "count_over_max_length": over, "ratio_over_max_length": over / len(rows),
         "zero_supervised_count": sum(bool(row["zero_supervised_tokens"]) for row in rows),
-        "assistant_span_cut_count": sum(bool(row["assistant_span_cut"]) for row in rows),
+        "partial_assistant_span_cut_count": sum(bool(row["partial_assistant_span_cut"]) for row in rows),
+        "partial_tool_call_cut_count": sum(bool(row["partial_tool_call_cut"]) for row in rows),
+        "complete_assistant_span_dropped_count": sum(
+            int(row["complete_assistant_span_dropped"]) for row in rows),
+        "complete_tool_call_turn_dropped_count": sum(
+            int(row["complete_tool_call_turn_dropped"]) for row in rows),
     }
 
 
@@ -190,6 +249,8 @@ def sequence_audit(records_by_shard: dict[str, list[dict[str, Any]]],
     """Use the actual multimodal processor/template, never text-only estimates."""
     start_ids = processor.tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
     end_id = processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
+    tool_open_ids = processor.tokenizer.encode("<tool_call>", add_special_tokens=False)
+    tool_close_ids = processor.tokenizer.encode("</tool_call>", add_special_tokens=False)
     rows_by_shard: dict[str, list[dict[str, Any]]] = {}
     for shard, records in records_by_shard.items():
         rows = []
@@ -202,18 +263,39 @@ def sequence_audit(records_by_shard: dict[str, list[dict[str, Any]]],
             truncated = processor(text=[prompt], images=[images], padding=False,
                                   truncation=True, max_length=max_length, return_tensors="pt")
             row = token_audit(full["input_ids"][0].tolist(),
-                              truncated["input_ids"][0].tolist(), start_ids, end_id)
-            row.update(sample_id=record["_sample_id"], source=record["_source"], shard=shard,
-                       tool_call_truncation_risk=(row["assistant_span_cut"] and any(
-                           "<tool_call>" in turn["value"] for turn in record["conversations"]
-                           if turn["from"] == "gpt")))
+                              truncated["input_ids"][0].tolist(), start_ids, end_id,
+                              tool_open_ids, tool_close_ids)
+            expected_tool_spans = sum(turn["value"].count("<tool_call>")
+                                      for turn in record["conversations"] if turn["from"] == "gpt")
+            if row["tool_call_span_count"] != expected_tool_spans:
+                raise RuntimeError(f"cannot resolve tokenized tool-call boundaries: {record['_sample_id']}")
+            row.update(sample_id=record["_sample_id"], source=record["_source"], shard=shard)
             rows.append(row)
         rows_by_shard[shard] = rows
     all_rows = [row for rows in rows_by_shard.values() for row in rows]
     return {"shards": {shard: sequence_summary(rows, max_length)
                        for shard, rows in rows_by_shard.items()},
             "full_8k": sequence_summary(all_rows, max_length),
-            "problem_samples": [row for row in all_rows
-                                if row["zero_supervised_tokens"] or row["assistant_span_cut"]],
-            "tool_call_truncation_risk_count": sum(bool(row["tool_call_truncation_risk"])
-                                                    for row in all_rows)}
+            "problem_samples": [row for row in all_rows if row["zero_supervised_tokens"]
+                                or row["partial_assistant_span_cut"] or row["partial_tool_call_cut"]],
+            "report_only_truncation": [row for row in all_rows
+                                       if row["complete_assistant_span_dropped"]
+                                       and not (row["zero_supervised_tokens"]
+                                                or row["partial_assistant_span_cut"]
+                                                or row["partial_tool_call_cut"])]}
+
+
+def formal_preflight_checks(tool: dict[str, Any], leakage: dict[str, Any],
+                            sequence: dict[str, Any] | None) -> dict[str, bool]:
+    full = sequence.get("full_8k", {}) if sequence else {}
+    return {
+        "effective_tool_contract": tool.get("effective_declaration_drift_count") == 0,
+        "actual_tool_calls": tool.get("actual_call_drift_count") == 0,
+        "leakage_complete": leakage.get("complete") is True,
+        "zero_question_overlap": leakage.get("question_overlap_count") == 0,
+        "zero_image_overlap": leakage.get("image_overlap_count") == 0,
+        "sequence_complete": sequence is not None,
+        "supervised_targets": full.get("zero_supervised_count") == 0,
+        "assistant_spans_intact": full.get("partial_assistant_span_cut_count") == 0,
+        "tool_calls_intact": full.get("partial_tool_call_cut_count") == 0,
+    }

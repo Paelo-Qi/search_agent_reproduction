@@ -30,7 +30,11 @@ uses largest-remainder allocation (alphabetical tie-break) against the **raw**
 wiki_art 1113, wiki_en 766, wiki_zh 761. Within each source, only samples
 accepted by the existing Phase 0 collator format are eligible; seed-qualified
 SHA256 ranks select once from that eligible list and then partition without
-replacement. This is stable across local and AutoDL Python versions.
+replacement. Frozen Eval-300 question metadata is checked before selection;
+excluded candidates are skipped and the next valid, unused candidate in the
+**same source rank order** fills the fixed quota. The same mechanism accepts
+frozen image-overlap exclusions after media is available. This is stable
+across local and AutoDL Python versions.
 The current raw files contain 41 invalid-format records, reported by source
 in the manifest; they are neither rewritten nor silently treated as trainable.
 Each selected identity is `source:original_index`, with a raw-record SHA256.
@@ -43,8 +47,10 @@ Each selected identity is `source:original_index`, with a raw-record SHA256.
 | `reserve_4k` | 4,000 | 8,000 | Reserve only |
 
 The manifest records source-file SHA256s, each shard's exact source counts and
-output SHA256, sample membership/source/original index/raw SHA256, and a
-disjointness assertion. All four shard JSONs are physical and disjoint;
+output SHA256, sample membership/source/original index/raw SHA256, exclusion
+IDs/reasons, replacement IDs/sources, ranking version, and a disjointness
+assertion. Manifest schema is now **version 2**; old version-1 pools cannot be
+used for formal training. All four shard JSONs are physical and disjoint;
 `main_3k`, cumulative 4k, and cumulative 8k are lineage names, not separately
 sampled files. Main 3k is the primary result; 4k is the most likely optional
 extension, while 8k requires unusually ample training time.
@@ -64,6 +70,18 @@ to extraction of selected members from each pinned official image ZIP.
 `media_status.json` records image readiness separately: materializing images
 does **not** change the fixed selection manifest checksum. Run preflight after
 image extraction. Do not copy only shard JSONs without their media/manifest.
+Images must be local **before training**; the trainer never downloads them.
+
+The raw dataset's tool declarations are broader than the fixed Agent runtime
+contract. We do not widen runtime tools or alter Base Eval-300. Preparation
+retains each raw declaration verbatim in `_source_tools`, then puts the current
+runtime `TOOL_DECLARATIONS` chat-template schemas in `tools`, the field the SFT
+collator actually sends to Qwen. Expert calls, observations, and final answers
+are unchanged. The manifest records the transform version, raw-declaration
+fingerprint, effective runtime-contract fingerprint, and canonicalization flag.
+Changing the runtime contract invalidates this pool until explicitly rebuilt.
+The independent 4B smoke data file stays raw; its records receive the same
+declaration transformation only in training memory.
 
 ## Read-only preflight and current blockers
 
@@ -72,33 +90,35 @@ image extraction. Do not copy only shard JSONs without their media/manifest.
 
 - `leakage.json`: normalized question matches and decoded-image-content SHA256
   matches against the unchanged fixed Eval-300, with training ID, source,
-  Eval ID, benchmark, and image hash. Overlaps are reported, never removed.
-- `tool_contract.json`: every selected sample's declared tool schemas and
-  actual `<tool_call>` arguments checked against current runtime declarations.
-  No argument rename or schema widening occurs.
+  Eval ID, benchmark, and image hash. The final formal pool requires **zero
+  known question and image overlaps**. If image overlap appears after media
+  extraction, rebuild with `--leakage-report` and rerun full preflight.
+- `tool_contract.json`: raw declaration drift is reported only; effective
+  training declaration drift and actual expert-call drift are separate hard
+  failures. No expert argument rename or schema widening occurs.
 - `sequence.json`: actual pinned processor/template lengths for all four
   shards and the full 8k (min/mean/median/p50/p90/p95/p99/max, count and ratio
-  over 32k), zero-supervised-token count, assistant-span cut count, and
-  tool-call truncation risk. The current collator right-truncates at 32k and
-  supervises assistant bodies only; a truncated assistant span may be damaged
-  even when some supervised tokens remain. The audit reports this and does
-  not edit trajectories.
+  over 32k), plus four distinct outcomes based on actual multimodal processor
+  tokens: zero supervised targets, partial assistant span cut, partial
+  `<tool_call>...</tool_call>` cut, and complete later assistant span dropped.
+  The first three are hard failures. A complete later turn dropped is
+  report-only when earlier intact supervised content remains; it does not
+  automatically fail. Problem and report-only sample lists are separate.
 - `summary.json`: bound to the pool manifest and frozen Eval SHA256; blocks
-  formal training if images/sequence are incomplete, tool schemas drift, or
-  supervised tokens/assistant spans are damaged. A leakage overlap requires
-  an explicit human acknowledgement before training.
+  formal training unless media/sequence audits are complete, effective tool
+  and call drift are zero, question/image overlap is zero, and all hard
+  truncation counts are zero. There is no leakage-acknowledgement bypass.
 
-The current local metadata-only run found **32,000 declaration-schema drifts**
-(four per selected sample), although its parsed tool-call arguments showed no
-call-schema drift. Examples: dataset `layout_parsing.file_path`, dataset
-`text_search.query/lang`, and different required arguments for
-`super_resolution`. This is a genuine train-time prompt-contract mismatch
-because the existing collator passes each sample's declared tools into the
-template. It is **not** auto-remapped. One normalized question overlap was
-also found (`wiki_art:4712` ↔ SimpleVQA `1492`). Without official images,
-image-overlap and processor sequence audits remain incomplete. The user must
-decide how to resolve/review these before formal 1k training; do not bypass
-the failed preflight merely to start a run.
+The previous pool exposed 32,000 raw declaration-schema drifts (four per
+sample), but no parsed expert call drift. These raw differences remain
+auditable; effective declarations are canonicalized. The known question
+overlap `wiki_art:4712` ↔ SimpleVQA `1492` is excluded by general normalized
+question matching and replaced by the next same-source ranked candidate,
+`wiki_art:4506`. The four shard sizes and all per-shard source counts are
+unchanged; the rebuilt local metadata preflight reports question overlap 0,
+effective declaration drift 0, actual call drift 0, and raw drift 32,000.
+Until official images are materialized and full preflight passes, image
+overlap and processor sequence audits remain **unverified**.
 
 ## Scheduler, checkpoints, and continuation
 
@@ -153,7 +173,8 @@ and `manifest.json`; `media_status.json` is a separate readiness report. The
 selection manifest is version-controlled while generated trajectories/media
 are ignored; the former verifies pure planning/identity/audit logic.
 Local preflight can be attempted, but it correctly exits nonzero until images
-are present and the schema drift is resolved; it does not download a model.
+are present; raw declaration drift alone does not block it. It does not
+download a model while images are missing.
 
 ## AutoDL acceptance order (do not skip the gates)
 
@@ -163,10 +184,21 @@ BF16 GPUs. The preparation command below explicitly permits official ZIP
 downloads; omit `--download-images` if the seven archives are already local.
 
 ```bash
-# 1. Materialize the independent 4B official 100-sample smoke set.
+# 1. Materialize the fixed 8k pool's official images, then run full preflight.
+python scripts/prepare_sft_main.py --extract-images --download-images
+python scripts/preflight_sft_main.py
+
+# If (and only if) complete leakage.json reports image overlap, deterministically
+# replace those IDs in their own sources, materialize replacement images,
+# and rerun full preflight. Do not continue until summary.json passed=true.
+python scripts/prepare_sft_main.py --leakage-report reports/sft_preflight/leakage.json \
+  --extract-images --download-images
+python scripts/preflight_sft_main.py
+
+# 2. Materialize the independent 4B official 100-sample smoke set.
 python scripts/prepare_sft_4b_smoke.py
 
-# 2A. Benchmark micro=1/accum=4; intentionally pause at step 10, inspect,
+# 3A. Benchmark micro=1/accum=4; intentionally pause at step 10, inspect,
 # then verify full optimizer/scheduler/RNG resume to step 20.
 CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
   scripts/train_sft_main.py --config configs/sft_4b_smoke.yaml \
@@ -177,18 +209,18 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
   --stage smoke --run-tag micro1_accum4 --micro-batch 1 --grad-accum 4 \
   --resume-from outputs/sft_4b_smoke/micro1_accum4/checkpoint-step-10
 
-# 2B. Independently benchmark micro=2/accum=2 (same global batch).
+# 3B. Independently benchmark micro=2/accum=2 (same global batch).
 CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
   scripts/train_sft_main.py --config configs/sft_4b_smoke.yaml \
   --stage smoke --run-tag micro2_accum2 --micro-batch 2 --grad-accum 2
 
-# 3. Compare without auto-selecting a winner: finite loss, OOM, per-GPU peak
+# 4. Compare without auto-selecting a winner: finite loss, OOM, per-GPU peak
 # allocated/reserved VRAM, step time, samples/sec, and checkpoint reload.
 python scripts/compare_sft_4b_smoke.py \
   --a reports/sft_4b_smoke/micro1_accum4/smoke_step20.json \
   --b reports/sft_4b_smoke/micro2_accum2/smoke_step20.json
 
-# 4. Fresh-process Base+smoke-adapter generation on an official SFT smoke
+# 5. Fresh-process Base+smoke-adapter generation on an official SFT smoke
 # sample, not on the held-out Eval-300.
 CUDA_VISIBLE_DEVICES=0 python scripts/reload_sft_adapter.py \
   --config configs/eval_base_300.yaml \
@@ -203,15 +235,12 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_4b_agent_smoke.py \
   --phase3-search-tools --phase3-tool text_search \
   --report reports/sft_4b_smoke/agent_text_search.json
 
-# 5. Materialize the fixed 8k training pool's official images and audit it.
-python scripts/prepare_sft_main.py --extract-images --download-images
-python scripts/preflight_sft_main.py
 ```
 
 The next commands are **conditional**, not permission to ignore a failed
-preflight. First inspect `reports/sft_preflight/*.json`, settle the declaration
-drift without changing Eval runtime contracts or silently rewriting calls,
-review the leakage record, and verify any 32k cut/zero-target findings.
+preflight. First inspect `reports/sft_preflight/*.json`, verify effective
+declaration/call drift and both overlap counts are zero, and review any 32k
+partial-cut/zero-target findings and report-only complete drops.
 Select A or B based on the two smoke reports, keep that choice fixed for the
 whole lineage, and inspect finite losses, LR, LoRA delta, frozen vision,
 checkpoint completeness, throughput, VRAM and malformed-data/long-sequence
@@ -220,24 +249,23 @@ errors at checkpoint-1k before continuing.
 ```bash
 # Example only after preflight PASS and human approval; shows A's fixed batch.
 CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
-  scripts/train_sft_main.py --stage main_a_1k --micro-batch 1 --grad-accum 4 \
-  --acknowledge-leakage
+  scripts/train_sft_main.py --stage main_a_1k --micro-batch 1 --grad-accum 4
 
 # After manual checkpoint-1k health check, same Phase 1 scheduler/state.
 CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
   scripts/train_sft_main.py --stage main_b_2k --micro-batch 1 --grad-accum 4 \
-  --resume-from outputs/sft_main/checkpoint-1k --acknowledge-leakage
+  --resume-from outputs/sft_main/checkpoint-1k
 
 # Optional, retaining checkpoint-3k independently.
 CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
   scripts/train_sft_main.py --stage extra_1k --micro-batch 1 --grad-accum 4 \
-  --resume-from outputs/sft_main/checkpoint-3k --acknowledge-leakage
+  --resume-from outputs/sft_main/checkpoint-3k
 
 # Reserve only, after a separately chosen Phase 2 peak LR and 4k health check:
 CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
   scripts/train_sft_main.py --stage reserve_4k --micro-batch 1 --grad-accum 4 \
   --resume-from outputs/sft_main/checkpoint-4k \
-  --phase-2-peak-lr "$PHASE2_PEAK_LR" --acknowledge-leakage
+  --phase-2-peak-lr "$PHASE2_PEAK_LR"
 ```
 
 For a future SFT Eval-300, use a **new** run ID and only add `--adapter` to

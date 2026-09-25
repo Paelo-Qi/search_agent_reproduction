@@ -10,7 +10,10 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from .agent.tool_contracts import TOOL_DECLARATIONS
 from .data import validate_raw_sample
+from .evaluation.run_manifest import tool_contract_fingerprint
+from .sft_preflight import normalized_question, sample_questions
 from .sft_tool_audit import DATASET_ID, DATASET_REVISION, SOURCE_FILES, iter_json_array, sha256_file
 
 
@@ -22,6 +25,34 @@ SHARD_SIZES = {"main_a_1k": 1000, "main_b_2k": 2000, "extra_1k": 1000,
                "reserve_4k": 4000}
 POOL_SIZE = sum(SHARD_SIZES.values())
 DEFAULT_SEED = 20260506
+SELECTION_VERSION = "sha256-rank-exclusions-v2"
+TOOL_TRANSFORM_VERSION = "runtime-chat-template-v1"
+
+
+def runtime_tools() -> list[dict[str, Any]]:
+    return [declaration.as_chat_template_tool() for declaration in TOOL_DECLARATIONS]
+
+
+def canonicalize_tool_declarations(raw: dict[str, Any]) -> dict[str, Any]:
+    """Keep raw declarations verbatim; replace only the model-facing tools field."""
+    record = dict(raw)
+    record["_source_tools"] = raw.get("tools")
+    record["tools"] = runtime_tools()
+    return record
+
+
+def _fingerprint(value: Any) -> str:
+    return hashlib.sha256(_json_bytes(value)).hexdigest()
+
+
+def eval_question_set(path: str | Path) -> tuple[set[str], str]:
+    """Read only frozen Eval-300 question metadata, not packed images/answers."""
+    import pyarrow.parquet as pq
+    from .evaluation.eval300 import build_eval300_plan
+
+    plan = build_eval300_plan(path)
+    table = pq.read_table(plan.dataset_path, columns=["question"])
+    return {normalized_question(str(row["question"])) for row in table.to_pylist()}, plan.dataset_sha256
 
 
 def _stable_rank(seed: int, purpose: str, source: str, index: int) -> bytes:
@@ -46,6 +77,7 @@ def selection_plan(seed: int = DEFAULT_SEED,
                    source_counts: Mapping[str, int] = SOURCE_COUNTS,
                    shard_sizes: Mapping[str, int] = SHARD_SIZES,
                    eligible_indices: Mapping[str, list[int]] | None = None,
+                   exclusions: Mapping[str, str] | None = None,
                    ) -> dict[str, dict[str, list[int]]]:
     """Select once per source, then partition that fixed pool without replacement."""
     if sum(shard_sizes.values()) > sum(source_counts.values()):
@@ -55,6 +87,9 @@ def selection_plan(seed: int = DEFAULT_SEED,
     for source in sorted(source_counts):
         population = (range(source_counts[source]) if eligible_indices is None
                       else eligible_indices[source])
+        if exclusions:
+            population = [index for index in population
+                          if stable_sample_id(source, index) not in exclusions]
         if len(population) < pool_quotas[source]:
             raise ValueError(f"{source} has too few trainable samples for its fixed quota")
         selected = sorted(population,
@@ -151,11 +186,21 @@ def materialize_images(records: list[dict[str, Any]], raw_dir: Path, output_dir:
 
 def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
                      *, seed: int = DEFAULT_SEED, extract_images: bool = False,
-                     download_images: bool = False) -> dict[str, Any]:
+                     download_images: bool = False,
+                     eval_path: str | Path | None = None,
+                     exclusions: Mapping[str, str] | None = None) -> dict[str, Any]:
     raw_dir, output_dir = Path(raw_dir).resolve(), Path(output_dir).resolve()
     if download_images and not extract_images:
         raise ValueError("--download-images requires --extract-images")
+    eval_questions, eval_sha = eval_question_set(eval_path) if eval_path is not None else (set(), None)
+    explicit_exclusions = dict(exclusions or {})
+    for sample_id, reason in explicit_exclusions.items():
+        source, separator, index = sample_id.partition(":")
+        if (not separator or source not in SOURCE_FILES or not index.isdecimal()
+                or int(index) >= SOURCE_COUNTS[source] or not isinstance(reason, str) or not reason):
+            raise ValueError(f"invalid SFT exclusion: {sample_id!r}")
     eligible_indices = {}
+    all_exclusions = dict(explicit_exclusions)
     validity = {}
     source_files = {}
     for source, relative in SOURCE_FILES.items():
@@ -171,13 +216,29 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             eligible.append(index)
+            if eval_questions and sample_questions(raw) & eval_questions:
+                all_exclusions.setdefault(stable_sample_id(source, index), "eval300_question_overlap")
         if count != SOURCE_COUNTS[source]:
             raise ValueError(f"{source} has {count} records, expected pinned {SOURCE_COUNTS[source]}")
         eligible_indices[source] = eligible
         validity[source] = {"eligible": len(eligible), "excluded_invalid": count - len(eligible)}
         source_files[source] = {"path": relative, "sha256": sha256_file(path), "count": count}
+    original_plan = selection_plan(seed, source_counts=SOURCE_COUNTS,
+                                   shard_sizes=SHARD_SIZES, eligible_indices=eligible_indices)
     plan = selection_plan(seed, source_counts=SOURCE_COUNTS,
-                          shard_sizes=SHARD_SIZES, eligible_indices=eligible_indices)
+                          shard_sizes=SHARD_SIZES, eligible_indices=eligible_indices,
+                          exclusions=all_exclusions)
+    replacements = []
+    for source in SOURCE_FILES:
+        original = {index for by_source in original_plan.values() for index in by_source[source]}
+        selected = {index for by_source in plan.values() for index in by_source[source]}
+        removed = sorted(original - selected, key=lambda index: _stable_rank(seed, "pool", source, index))
+        added = sorted(selected - original, key=lambda index: _stable_rank(seed, "pool", source, index))
+        replacements.extend({"excluded_sample_id": stable_sample_id(source, old),
+                             "reason": all_exclusions[stable_sample_id(source, old)],
+                             "replacement_sample_id": stable_sample_id(source, new),
+                             "replacement_source": source}
+                            for old, new in zip(removed, added))
     wanted = {source: {index: shard for shard, by_source in plan.items()
                        for index in by_source[source]} for source in SOURCE_FILES}
     records: dict[str, list[dict[str, Any]]] = {shard: [] for shard in SHARD_SIZES}
@@ -188,7 +249,7 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
             if shard is None:
                 continue
             validate_raw_sample(raw)
-            record = dict(raw)
+            record = canonicalize_tool_declarations(raw)
             original_images = list(raw["images"])
             record.update({
                 "_sample_id": stable_sample_id(source, index), "_source": source,
@@ -230,7 +291,17 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
     images_ready = all((output_dir / image).is_file()
                        for record in all_records for image in record["images"])
     manifest = {
-        "version": 1, "selection_algorithm": "sha256-rank-v1",
+        "version": 2, "selection_algorithm": SELECTION_VERSION,
+        "tool_declaration_transform_version": TOOL_TRANSFORM_VERSION,
+        "source_tool_declaration_fingerprint": _fingerprint(sorted(
+            [[row["_sample_id"], row["_source_tools"]] for row in all_records])),
+        "effective_runtime_tool_contract_fingerprint": tool_contract_fingerprint(),
+        "canonicalization_applied": True,
+        "eval300_question_sha256": eval_sha,
+        "exclusions": [{"sample_id": sample_id, "reason": reason}
+                       for sample_id, reason in sorted(all_exclusions.items())],
+        "exclusion_fingerprint": _fingerprint(sorted(all_exclusions.items())),
+        "replacements": replacements,
         "dataset_id": DATASET_ID, "dataset_revision": DATASET_REVISION,
         "seed": seed, "total_selected_count": len(all_records),
         "source_population_counts": dict(SOURCE_COUNTS), "source_validity": validity,
@@ -247,13 +318,23 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
 def load_sft_manifest(path: str | Path) -> dict[str, Any]:
     path = Path(path).resolve()
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    if manifest.get("selection_algorithm") != "sha256-rank-v1":
+    if manifest.get("version") != 2 or manifest.get("selection_algorithm") != SELECTION_VERSION:
         raise ValueError("SFT selection algorithm/version mismatch")
+    if (manifest.get("tool_declaration_transform_version") != TOOL_TRANSFORM_VERSION
+            or manifest.get("canonicalization_applied") is not True
+            or manifest.get("effective_runtime_tool_contract_fingerprint") != tool_contract_fingerprint()):
+        raise ValueError("SFT runtime tool contract fingerprint/transform mismatch")
+    exclusion_map = {row["sample_id"]: row["reason"] for row in manifest.get("exclusions", [])}
+    if (len(exclusion_map) != len(manifest.get("exclusions", []))
+            or manifest.get("exclusion_fingerprint") != _fingerprint(sorted(exclusion_map.items()))):
+        raise ValueError("SFT exclusion fingerprint mismatch")
     if manifest.get("dataset_id") != DATASET_ID or manifest.get("dataset_revision") != DATASET_REVISION:
         raise ValueError("SFT dataset identity/revision mismatch")
     if manifest.get("total_selected_count") != POOL_SIZE or manifest.get("disjointness_verified") is not True:
         raise ValueError("SFT pool count/disjointness mismatch")
     ids = [row["sample_id"] for row in manifest["membership"]]
+    if set(ids) & set(exclusion_map):
+        raise ValueError("SFT excluded sample appears in membership")
     if len(ids) != len(set(ids)) or len(ids) != POOL_SIZE:
         raise ValueError("SFT membership is duplicated or incomplete")
     for row in manifest["membership"]:
@@ -262,6 +343,7 @@ def load_sft_manifest(path: str | Path) -> dict[str, Any]:
             raise ValueError("SFT membership source/index/shard mismatch")
     if dict(Counter(row["source"] for row in manifest["membership"])) != manifest["pool_source_counts"]:
         raise ValueError("SFT pool source counts do not match membership")
+    source_tools = []
     for shard, expected in SHARD_SIZES.items():
         entry = manifest["shards"][shard]
         file = path.parent / entry["path"]
@@ -272,8 +354,15 @@ def load_sft_manifest(path: str | Path) -> dict[str, Any]:
             raise ValueError(f"SFT shard membership counts mismatch: {shard}")
         expected_rows = {(row["sample_id"], row["source"], row["source_index"],
                           row["raw_sha256"]) for row in members}
-        actual_rows = [(row["_sample_id"], row["_source"], row["_source_index"],
-                        row["_raw_sha256"]) for row in iter_json_array(file)]
+        actual_rows = []
+        for row in iter_json_array(file):
+            if row.get("tools") != runtime_tools():
+                raise ValueError(f"SFT effective runtime tools mismatch: {shard}")
+            source_tools.append([row["_sample_id"], row.get("_source_tools")])
+            actual_rows.append((row["_sample_id"], row["_source"], row["_source_index"],
+                                row["_raw_sha256"]))
         if len(actual_rows) != expected or set(actual_rows) != expected_rows:
             raise ValueError(f"SFT shard records do not match membership: {shard}")
+    if _fingerprint(sorted(source_tools)) != manifest.get("source_tool_declaration_fingerprint"):
+        raise ValueError("SFT source tool declaration fingerprint mismatch")
     return manifest

@@ -19,7 +19,7 @@ from opensearch_vl_repro.reporting import write_json  # noqa: E402
 from opensearch_vl_repro.sft_main_data import SHARD_SIZES, load_sft_manifest  # noqa: E402
 from opensearch_vl_repro.sft_tool_audit import sha256_file  # noqa: E402
 from opensearch_vl_repro.sft_preflight import (  # noqa: E402
-    leakage_audit, sequence_audit, tool_contract_audit,
+    formal_preflight_checks, leakage_audit, sequence_audit, tool_contract_audit,
 )
 
 
@@ -44,13 +44,18 @@ def main() -> int:
     eval_plan = build_eval300_plan(args.eval)
     eval_samples = read_eval_samples_by_ids(args.eval, list(eval_plan.entries))
     leakage = leakage_audit(records, eval_samples, args.data_dir)
+    leakage["pool_manifest_sha256"] = pool_sha256
     write_json(args.report_dir / "leakage.json", leakage)
     if leakage["missing_image_count"]:
+        checks = formal_preflight_checks(tool_report, leakage, None)
         summary = {"passed": False, "reason": "SFT images are missing; sequence/image audit incomplete",
                    "tool_contract_passed": tool_report["passed"], "leakage_complete": False,
                    "sequence_complete": False, "pool_manifest_sha256": pool_sha256,
                    "eval_sha256": eval_plan.dataset_sha256,
-                   "tool_mismatch_count": tool_report["mismatch_count"],
+                   "checks": checks,
+                   "raw_declaration_drift_count": tool_report["raw_declaration_drift_count"],
+                   "effective_declaration_drift_count": tool_report["effective_declaration_drift_count"],
+                   "actual_call_drift_count": tool_report["actual_call_drift_count"],
                    "question_overlap_count": leakage["question_overlap_count"],
                    "missing_image_count": leakage["missing_image_count"]}
         write_json(args.report_dir / "summary.json", summary)
@@ -61,21 +66,22 @@ def main() -> int:
     sequence = sequence_audit(by_shard, processor, args.data_dir,
                               max_length=int(config["data"]["max_length"]))
     write_json(args.report_dir / "sequence.json", sequence)
+    checks = formal_preflight_checks(tool_report, leakage, sequence)
     summary = {
-        "passed": (tool_report["passed"] and
-                   sequence["full_8k"]["zero_supervised_count"] == 0 and
-                   sequence["full_8k"]["assistant_span_cut_count"] == 0),
+        "passed": all(checks.values()), "checks": checks,
         "tool_contract_passed": tool_report["passed"], "leakage_complete": True,
-        "tool_mismatch_count": tool_report["mismatch_count"],
+        "raw_declaration_drift_count": tool_report["raw_declaration_drift_count"],
+        "effective_declaration_drift_count": tool_report["effective_declaration_drift_count"],
+        "actual_call_drift_count": tool_report["actual_call_drift_count"],
         "question_overlap_count": leakage["question_overlap_count"],
         "image_overlap_count": leakage["image_overlap_count"],
-        "leakage_review_required": bool(leakage["question_overlap_count"] or
-                                        leakage["image_overlap_count"]),
         "sequence_complete": True,
         "pool_manifest_sha256": pool_sha256,
         "eval_sha256": eval_plan.dataset_sha256,
         "zero_supervised_count": sequence["full_8k"]["zero_supervised_count"],
-        "assistant_span_cut_count": sequence["full_8k"]["assistant_span_cut_count"],
+        "partial_assistant_span_cut_count": sequence["full_8k"]["partial_assistant_span_cut_count"],
+        "partial_tool_call_cut_count": sequence["full_8k"]["partial_tool_call_cut_count"],
+        "complete_assistant_span_dropped_count": sequence["full_8k"]["complete_assistant_span_dropped_count"],
     }
     write_json(args.report_dir / "summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))

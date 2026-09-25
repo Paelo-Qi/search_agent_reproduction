@@ -22,7 +22,7 @@ from .data import OpenSearchVLCollator, load_json_records
 from .model import (add_lora, freeze_vision_components, load_base_model,
                     load_processor, move_batch, parameter_audit, select_probe_parameter)
 from .reporting import environment_report, write_json
-from .sft_main_data import SHARD_SIZES, load_sft_manifest
+from .sft_main_data import SHARD_SIZES, canonicalize_tool_declarations, load_sft_manifest
 from .sft_tool_audit import sha256_file
 from .sft_train_plan import (STAGE_NAMES, STAGE_ORDER, StagePlan, cosine_factor,
                              load_main_config, plan_stage, validate_resume_metadata)
@@ -142,8 +142,7 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
                   resume_from: str | Path | None = None, micro_batch: int | None = None,
                   gradient_accumulation: int | None = None,
                   phase_2_peak_lr: float | None = None,
-                  stop_after_steps: int | None = None, run_tag: str | None = None,
-                  acknowledge_leakage: bool = False) -> dict[str, Any] | None:
+                  stop_after_steps: int | None = None, run_tag: str | None = None) -> dict[str, Any] | None:
     import numpy as np
     import torch
     import torch.distributed as dist
@@ -180,11 +179,17 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
         records = load_json_records(data_path)
         if len(records) != plan.shard_samples:
             raise ValueError("4B smoke dataset must contain exactly 100 official trajectories")
+        # The independent 4B smoke file remains raw; only its in-memory
+        # training-effective declarations are aligned with the fixed runtime.
+        records = [canonicalize_tool_declarations(record) for record in records]
         pool_sha = shard_sha = sha256_file(data_path)
     else:
         pool_dir = (PROJECT_ROOT / config["data"]["pool_dir"]).resolve()
         manifest_path = pool_dir / "manifest.json"
         manifest = load_sft_manifest(manifest_path)
+        from .evaluation.eval300 import FROZEN_EVAL300_SHA256
+        if manifest.get("eval300_question_sha256") != FROZEN_EVAL300_SHA256:
+            raise RuntimeError("SFT pool lacks frozen Eval-300 question exclusions")
         pool_sha = sha256_file(manifest_path)
         data_path = pool_dir / manifest["shards"][stage]["path"]
         shard_sha = manifest["shards"][stage]["sha256"]
@@ -196,12 +201,23 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
             raise RuntimeError("full SFT preflight audit must run before formal training")
         preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
         if (not preflight.get("passed") or not preflight.get("sequence_complete")
-                or not preflight.get("tool_contract_passed") or not preflight.get("leakage_complete")):
+                or not preflight.get("tool_contract_passed") or not preflight.get("leakage_complete")
+                or not isinstance(preflight.get("checks"), dict)
+                or set(preflight["checks"]) != {
+                    "effective_tool_contract", "actual_tool_calls", "leakage_complete",
+                    "zero_question_overlap", "zero_image_overlap", "sequence_complete",
+                    "supervised_targets", "assistant_spans_intact", "tool_calls_intact"}
+                or not all(value is True for value in preflight["checks"].values())
+                or preflight.get("question_overlap_count") != 0
+                or preflight.get("image_overlap_count") != 0
+                or preflight.get("effective_declaration_drift_count") != 0
+                or preflight.get("actual_call_drift_count") != 0
+                or preflight.get("zero_supervised_count") != 0
+                or preflight.get("partial_assistant_span_cut_count") != 0
+                or preflight.get("partial_tool_call_cut_count") != 0):
             raise RuntimeError("SFT preflight audit has not passed")
         if preflight.get("pool_manifest_sha256") != pool_sha:
             raise RuntimeError("SFT preflight belongs to a different pool manifest")
-        if preflight.get("leakage_review_required") and not acknowledge_leakage:
-            raise RuntimeError("review leakage report and explicitly acknowledge it")
     if any(not (data_path.parent / image).is_file()
            for record in records for image in record["images"]):
         raise FileNotFoundError("selected SFT images are missing; materialize official ZIP images")
@@ -287,7 +303,6 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
         saved_rng = None
     if state["global_step"] != plan.global_start_step and resume_mode != "same_stage":
         raise ValueError("checkpoint global step does not match planned stage boundary")
-    state["leakage_acknowledged"] = bool(acknowledge_leakage)
     if scheduler.last_epoch != state["phase_step"]:
         raise ValueError("checkpoint scheduler state does not match phase step")
     collator = OpenSearchVLCollator(processor, data_path, int(config["data"]["max_length"]))
@@ -455,7 +470,6 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
             "resolved_lora_target_count": len(resolved_targets),
             "lora_probe": probe_name, "lora_probe_max_abs_delta": delta,
             "resumed_from": str(resume_path) if resume_path else None,
-            "leakage_acknowledged": bool(acknowledge_leakage),
             "environment": environment_report(),
         }
         write_json(report_root / f"{stage}_step{state['global_step']}.json", report)

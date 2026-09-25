@@ -25,13 +25,11 @@ def main() -> None:
     parser.add_argument("--stop-after-steps", type=int,
                         help="Only for interrupted/resumed 4B smoke validation")
     parser.add_argument("--run-tag")
-    parser.add_argument("--acknowledge-leakage", action="store_true")
     args = parser.parse_args()
     run_sft_stage(args.config, stage=args.stage, resume_from=args.resume_from,
                   micro_batch=args.micro_batch, gradient_accumulation=args.grad_accum,
                   phase_2_peak_lr=args.phase_2_peak_lr,
-                  stop_after_steps=args.stop_after_steps, run_tag=args.run_tag,
-                  acknowledge_leakage=args.acknowledge_leakage)
+                  stop_after_steps=args.stop_after_steps, run_tag=args.run_tag)
 
 
 if __name__ == "__main__":

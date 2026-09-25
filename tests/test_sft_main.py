@@ -16,11 +16,11 @@ from opensearch_vl_repro.inference.config import load_inference_config
 from opensearch_vl_repro.inference.model_loader import load_inference_bundle
 from opensearch_vl_repro.sft_long_training import check_checkpoint, checkpoint_metadata
 from opensearch_vl_repro.sft_main_data import (
-    SHARD_SIZES, SOURCE_COUNTS, load_sft_manifest, prepare_sft_pool,
-    proportional_quotas, selection_plan, stable_sample_id,
+    SHARD_SIZES, SOURCE_COUNTS, canonicalize_tool_declarations, load_sft_manifest, prepare_sft_pool,
+    proportional_quotas, runtime_tools, selection_plan, stable_sample_id,
 )
 from opensearch_vl_repro.sft_preflight import (
-    leakage_audit, sequence_summary, token_audit, tool_contract_audit,
+    formal_preflight_checks, leakage_audit, sequence_summary, token_audit, tool_contract_audit,
 )
 from opensearch_vl_repro.sft_tool_audit import sha256_file
 from opensearch_vl_repro.sft_train_plan import (
@@ -79,6 +79,9 @@ def test_small_pool_manifest_is_rebuildable_and_detects_tampering(tmp_path, monk
     output = tmp_path / "prepared"
     first = prepare_sft_pool(raw, output)
     assert first["total_selected_count"] == 8 and first["disjointness_verified"]
+    assert first["version"] == 2 and first["canonicalization_applied"] is True
+    assert first["effective_runtime_tool_contract_fingerprint"]
+    assert first["source_tool_declaration_fingerprint"]
     assert first["source_validity"]["fvqa"] == {"eligible": 5, "excluded_invalid": 1}
     assert first["images_ready"] is False
     assert "images_ready" not in load_sft_manifest(output / "manifest.json")
@@ -121,7 +124,7 @@ def test_leakage_audit_detects_question_and_image_content_overlap(tmp_path):
 def test_tool_contract_audit_reports_drift_without_remapping():
     declaration = TOOL_DECLARATIONS_BY_NAME["image_search"].as_chat_template_tool()
     record = {"_sample_id": "fvqa:2", "_source": "fvqa",
-              "tools": [declaration],
+              "_source_tools": [declaration], "tools": runtime_tools(),
               "conversations": [{"from": "gpt", "value":
                                  '<tool_call>{"name":"image_search","arguments":{"url":"img_1"}}</tool_call>'}]}
     assert tool_contract_audit([record])["passed"] is True
@@ -136,9 +139,44 @@ def test_tool_contract_audit_reports_drift_without_remapping():
     assert "url" in report["mismatches"][0]["detail"]
     extra = json.loads(json.dumps(declaration))
     extra["function"]["parameters"]["properties"]["file_path"] = {"type": "string"}
-    report = tool_contract_audit([{**record, "tools": [extra]}])
-    assert report["mismatches"][0]["kind"] == "declaration_schema_drift"
-    assert report["mismatches"][0]["extra_dataset_properties"] == ["file_path"]
+    report = tool_contract_audit([{**record, "_source_tools": [extra]}])
+    assert report["passed"] is True
+    assert report["raw_declaration_mismatches"][0]["kind"] == "declaration_schema_drift"
+    assert report["raw_declaration_mismatches"][0]["extra_dataset_properties"] == ["file_path"]
+    assert report["effective_declaration_drift_count"] == report["actual_call_drift_count"] == 0
+    safe_sequence = {"full_8k": {"zero_supervised_count": 0,
+                                 "partial_assistant_span_cut_count": 0,
+                                 "partial_tool_call_cut_count": 0,
+                                 "complete_assistant_span_dropped_count": 1}}
+    safe_leakage = {"complete": True, "question_overlap_count": 0, "image_overlap_count": 0}
+    assert all(formal_preflight_checks(report, safe_leakage, safe_sequence).values())
+    assert tool_contract_audit([{**record, "tools": [extra]}])["passed"] is False
+    assert not formal_preflight_checks(
+        tool_contract_audit([{**record, "tools": [extra]}]), safe_leakage,
+        safe_sequence)["effective_tool_contract"]
+    assert not formal_preflight_checks(
+        tool_contract_audit([bad]), safe_leakage, safe_sequence)["actual_tool_calls"]
+    assert not formal_preflight_checks(report,
+                                      {**safe_leakage, "image_overlap_count": 1},
+                                      safe_sequence)["zero_image_overlap"]
+
+
+def test_tool_canonicalization_preserves_expert_call_observation_and_final():
+    raw = {"tools": '[{"type":"function","function":{"name":"text_search"}}]',
+           "conversations": [
+               {"from": "human", "value": "<image> Identify this."},
+               {"from": "gpt", "value": '<tool_call>{"name":"text_search","arguments":{"q":"art"}}</tool_call>'},
+               {"from": "observation", "value": "Original search result."},
+               {"from": "gpt", "value": "Original final answer."},
+           ], "images": ["original.png"]}
+    original = json.loads(json.dumps(raw))
+    effective = canonicalize_tool_declarations(raw)
+    assert raw == original
+    assert effective["_source_tools"] == original["tools"]
+    assert effective["tools"] == runtime_tools()
+    assert effective["conversations"] == original["conversations"]
+    assert effective["images"] == original["images"]
+    assert canonicalize_tool_declarations(raw) == effective
 
 
 def test_sequence_audit_counts_zero_targets_and_cut_assistant_span():
@@ -147,12 +185,95 @@ def test_sequence_audit_counts_zero_targets_and_cut_assistant_span():
     cut = token_audit(full, full[:3], [1, 2], 9)
     zero = token_audit(full, full[:2], [1, 2], 9)
     assert intact["supervised_tokens_after_truncation"] == 3
-    assert cut["assistant_span_cut"] is True
+    assert cut["partial_assistant_span_cut"] is True
     assert zero["zero_supervised_tokens"] is True
     summary = sequence_summary([intact, cut, zero], max_length=3)
     assert summary["count_over_max_length"] == 3
     assert summary["zero_supervised_count"] == 1
-    assert summary["assistant_span_cut_count"] == 2
+    assert summary["partial_assistant_span_cut_count"] == 1
+    assert summary["complete_assistant_span_dropped_count"] == 1
+
+
+def test_token_cut_boundaries_and_formal_report_only_drop():
+    # Two complete assistant turns; the second includes one tool call.
+    full = [1, 2, 3, 9, 1, 2, 5, 7, 6, 8, 9]
+    def audit(cutoff):
+        return token_audit(full, full[:cutoff], [1, 2], 9, [5], [6])
+
+    assert audit(0)["zero_supervised_tokens"] is True
+    assert audit(2)["zero_supervised_tokens"] is True  # exactly at assistant body start
+    assert audit(4)["partial_assistant_span_cut"] is False  # exactly after first end
+    assert audit(4)["complete_assistant_span_dropped"] == 1
+    assert audit(6)["complete_assistant_span_dropped"] == 1  # second body start
+    assert audit(3)["partial_assistant_span_cut"] is True
+    assert audit(7)["partial_tool_call_cut"] is True
+    assert audit(7)["partial_assistant_span_cut"] is True
+    assert audit(9)["partial_tool_call_cut"] is False
+    assert audit(11)["complete_assistant_span_dropped"] == 0
+    summary = sequence_summary([audit(4)], 4)
+    checks = formal_preflight_checks(
+        {"effective_declaration_drift_count": 0, "actual_call_drift_count": 0},
+        {"complete": True, "question_overlap_count": 0, "image_overlap_count": 0},
+        {"full_8k": summary})
+    assert all(checks.values())
+    assert summary["complete_assistant_span_dropped_count"] == 1
+
+
+def test_deterministic_question_and_image_exclusion_replacement(tmp_path, monkeypatch):
+    from opensearch_vl_repro import sft_main_data as module
+
+    monkeypatch.setattr(module, "SOURCE_FILES", {"fvqa": "fvqa/records.json", "webqa": "webqa/records.json"})
+    monkeypatch.setattr(module, "SOURCE_COUNTS", {"fvqa": 6, "webqa": 6})
+    monkeypatch.setattr(module, "SHARD_SIZES", {"main_a_1k": 1, "main_b_2k": 2,
+                                            "extra_1k": 1, "reserve_4k": 4})
+    monkeypatch.setattr(module, "POOL_SIZE", 8)
+    raw_dir = tmp_path / "raw"
+    for source in module.SOURCE_FILES:
+        path = raw_dir / module.SOURCE_FILES[source]
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps([_record(i) for i in range(6)]), encoding="utf-8")
+    original = prepare_sft_pool(raw_dir, tmp_path / "original")
+    original_ids = {row["sample_id"] for row in original["membership"]}
+    victim = sorted(item for item in original_ids if item.startswith("fvqa:"))[0]
+    victim_index = int(victim.split(":")[1])
+    monkeypatch.setattr(module, "eval_question_set",
+                        lambda _: ({f"question {victim_index}?"}, "frozen-eval-sha"))
+    first = prepare_sft_pool(raw_dir, tmp_path / "prepared", eval_path="fake-eval")
+    assert victim not in {row["sample_id"] for row in first["membership"]}
+    assert first["replacements"][0]["excluded_sample_id"] == victim
+    assert first["replacements"][0]["replacement_source"] == "fvqa"
+    assert first["replacements"][0]["replacement_sample_id"] not in original_ids
+    assert first["pool_source_counts"] == original["pool_source_counts"]
+    assert {key: value["source_counts"] for key, value in first["shards"].items()} == {
+        key: value["source_counts"] for key, value in original["shards"].items()}
+    assert {key: value["count"] for key, value in first["shards"].items()} == module.SHARD_SIZES
+    assert len({row["sample_id"] for row in first["membership"]}) == 8
+    manifest_sha = sha256_file(tmp_path / "prepared/manifest.json")
+    assert sha256_file(tmp_path / "prepared/manifest.json") == manifest_sha
+    assert prepare_sft_pool(raw_dir, tmp_path / "prepared", eval_path="fake-eval") == first
+    assert sha256_file(tmp_path / "prepared/manifest.json") == manifest_sha
+    for shard in module.SHARD_SIZES:
+        for row in json.loads((tmp_path / "prepared" / f"{shard}.json").read_text(encoding="utf-8")):
+            assert row["tools"] == runtime_tools()
+            assert row["_source_tools"] == "[]"
+            assert row["conversations"] == _record(row["_source_index"])["conversations"]
+    assert load_sft_manifest(tmp_path / "prepared/manifest.json")["version"] == 2
+    image_victim = sorted(item for item in original_ids if item.startswith("webqa:")
+                          and int(item.split(":")[1]) != victim_index)[0]
+    second = prepare_sft_pool(raw_dir, tmp_path / "prepared", eval_path="fake-eval",
+                              exclusions={image_victim: "eval300_image_overlap"})
+    assert image_victim not in {row["sample_id"] for row in second["membership"]}
+    assert any(row["reason"] == "eval300_image_overlap" for row in second["replacements"])
+    assert second["pool_source_counts"] == first["pool_source_counts"]
+    assert sha256_file(tmp_path / "prepared/manifest.json") != manifest_sha
+    assert len({row["sample_id"] for row in second["membership"]}) == 8
+    assert prepare_sft_pool(raw_dir, tmp_path / "prepared", eval_path="fake-eval",
+                            exclusions={image_victim: "eval300_image_overlap"}) == second
+    with pytest.raises(ValueError, match="fingerprint/transform"):
+        changed = json.loads((tmp_path / "prepared/manifest.json").read_text(encoding="utf-8"))
+        changed["effective_runtime_tool_contract_fingerprint"] = "changed"
+        (tmp_path / "prepared/manifest.json").write_text(json.dumps(changed), encoding="utf-8")
+        load_sft_manifest(tmp_path / "prepared/manifest.json")
 
 
 def _config():
