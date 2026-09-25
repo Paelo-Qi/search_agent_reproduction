@@ -24,6 +24,7 @@ from opensearch_vl_repro.model import (  # noqa: E402
     move_batch, parameter_audit,
 )
 from opensearch_vl_repro.sft_main_data import canonicalize_tool_declarations  # noqa: E402
+from opensearch_vl_repro.sft_long_training import activate_sft_training_mode  # noqa: E402
 from opensearch_vl_repro.sft_train_plan import load_main_config  # noqa: E402
 
 
@@ -189,6 +190,7 @@ def main() -> int:
         model.enable_input_require_grads()
         model.gradient_checkpointing_enable()
     model = model.to(device)
+    activate_sft_training_mode(model)
     print_memory(torch, device, "model_on_cuda")
     audit = parameter_audit(model)
     print(f"[MODEL] parameter_summary={parameter_summary(model)}", flush=True)
@@ -196,6 +198,10 @@ def main() -> int:
           f"trainable={audit['trainable_parameters']}", flush=True)
     decoder_path, language_model, layers = find_language_decoder_layers(model)
     print(f"[MODEL] decoder_path={decoder_path} decoder_layers={len(layers)}", flush=True)
+    print(f"[MODEL] decoder_layers_training={sum(layer.training for layer in layers)}/{len(layers)} "
+          f"decoder_layers_gradient_checkpointing="
+          f"{sum(bool(getattr(layer, 'gradient_checkpointing', False)) for layer in layers)}/{len(layers)}",
+          flush=True)
     requested_attention = config["model"].get("attn_implementation", "sdpa")
     flags = resolved_model_flags(model, language_model, requested_attention)
     first_attention = getattr(layers[0], "self_attn", None)

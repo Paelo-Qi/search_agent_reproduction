@@ -50,6 +50,33 @@ def format_sft_progress(*, stage: str, stage_step: int, stage_total: int,
             f"step_time={step_time:.2f}s elapsed={_duration(elapsed)} eta={_duration(eta)}")
 
 
+def activate_sft_training_mode(model: Any) -> None:
+    """Make decoder checkpointing effective, including through PEFT wrappers."""
+    model.train()
+    stacks = [module for name, module in model.named_modules()
+              if name.endswith("language_model")
+              and getattr(module, "layers", None) is not None
+              and len(module.layers) == 36]
+    if len(stacks) != 1:
+        raise RuntimeError(f"expected one 36-layer Qwen language model, found {len(stacks)}")
+    language_model = stacks[0]
+    layers = list(language_model.layers)
+    inactive_layers = [index for index, layer in enumerate(layers) if not layer.training]
+    if (not model.training or not language_model.training
+            or inactive_layers):
+        raise RuntimeError("SFT decoder layers must all be in training mode for gradient "
+                           f"checkpointing: model={model.training}, "
+                           f"language_model={language_model.training}, "
+                           f"inactive_layers={inactive_layers}")
+    uncheckpointed_layers = [index for index, layer in enumerate(layers)
+                             if not getattr(layer, "gradient_checkpointing", False)]
+    if (not getattr(model, "is_gradient_checkpointing", False)
+            or not getattr(language_model, "gradient_checkpointing", False)
+            or uncheckpointed_layers):
+        raise RuntimeError("SFT decoder layers must all have gradient checkpointing enabled: "
+                           f"uncheckpointed_layers={uncheckpointed_layers}")
+
+
 def check_checkpoint(path: str | Path) -> dict[str, Any]:
     path = Path(path).expanduser().resolve()
     missing = [name for name in CHECKPOINT_FILES if not (path / name).is_file()]
@@ -280,6 +307,7 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
         model.enable_input_require_grads()
         model.gradient_checkpointing_enable()
     model = model.to(f"cuda:{local_rank}")
+    activate_sft_training_mode(model)
     audit = parameter_audit(model)
     if resume_path is not None and metadata.get("trainable_parameter_names") != audit["trainable_parameter_names"]:
         raise ValueError("checkpoint LoRA parameter order changed; optimizer resume is unsafe")
