@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from PIL import Image
+import pytest
 
 from opensearch_vl_repro.data import build_messages
 from opensearch_vl_repro.sft_image_grounding import (audit_raw_image_contract,
@@ -65,7 +66,7 @@ def test_full_source_static_audit_detects_non_ids_gaps_and_early_references(tmp_
     assert report["all_bad_sample_ids"] == ["fvqa:1", "fvqa:2", "fvqa:3", "fvqa:4", "fvqa:6"]
     assert report["recommended_exclusions"] == {
         "fvqa:1": "image_search_non_img_n_target", "fvqa:2": "image_search_non_img_n_target",
-        "fvqa:3": "derived_image_id_gap", "fvqa:4": "derived_image_id_gap",
+        "fvqa:3": "derived_image_id_gap", "fvqa:4": "ungrounded_image_reference",
         "fvqa:6": "derived_image_id_gap"}
     gap = next(row for row in report["anomalies"]
                if row["sample_id"] == "fvqa:3" and row["kind"] == "derived_image_registration_gap")
@@ -73,6 +74,10 @@ def test_full_source_static_audit_detects_non_ids_gaps_and_early_references(tmp_
             gap["argument"]) == ("fvqa", 3, 2, "crop", "img_3")
     assert "New image ID: img_3" in gap["relevant_observation"]
     assert report["per_source"]["fvqa"]["bad_record_count"] == 5
+    with pytest.raises(ValueError, match="pinned source SHA256 mismatch"):
+        audit_source_population(
+            tmp_path, source_files={"fvqa": "fvqa/records.json"},
+            source_counts={"fvqa": 7}, expected_source_sha256={"fvqa": "0" * 64})
 
 
 def test_source_and_final_message_audits_share_the_same_turn_contract(tmp_path):

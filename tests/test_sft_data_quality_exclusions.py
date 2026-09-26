@@ -30,12 +30,13 @@ EXPECTED = {
 }
 
 
-def test_frozen_eight_and_formal_manifest_gate():
+def test_frozen_source_audit_exclusions_and_formal_manifest_gate():
     frozen = load_data_quality_exclusions()
-    assert len(frozen) == 104
+    assert len(frozen) == 127
     assert all(frozen.get(sample_id) == reason for sample_id, reason in EXPECTED.items())
     assert list(frozen.values()).count("image_search_non_img_n_target") == 22
-    assert list(frozen.values()).count("derived_image_id_gap") == 82
+    assert list(frozen.values()).count("derived_image_id_gap") == 79
+    assert list(frozen.values()).count("ungrounded_image_reference") == 26
     manifest = {"exclusions": [{"sample_id": key, "reason": value}
                                for key, value in frozen.items()], "membership": []}
     require_data_quality_exclusions(manifest)
@@ -81,7 +82,7 @@ def test_previous_pool_comparison_accepts_only_frozen_same_source_refill():
     assert not compare(previous, current)
 
 
-def test_eight_selected_exclusions_refill_same_source_without_target_rewrite(tmp_path, monkeypatch):
+def test_selected_exclusions_refill_same_source_without_target_rewrite(tmp_path, monkeypatch):
     from opensearch_vl_repro import sft_main_data as module
 
     counts = {"fvqa": 12, "webqa": 4}
@@ -99,7 +100,7 @@ def test_eight_selected_exclusions_refill_same_source_without_target_rewrite(tmp
     assert {source: len(indices) for source, indices in selected.items()} == {
         "fvqa": 6, "webqa": 2}
     exclusions = {f"{source}:{index}": ("derived_image_id_gap" if source == "fvqa"
-                                        else "image_search_http_url_target")
+                                        else "image_search_non_img_n_target")
                   for source, indices in selected.items() for index in indices}
     raw = tmp_path / "raw"
     source_records = {}

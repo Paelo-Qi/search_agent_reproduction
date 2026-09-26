@@ -24,8 +24,10 @@ def reason_for_errors(errors: list[dict[str, Any]]) -> str | None:
     kinds = {error["kind"] for error in errors}
     if NON_IMG_N_ERROR_KIND in kinds:
         return "image_search_non_img_n_target"
-    if kinds & (DERIVED_ERROR_KINDS | UNGROUNDED_ERROR_KINDS):
+    if kinds & DERIVED_ERROR_KINDS:
         return "derived_image_id_gap"
+    if kinds & UNGROUNDED_ERROR_KINDS:
+        return "ungrounded_image_reference"
     return None
 
 
@@ -41,6 +43,7 @@ def audit_source_population(
     per_source: dict[str, dict[str, Any]] = {}
     by_reason: dict[str, set[str]] = {
         "image_search_non_img_n_target": set(), "derived_image_id_gap": set(),
+        "ungrounded_image_reference": set(),
     }
     kind_ids: dict[str, set[str]] = {
         "image_search_non_img_n": set(), "derived_image_id_gap": set(),

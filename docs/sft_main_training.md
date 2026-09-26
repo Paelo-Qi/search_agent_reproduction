@@ -138,10 +138,12 @@ conflicting source-system line canonicalization, and the frozen data-quality
 exclusions in `configs/sft_data_exclusions.json`**. Before selection, the
 CPU-only `scripts/audit_sft_source_image_contract.py` scans all 36,592 pinned
 source records (and verifies their pinned hashes). It finds 22 non-`img_n`
-`image_search.url` targets, 79 derived-ID gap/mismatch events, and 27
-ungrounded image-reference events. These overlap across records: the frozen
-list has 104 unique sample IDs, including the original eight (22 with reason
-`image_search_non_img_n_target`, 82 with reason `derived_image_id_gap`). No
+`image_search.url` targets, 79 derived-ID gap/mismatch events, and 57
+ungrounded assistant image-reference events (including tool arguments and
+ordinary assistant text). These overlap across records: the frozen list has
+127 unique sample IDs, including the original eight (22 with reason
+`image_search_non_img_n_target`, 79 with reason `derived_image_id_gap`, and
+26 with reason `ungrounded_image_reference`). No
 expert assistant/tool-call target is rewritten. Deterministic same-source
 replacements remove excluded selected records from the formal pool. Preflight
 also fails if any non-`img_n` image_search target or ungrounded image ID
@@ -151,8 +153,8 @@ The manifest, preflight summary and checkpoint metadata now carry
 `runtime-image-id-grounding-v2`; old manifests and old checkpoints cannot pass
 the new gates. The mask version remains `structured-message-prefix-v1`.
 Regenerating with the same pinned inputs/seed **and frozen exclusions** is
-deterministic. Relative to the legacy pool, 20 selected IDs are replaced in
-their own sources; the other 84 excluded IDs were outside the legacy 8k.
+deterministic. Relative to the legacy pool, 29 selected IDs are replaced in
+their own sources; the other 98 excluded IDs were outside the legacy 8k.
 The 8k size, source quotas, shard sizes and selection algorithm/seed stay
 fixed. The manifest hash changes due to the exclusions and message-format
 version. The old checkpoint-3k must be
@@ -193,11 +195,12 @@ grounding, and actual processor token/mask/truncation. Confirm
 `image_search_non_img_n=0`, and `summary.json.passed=true` before any corrected
 training. The two historical HTTP-url targets are excluded, not rewritten.
 
-A local metadata-only 8k rebuild with all 104 source-level exclusions
+A local metadata-only 8k rebuild with all 127 source-level exclusions
 preserved 1000/2000/1000/4000 shard sizes, all source quotas, and the
 surviving expert conversations. Its static scan found
 `image_search_non_img_n=0`, `ungrounded_runtime_image_refs=0`, and
-`derived_id_gaps=0`; all 9,080 runtime image references were grounded.
+`derived_id_gaps=0`; all 9,084 runtime image-tool references were grounded,
+and no assistant prose mentioned an unregistered image ID.
 This does **not** constitute a passing multimodal processor preflight.
 Corrected formal training remains blocked until the pool is regenerated on
 AutoDL and the full preflight passes.
