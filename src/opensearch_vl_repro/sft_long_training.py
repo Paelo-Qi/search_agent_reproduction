@@ -22,7 +22,8 @@ from .data import SFT_INPUT_MESSAGE_VERSION, SFT_MASK_VERSION, OpenSearchVLColla
 from .model import (add_lora, freeze_vision_components, load_base_model,
                     load_processor, move_batch, parameter_audit, select_probe_parameter)
 from .reporting import environment_report, write_json
-from .sft_main_data import SHARD_SIZES, canonicalize_tool_declarations, load_sft_manifest
+from .sft_main_data import (SHARD_SIZES, canonicalize_tool_declarations,
+                            load_sft_manifest, require_data_quality_exclusions)
 from .sft_tool_audit import sha256_file
 from .sft_train_plan import (STAGE_NAMES, STAGE_ORDER, StagePlan, cosine_factor,
                              load_main_config, plan_stage, validate_resume_metadata)
@@ -232,6 +233,7 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
         pool_dir = (PROJECT_ROOT / config["data"]["pool_dir"]).resolve()
         manifest_path = pool_dir / "manifest.json"
         manifest = load_sft_manifest(manifest_path)
+        require_data_quality_exclusions(manifest)
         from .evaluation.eval300 import FROZEN_EVAL300_SHA256
         if manifest.get("eval300_question_sha256") != FROZEN_EVAL300_SHA256:
             raise RuntimeError("SFT pool lacks frozen Eval-300 question exclusions")

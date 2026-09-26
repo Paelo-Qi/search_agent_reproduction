@@ -73,8 +73,13 @@ def audit_sample_image_grounding(
                 reference = call.arguments.get(argument)
                 if call.name == "image_search":
                     calls["image_search_total"] += 1
-                    calls["image_search_img_n" if isinstance(reference, str)
-                          and _RUNTIME_ID.fullmatch(reference) else "image_search_non_img_n"] += 1
+                    if isinstance(reference, str) and _RUNTIME_ID.fullmatch(reference):
+                        calls["image_search_img_n"] += 1
+                    else:
+                        calls["image_search_non_img_n"] += 1
+                        errors.append({"kind": "non_runtime_image_search_reference",
+                                       "turn_index": turn_index, "tool": call.name,
+                                       "reference": reference})
                 if isinstance(reference, str) and _RUNTIME_ID.fullmatch(reference):
                     calls["runtime_id_references"] += 1
                     if reference not in visible:

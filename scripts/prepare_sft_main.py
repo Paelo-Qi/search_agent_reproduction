@@ -11,7 +11,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from opensearch_vl_repro.sft_main_data import DEFAULT_SEED, prepare_sft_pool  # noqa: E402
+from opensearch_vl_repro.sft_main_data import (  # noqa: E402
+    DEFAULT_SEED, load_data_quality_exclusions, prepare_sft_pool,
+)
 from opensearch_vl_repro.sft_tool_audit import sha256_file  # noqa: E402
 
 
@@ -21,7 +23,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=ROOT / "data/sft_main")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--eval", type=Path, default=ROOT / "data/eval/combined_eval_300.parquet")
-    parser.add_argument("--exclusions", type=Path,
+    parser.add_argument("--exclusions", type=Path, required=True,
                         help="Frozen JSON mapping of sample ID to exclusion reason")
     parser.add_argument("--leakage-report", type=Path,
                         help="Complete preflight leakage.json for deterministic image-overlap replacement")
@@ -29,9 +31,9 @@ def main() -> None:
     parser.add_argument("--download-images", action="store_true",
                         help="Opt in to downloading pinned official image ZIPs")
     args = parser.parse_args()
-    exclusions = {}
-    if args.exclusions:
-        exclusions.update(json.loads(args.exclusions.read_text(encoding="utf-8")))
+    exclusions = load_data_quality_exclusions(args.exclusions)
+    if exclusions != load_data_quality_exclusions():
+        raise ValueError("--exclusions must match configs/sft_data_exclusions.json")
     if args.leakage_report:
         report = json.loads(args.leakage_report.read_text(encoding="utf-8"))
         current_manifest = args.output_dir / "manifest.json"
@@ -45,6 +47,9 @@ def main() -> None:
             exclusions[item["training_sample_id"]] = "eval300_image_overlap"
         for item in report["question_overlaps"]:
             exclusions[item["training_sample_id"]] = "eval300_question_overlap"
+    required = load_data_quality_exclusions()
+    if any(exclusions.get(sample_id) != reason for sample_id, reason in required.items()):
+        raise ValueError("leakage report changed a frozen SFT data-quality exclusion")
     manifest = prepare_sft_pool(args.raw_dir, args.output_dir, seed=args.seed,
                                 extract_images=args.extract_images,
                                 download_images=args.download_images,

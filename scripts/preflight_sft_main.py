@@ -16,7 +16,9 @@ from opensearch_vl_repro.inference.eval_reader import read_eval_samples_by_ids  
 from opensearch_vl_repro.evaluation.eval300 import build_eval300_plan  # noqa: E402
 from opensearch_vl_repro.model import load_processor  # noqa: E402
 from opensearch_vl_repro.reporting import write_json  # noqa: E402
-from opensearch_vl_repro.sft_main_data import SHARD_SIZES, load_sft_manifest  # noqa: E402
+from opensearch_vl_repro.sft_main_data import (  # noqa: E402
+    SHARD_SIZES, load_sft_manifest, require_data_quality_exclusions,
+)
 from opensearch_vl_repro.sft_tool_audit import sha256_file  # noqa: E402
 from opensearch_vl_repro.sft_preflight import (  # noqa: E402
     formal_preflight_checks, leakage_audit, reserved_literal_audit,
@@ -32,6 +34,7 @@ def main() -> int:
     parser.add_argument("--report-dir", type=Path, default=ROOT / "reports/sft_preflight")
     args = parser.parse_args()
     manifest = load_sft_manifest(args.data_dir / "manifest.json")
+    require_data_quality_exclusions(manifest)
     pool_sha256 = sha256_file(args.data_dir / "manifest.json")
     write_json(args.report_dir / "summary.json", {
         "passed": False, "reason": "SFT preflight is incomplete",

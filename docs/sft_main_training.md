@@ -131,28 +131,34 @@ runtime order, all image-tool `img_n` references, and reports exact sample IDs
 on gaps. The local legacy 3k JSON has six trajectories with `img_3` announced
 without a prior `img_2`: `fvqa:2711`, `fvqa:3371`, `fvqa:4016`,
 `fvqa:3026`, `fvqa:1145`, `fvqa:219`. At least `fvqa:3371` also calls
-`image_search(img_2)` before registration. These are source-data anomalies;
-the correction does not invent missing images or rewrite expert targets.
-**Expect the fail-closed preflight to reject these records until a separately
-approved data decision resolves them. Do not start corrected formal training
-on a failing preflight.**
+`image_search(img_2)` before registration. Two further source trajectories,
+`webqa:1884` and `webqa:3301`, supervise HTTP URLs in `image_search.url`.
+Corrected SFT v2 therefore consists of **image-ID grounding, the exact
+conflicting source-system line canonicalization, and the frozen data-quality
+exclusions in `configs/sft_data_exclusions.json`**. The eight expert targets
+are never rewritten: deterministic same-source replacements remove them from
+the formal pool. Preflight also fails if any non-`img_n` image_search target or
+ungrounded image ID remains in the regenerated pool.
 
 The manifest, preflight summary and checkpoint metadata now carry
 `runtime-image-id-grounding-v2`; old manifests and old checkpoints cannot pass
 the new gates. The mask version remains `structured-message-prefix-v1`.
-Regenerating shards with the same pinned inputs/seed/exclusions preserves
-sample IDs, source partition and selection identity; the manifest hash changes
-because its message-format version changes. The old checkpoint-3k must be
+Regenerating with the same pinned inputs/seed **and frozen exclusions** is
+deterministic. Relative to the legacy pool, precisely the eight selected IDs
+are replaced in their own sources; 8k size, source quotas, shard sizes and
+selection algorithm/seed stay fixed. The manifest hash changes due to the
+exclusions and message-format version. The old checkpoint-3k must be
 retired for corrected SFT comparison and training must restart from pinned
 Base after all gates pass. Do not resume the old adapter/optimizer state.
 
 On AutoDL, back up the old pool before using the existing preparation entry:
 
 ```bash
-mv data/sft_main data/sft_main_before_imgn_grounding_fix
-python scripts/prepare_sft_main.py --extract-images --download-images
+mv data/sft_main data/sft_main_before_quality_exclusions
+python scripts/prepare_sft_main.py \
+  --exclusions configs/sft_data_exclusions.json --extract-images --download-images
 python scripts/audit_sft_image_grounding.py \
-  --previous-manifest data/sft_main_before_imgn_grounding_fix/manifest.json \
+  --previous-manifest data/sft_main_before_quality_exclusions/manifest.json \
   --output reports/sft_preflight/image_grounding_main_3k.json
 python scripts/preflight_sft_main.py
 python -m pytest
@@ -162,15 +168,26 @@ Omit `--download-images` only when all seven official ZIP archives are already
 local. The audit uses the locally cached pinned processor, no model weights,
 GPU or API. Its report contains JSON-safe messages, tools, actual
 `apply_chat_template` prompt, pre-first-tool context, a 3k grounding summary,
-and `selection_identity_unchanged`. It exits nonzero on any ungrounded or
+and `selection_change_matches_frozen_exclusions=true` (the legacy selection
+identity is intentionally different). It exits nonzero on any ungrounded or
 out-of-order ID. The full preflight checks all 8k shard counts (1000/2000/
 1000/4000), manifest/shard hashes and membership, leakage, tool contract,
 grounding, and actual processor token/mask/truncation. Confirm
 `image_search_img_n == grounded_image_search_img_n` in the grounding report,
-`selection_identity_unchanged=true`, and `summary.json.passed=true` before
-any corrected training. The two historical HTTP-url targets are reported as
-non-`img_n`, not silently rewritten. If the six source anomalies remain,
-the nonzero audit/preflight is the intended safety result, not a pass.
+`selection_change_matches_frozen_exclusions=true`,
+`image_search_non_img_n=0`, and `summary.json.passed=true` before any corrected
+training. The two historical HTTP-url targets are excluded, not rewritten.
+
+The first local metadata-only 8k rebuild with the eight frozen exclusions
+preserved 1000/2000/1000/4000 shard sizes and all source quotas, but revealed
+**additional** candidates outside the originally specified eight: HTTP-url
+targets `webqa:1853`, `webqa:3530`, `webqa:2028`; derived-ID gaps
+`fvqa:1106`, `fvqa:363`, `fvqa:3629`, `fvqa:1003` (a new replacement),
+`fvqa:3693`, `fvqa:260`, `fvqa:4253`, `fvqa:731`, `fvqa:2284`, `fvqa:2659`.
+This static scan does **not** constitute a passing multimodal processor
+preflight. The frozen list is intentionally not silently broadened; corrected
+formal training remains blocked until these findings receive an explicit
+data-policy decision, the pool is regenerated, and the full preflight passes.
 
 ## Read-only preflight and current blockers
 
@@ -272,11 +289,11 @@ checkpoint paths after save, and stage completion. Other ranks stay quiet.
 From the project root, using the project Python environment:
 
 ```bash
-python scripts/prepare_sft_main.py                  # pinned JSON already local
 python -m pytest
 ```
 
-The first command writes `data/sft_main/{main_a_1k,main_b_2k,extra_1k,reserve_4k}.json`
+The backed-up preparation command above writes
+`data/sft_main/{main_a_1k,main_b_2k,extra_1k,reserve_4k}.json`
 and `manifest.json`; `media_status.json` is a separate readiness report. The
 selection manifest is version-controlled while generated trajectories/media
 are ignored; the former verifies pure planning/identity/audit logic.
@@ -293,13 +310,15 @@ downloads; omit `--download-images` if the seven archives are already local.
 
 ```bash
 # 1. Materialize the fixed 8k pool's official images, then run full preflight.
-python scripts/prepare_sft_main.py --extract-images --download-images
+python scripts/prepare_sft_main.py --exclusions configs/sft_data_exclusions.json \
+  --extract-images --download-images
 python scripts/preflight_sft_main.py
 
 # If (and only if) complete leakage.json reports image overlap, deterministically
 # replace those IDs in their own sources, materialize replacement images,
 # and rerun full preflight. Do not continue until summary.json passed=true.
-python scripts/prepare_sft_main.py --leakage-report reports/sft_preflight/leakage.json \
+python scripts/prepare_sft_main.py --exclusions configs/sft_data_exclusions.json \
+  --leakage-report reports/sft_preflight/leakage.json \
   --extract-images --download-images
 python scripts/preflight_sft_main.py
 

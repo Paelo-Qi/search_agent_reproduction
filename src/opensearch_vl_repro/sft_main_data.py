@@ -27,6 +27,30 @@ POOL_SIZE = sum(SHARD_SIZES.values())
 DEFAULT_SEED = 20260506
 SELECTION_VERSION = "sha256-rank-exclusions-v2"
 TOOL_TRANSFORM_VERSION = "runtime-chat-template-v1"
+FROZEN_DATA_QUALITY_EXCLUSIONS = Path(__file__).resolve().parents[2] / "configs/sft_data_exclusions.json"
+
+
+def load_data_quality_exclusions(path: str | Path = FROZEN_DATA_QUALITY_EXCLUSIONS) -> dict[str, str]:
+    """Load the version-controlled formal SFT exclusions, without changing selection."""
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if (not isinstance(value, dict) or not value
+            or any(not isinstance(key, str) or not isinstance(reason, str) or not reason
+                   for key, reason in value.items())):
+        raise ValueError("SFT data-quality exclusions must be a non-empty sample_id -> reason mapping")
+    return value
+
+
+def require_data_quality_exclusions(manifest: Mapping[str, Any]) -> None:
+    """Fail closed when a formal pool omitted or changed a frozen exclusion."""
+    expected = load_data_quality_exclusions()
+    actual = {row["sample_id"]: row["reason"] for row in manifest.get("exclusions", [])}
+    mismatches = {sample_id: {"expected": reason, "actual": actual.get(sample_id)}
+                  for sample_id, reason in expected.items() if actual.get(sample_id) != reason}
+    if mismatches:
+        raise ValueError(f"formal SFT data-quality exclusions mismatch: {mismatches}")
+    member_ids = {row["sample_id"] for row in manifest.get("membership", [])}
+    if member_ids & expected.keys():
+        raise ValueError("formal SFT pool contains a frozen data-quality exclusion")
 
 
 def runtime_tools() -> list[dict[str, Any]]:

@@ -23,7 +23,9 @@ from opensearch_vl_repro.model import load_processor  # noqa: E402
 from opensearch_vl_repro.sft_image_grounding import (  # noqa: E402
     audit_sample_image_grounding, summarize_image_grounding,
 )
-from opensearch_vl_repro.sft_main_data import load_sft_manifest  # noqa: E402
+from opensearch_vl_repro.sft_main_data import (  # noqa: E402
+    load_data_quality_exclusions, load_sft_manifest, require_data_quality_exclusions,
+)
 
 
 def first_direct_image_search(records: list[dict]) -> tuple[int, dict]:
@@ -48,6 +50,32 @@ def selection_identity_unchanged(previous: dict, current: dict) -> bool:
                     for name in current.get("shards", {})))
 
 
+def selection_change_matches_frozen_exclusions(previous: dict, current: dict) -> bool:
+    """Accept only the planned eight same-source replacements, not arbitrary drift."""
+    frozen = load_data_quality_exclusions()
+    old_ids = {row["sample_id"] for row in previous.get("membership", [])}
+    new_ids = {row["sample_id"] for row in current.get("membership", [])}
+    replacement_rows = [row for row in current.get("replacements", [])
+                        if row["excluded_sample_id"] in frozen]
+    replacements = {row["excluded_sample_id"]: row for row in replacement_rows}
+    expected_removed = old_ids & frozen.keys()
+    if (len(replacement_rows) != len(expected_removed)
+            or set(replacements) != expected_removed
+            or old_ids - new_ids != expected_removed
+            or new_ids - old_ids != {row["replacement_sample_id"] for row in replacements.values()}):
+        return False
+    if any(row["reason"] != frozen[sample_id]
+           or row["replacement_source"] != sample_id.split(":", 1)[0]
+           or row["replacement_sample_id"].split(":", 1)[0] != row["replacement_source"]
+           for sample_id, row in replacements.items()):
+        return False
+    return (previous.get("seed") == current.get("seed")
+            and previous.get("selection_algorithm") == current.get("selection_algorithm")
+            and previous.get("pool_source_counts") == current.get("pool_source_counts")
+            and {name: row["count"] for name, row in previous.get("shards", {}).items()}
+            == {name: row["count"] for name, row in current.get("shards", {}).items()})
+
+
 def legacy_messages(sample: dict, current: list[dict]) -> list[dict]:
     """Undo only the new system grounding for a read-only before/after render."""
     if not current or current[0]["role"] != "system":
@@ -66,6 +94,7 @@ def main() -> int:
                      help="Legacy manifest to verify unchanged selection and shard partition")
     args = cli.parse_args()
     manifest = load_sft_manifest(args.data_dir / "manifest.json")
+    require_data_quality_exclusions(manifest)
     import yaml
 
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
@@ -101,18 +130,21 @@ def main() -> int:
             rows.append(audit_sample_image_grounding(record, effective))
     summary = summarize_image_grounding(rows)
     report = {"inspection": inspection, "main_3k_audit": summary}
-    same_selection = True
+    valid_selection = True
     if args.previous_manifest:
         previous = json.loads(args.previous_manifest.read_text(encoding="utf-8"))
         same_selection = selection_identity_unchanged(previous, manifest)
+        controlled_change = selection_change_matches_frozen_exclusions(previous, manifest)
+        valid_selection = same_selection or controlled_change
         report["selection_identity_unchanged"] = same_selection
+        report["selection_change_matches_frozen_exclusions"] = controlled_change
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     else:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if (summary["passed"] and inspection["img_1_registered_before_call"]
-                 and same_selection) else 1
+                 and valid_selection) else 1
 
 
 if __name__ == "__main__":

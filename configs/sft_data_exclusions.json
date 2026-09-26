@@ -1,0 +1,10 @@
+{
+  "fvqa:219": "derived_image_id_gap",
+  "fvqa:1145": "derived_image_id_gap",
+  "fvqa:2711": "derived_image_id_gap",
+  "fvqa:3026": "derived_image_id_gap",
+  "fvqa:3371": "derived_image_id_gap",
+  "fvqa:4016": "derived_image_id_gap",
+  "webqa:1884": "image_search_http_url_target",
+  "webqa:3301": "image_search_http_url_target"
+}
