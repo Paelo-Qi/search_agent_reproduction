@@ -25,20 +25,24 @@ EXPECTED = {
     "fvqa:219": "derived_image_id_gap", "fvqa:1145": "derived_image_id_gap",
     "fvqa:2711": "derived_image_id_gap", "fvqa:3026": "derived_image_id_gap",
     "fvqa:3371": "derived_image_id_gap", "fvqa:4016": "derived_image_id_gap",
-    "webqa:1884": "image_search_http_url_target",
-    "webqa:3301": "image_search_http_url_target",
+    "webqa:1884": "image_search_non_img_n_target",
+    "webqa:3301": "image_search_non_img_n_target",
 }
 
 
 def test_frozen_eight_and_formal_manifest_gate():
-    assert load_data_quality_exclusions() == EXPECTED
+    frozen = load_data_quality_exclusions()
+    assert len(frozen) == 104
+    assert all(frozen.get(sample_id) == reason for sample_id, reason in EXPECTED.items())
+    assert list(frozen.values()).count("image_search_non_img_n_target") == 22
+    assert list(frozen.values()).count("derived_image_id_gap") == 82
     manifest = {"exclusions": [{"sample_id": key, "reason": value}
-                               for key, value in EXPECTED.items()], "membership": []}
+                               for key, value in frozen.items()], "membership": []}
     require_data_quality_exclusions(manifest)
     manifest["exclusions"][0]["reason"] = "wrong"
     with pytest.raises(ValueError, match="data-quality exclusions mismatch"):
         require_data_quality_exclusions(manifest)
-    manifest["exclusions"][0]["reason"] = EXPECTED[manifest["exclusions"][0]["sample_id"]]
+    manifest["exclusions"][0]["reason"] = frozen[manifest["exclusions"][0]["sample_id"]]
     manifest["membership"] = [{"sample_id": "fvqa:219"}]
     with pytest.raises(ValueError, match="contains a frozen"):
         require_data_quality_exclusions(manifest)
@@ -164,3 +168,23 @@ def test_eight_selected_exclusions_refill_same_source_without_target_rewrite(tmp
     report = summarize_image_grounding(grounding_rows)
     assert report["passed"] and report["counts"].get("image_search_non_img_n", 0) == 0
     assert report["counts"]["image_search_img_n"] == 8
+
+
+def test_abnormal_replacement_candidate_is_skipped_before_selection():
+    counts = {"fvqa": 8}
+    sizes = {"main_a_1k": 2}
+    eligible = {"fvqa": list(range(8))}
+    original = selection_plan(source_counts=counts, shard_sizes=sizes,
+                              eligible_indices=eligible)["main_a_1k"]["fvqa"]
+    first_bad = f"fvqa:{original[0]}"
+    first_refill = selection_plan(source_counts=counts, shard_sizes=sizes,
+                                  eligible_indices=eligible,
+                                  exclusions={first_bad: "derived_image_id_gap"})[
+                                      "main_a_1k"]["fvqa"]
+    candidate = next(index for index in first_refill if index not in original)
+    frozen = {first_bad: "derived_image_id_gap",
+              f"fvqa:{candidate}": "derived_image_id_gap"}
+    final = selection_plan(source_counts=counts, shard_sizes=sizes,
+                           eligible_indices=eligible, exclusions=frozen)[
+                               "main_a_1k"]["fvqa"]
+    assert len(final) == 2 and original[0] not in final and candidate not in final

@@ -135,25 +135,39 @@ without a prior `img_2`: `fvqa:2711`, `fvqa:3371`, `fvqa:4016`,
 `webqa:1884` and `webqa:3301`, supervise HTTP URLs in `image_search.url`.
 Corrected SFT v2 therefore consists of **image-ID grounding, the exact
 conflicting source-system line canonicalization, and the frozen data-quality
-exclusions in `configs/sft_data_exclusions.json`**. The eight expert targets
-are never rewritten: deterministic same-source replacements remove them from
-the formal pool. Preflight also fails if any non-`img_n` image_search target or
-ungrounded image ID remains in the regenerated pool.
+exclusions in `configs/sft_data_exclusions.json`**. Before selection, the
+CPU-only `scripts/audit_sft_source_image_contract.py` scans all 36,592 pinned
+source records (and verifies their pinned hashes). It finds 22 non-`img_n`
+`image_search.url` targets, 79 derived-ID gap/mismatch events, and 27
+ungrounded image-reference events. These overlap across records: the frozen
+list has 104 unique sample IDs, including the original eight (22 with reason
+`image_search_non_img_n_target`, 82 with reason `derived_image_id_gap`). No
+expert assistant/tool-call target is rewritten. Deterministic same-source
+replacements remove excluded selected records from the formal pool. Preflight
+also fails if any non-`img_n` image_search target or ungrounded image ID
+remains in the regenerated pool.
 
 The manifest, preflight summary and checkpoint metadata now carry
 `runtime-image-id-grounding-v2`; old manifests and old checkpoints cannot pass
 the new gates. The mask version remains `structured-message-prefix-v1`.
 Regenerating with the same pinned inputs/seed **and frozen exclusions** is
-deterministic. Relative to the legacy pool, precisely the eight selected IDs
-are replaced in their own sources; 8k size, source quotas, shard sizes and
-selection algorithm/seed stay fixed. The manifest hash changes due to the
-exclusions and message-format version. The old checkpoint-3k must be
+deterministic. Relative to the legacy pool, 20 selected IDs are replaced in
+their own sources; the other 84 excluded IDs were outside the legacy 8k.
+The 8k size, source quotas, shard sizes and selection algorithm/seed stay
+fixed. The manifest hash changes due to the exclusions and message-format
+version. The old checkpoint-3k must be
 retired for corrected SFT comparison and training must restart from pinned
 Base after all gates pass. Do not resume the old adapter/optimizer state.
 
-On AutoDL, back up the old pool before using the existing preparation entry:
+On AutoDL, run the full pinned-source audit **before** backing up the old pool,
+so its source hashes can be checked against the legacy manifest. The
+`--verify-frozen` gate requires the committed exclusions to match the complete
+source audit exactly. Then regenerate and run the full multimodal preflight:
 
 ```bash
+python scripts/audit_sft_source_image_contract.py \
+  --expected-manifest data/sft_main/manifest.json \
+  --report reports/sft_source_image_contract.json --verify-frozen
 mv data/sft_main data/sft_main_before_quality_exclusions
 python scripts/prepare_sft_main.py \
   --exclusions configs/sft_data_exclusions.json --extract-images --download-images
@@ -165,8 +179,9 @@ python -m pytest
 ```
 
 Omit `--download-images` only when all seven official ZIP archives are already
-local. The audit uses the locally cached pinned processor, no model weights,
-GPU or API. Its report contains JSON-safe messages, tools, actual
+local. The source audit needs no processor, image files, model weights, GPU,
+or API. The later image-grounding audit uses the locally cached pinned
+processor, no model weights, GPU or API. Its report contains JSON-safe messages, tools, actual
 `apply_chat_template` prompt, pre-first-tool context, a 3k grounding summary,
 and `selection_change_matches_frozen_exclusions=true` (the legacy selection
 identity is intentionally different). It exits nonzero on any ungrounded or
@@ -178,16 +193,14 @@ grounding, and actual processor token/mask/truncation. Confirm
 `image_search_non_img_n=0`, and `summary.json.passed=true` before any corrected
 training. The two historical HTTP-url targets are excluded, not rewritten.
 
-The first local metadata-only 8k rebuild with the eight frozen exclusions
-preserved 1000/2000/1000/4000 shard sizes and all source quotas, but revealed
-**additional** candidates outside the originally specified eight: HTTP-url
-targets `webqa:1853`, `webqa:3530`, `webqa:2028`; derived-ID gaps
-`fvqa:1106`, `fvqa:363`, `fvqa:3629`, `fvqa:1003` (a new replacement),
-`fvqa:3693`, `fvqa:260`, `fvqa:4253`, `fvqa:731`, `fvqa:2284`, `fvqa:2659`.
-This static scan does **not** constitute a passing multimodal processor
-preflight. The frozen list is intentionally not silently broadened; corrected
-formal training remains blocked until these findings receive an explicit
-data-policy decision, the pool is regenerated, and the full preflight passes.
+A local metadata-only 8k rebuild with all 104 source-level exclusions
+preserved 1000/2000/1000/4000 shard sizes, all source quotas, and the
+surviving expert conversations. Its static scan found
+`image_search_non_img_n=0`, `ungrounded_runtime_image_refs=0`, and
+`derived_id_gaps=0`; all 9,080 runtime image references were grounded.
+This does **not** constitute a passing multimodal processor preflight.
+Corrected formal training remains blocked until the pool is regenerated on
+AutoDL and the full preflight passes.
 
 ## Read-only preflight and current blockers
 
