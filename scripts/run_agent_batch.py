@@ -26,6 +26,15 @@ from opensearch_vl_repro.inference import (  # noqa: E402
 )
 
 
+def batch_exit_code(summary: dict[str, object], max_samples: int | None) -> int:
+    if summary.get("interruption") is not None:
+        return 1
+    if max_samples is not None and summary["pending"] > 0:
+        # An invocation cap intentionally leaves the full run incomplete.
+        return 0
+    return 0 if summary["failed"] == 0 and summary["pending"] == 0 else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Sequential resumable Agent execution (no judge or benchmark scoring)."
@@ -123,11 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(json.dumps({"run_id": args.run_id, "output_dir": str(output_dir.resolve()),
                       **summary}, ensure_ascii=False, indent=2))
-    if args.max_samples is not None and summary["pending"] > 0:
-        # An invocation cap intentionally leaves the full run incomplete.
-        # Reaching this point means every selected attempt was durably recorded.
-        return 0
-    return 0 if summary["failed"] == 0 and summary["pending"] == 0 else 1
+    return batch_exit_code(summary, args.max_samples)
 
 
 if __name__ == "__main__":

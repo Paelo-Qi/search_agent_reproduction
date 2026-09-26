@@ -36,11 +36,13 @@ def _redact(value: Any) -> Any:
     return value
 
 
-def _error(tool: str, exc: SearchBackendError, *, attempt_count: int = 1) -> ToolResult:
+def _error(tool: str, exc: SearchBackendError, *, attempt_count: int = 1,
+           provider: str | None = None) -> ToolResult:
     return ToolResult(
         status="error", error_type=exc.error_type,
         observation=_redact(f"<observation>\n{tool} failed ({exc.error_type}): {str(exc)[:180]}.\n</observation>"),
-        metadata={"error_type": exc.error_type, "attempt_count": attempt_count},
+        metadata={"error_type": exc.error_type, "attempt_count": attempt_count,
+                  **({"provider": provider} if provider is not None else {})},
     )
 
 
@@ -110,12 +112,14 @@ class SearchTools:
                                         "attempt_count": getattr(self.serper, "last_attempt_count", 1)})
         except SearchBackendError as exc:
             return _error("web_search", exc,
-                          attempt_count=getattr(self.serper, "last_attempt_count", 1))
+                          attempt_count=getattr(self.serper, "last_attempt_count", 1),
+                          provider="serper")
         except Exception:
             return _error("web_search", SearchBackendError("provider_error", "unexpected provider failure"))
 
     def text_search(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         del context
+        provider = "serper"
         try:
             settings = self.config.text_search
             k = _top_k(arguments.get("top_k"), default=settings["default_top_k"],
@@ -129,6 +133,7 @@ class SearchTools:
             truncated_indices: set[int] = set()
             for index, item in enumerate(results, 1):
                 try:
+                    provider = "jina_reader"
                     passage = self.reader.read(item.url)
                     attempt_count = max(attempt_count, getattr(self.reader, "last_attempt_count", 1))
                     reader_success += 1
@@ -163,7 +168,8 @@ class SearchTools:
         except SearchBackendError as exc:
             return _error("text_search", exc,
                           attempt_count=max(getattr(self.serper, "last_attempt_count", 1),
-                                            getattr(exc, "attempt_count", 1)))
+                                            getattr(exc, "attempt_count", 1)),
+                          provider=provider)
         except Exception:
             return _error("text_search", SearchBackendError("provider_error", "unexpected provider failure"))
 
@@ -198,7 +204,8 @@ class SearchTools:
             )
         except SearchBackendError as exc:
             return _error("image_search", exc,
-                          attempt_count=getattr(self.lens, "last_attempt_count", 1))
+                          attempt_count=getattr(self.lens, "last_attempt_count", 1),
+                          provider="serpapi_google_lens")
         except (OSError, ValueError):
             return _error("image_search", SearchBackendError("invalid_argument", "registered image is unreadable"))
         except Exception:

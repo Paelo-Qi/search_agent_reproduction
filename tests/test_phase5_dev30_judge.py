@@ -259,7 +259,8 @@ def test_systemic_fail_fast_and_upstream_failure_no_provider_call(tmp_path, caps
     samples = _samples()
     summary = JudgeRunner(provider, tmp_path / "systemic", judge_manifest=_manifest(samples)).run(samples)
     assert provider.calls == ["A", "B"]
-    assert (summary["success"], summary["failed"], summary["pending"]) == (1, 1, 2)
+    assert (summary["success"], summary["failed"], summary["pending"]) == (1, 0, 3)
+    assert summary["interruption"]["sample_id"] == "B"
     output = capsys.readouterr().out
     assert "Judge progress: 2/4" in output
     assert "Judge stopped early due to systemic error: quota_error" in output

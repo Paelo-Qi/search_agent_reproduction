@@ -358,6 +358,12 @@ resumed without re-executing successful samples. A read-only preflight verifies
 the frozen SHA256, counts, partition, model configuration, and API environment
 presence without loading Qwen or calling any provider.
 
+An exhausted provider quota (or auth/config error) stops Agent/Judge batches
+after bounded provider retry and durable error recording. Repeat the same
+command with the same run ID after recovery: completed successes are skipped
+and the interrupted sample is retried without `--retry-failed`. Ordinary
+per-sample provider failures keep the existing retry-failed behavior.
+
 ```bash
 python scripts/preflight_eval300.py --require-agent-env
 CUDA_VISIBLE_DEVICES=0 python scripts/run_agent_batch.py \

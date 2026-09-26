@@ -83,6 +83,8 @@ def layout_tool(backend: LayoutParsingBackend | None) -> Callable[[dict[str, Any
                             attempt_count=max(getattr(backend, "last_attempt_count", 1),
                                               getattr(exc, "attempt_count", 1)),
                             metadata={
+                                "provider": getattr(getattr(backend, "config", None),
+                                                    "provider", type(backend).__name__),
                                 "poll_attempt_count": getattr(backend, "last_poll_attempt_count", 1),
                                 "download_attempt_count": getattr(backend, "last_download_attempt_count", 1),
                             })

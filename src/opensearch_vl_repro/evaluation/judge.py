@@ -13,11 +13,11 @@ import requests
 import yaml
 
 from opensearch_vl_repro.agent.reliability import RetryPolicy, redact_secrets
+from .systemic_errors import SYSTEMIC_ERROR_TYPES
 
 
 JUDGE_PROMPT_VERSION = 1
 VALID_VERDICTS = {"correct", "incorrect"}
-SYSTEMIC_ERROR_TYPES = {"authentication_error", "configuration_error", "quota_error"}
 
 
 @dataclass(frozen=True)

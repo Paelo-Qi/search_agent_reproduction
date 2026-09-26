@@ -12,6 +12,8 @@ from typing import Any, Callable, Sequence
 from opensearch_vl_repro.agent.reliability import redact_secrets
 from opensearch_vl_repro.agent.runtime import AgentRuntime, AgentTrajectory
 from .run_manifest import RunManifestMismatchError, manifest_mismatches
+from .systemic_errors import (SYSTEMIC_ERROR_TYPES, carry_interruption_history,
+                              find_systemic_tool_error, systemic_error_in_record)
 
 
 TOOL_NAMES = (
@@ -86,7 +88,8 @@ class BatchRunner:
             )
         _atomic_json(self.manifest_path, self.run_manifest)
 
-    def _load_status(self, samples: Sequence[BatchSample]) -> dict[str, Any]:
+    def _load_status(self, samples: Sequence[BatchSample],
+                     records: dict[str, dict[str, Any]]) -> dict[str, Any]:
         if self.status_path.is_file():
             raw = json.loads(self.status_path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict) or not isinstance(raw.get("samples"), dict):
@@ -103,8 +106,19 @@ class BatchRunner:
         valid = {"pending", "running", "success", "failed"}
         if any(item.get("status") not in valid for item in known.values()):
             raise ValueError("status.json contains an unsupported sample status")
-        for item in known.values():
-            if item["status"] == "running":
+        for sample_id, item in known.items():
+            if item["status"] not in {"running", "failed"}:
+                continue  # In particular, never demote a completed success.
+            prior = records.get(sample_id, {})
+            systemic = systemic_error_in_record(prior)
+            if systemic is not None:
+                item.update(status="pending", error_type=systemic["error_type"],
+                            error=prior.get("error"))
+                interruption = redact_secrets({"sample_id": sample_id, **systemic,
+                                               "attempt": item.get("attempts", 0)})
+                item["last_interruption"] = interruption
+                state["last_interruption"] = interruption
+            elif item["status"] == "running":
                 item.update(status="failed", error_type="interrupted",
                             error="previous batch invocation ended while this sample was running")
         _atomic_json(self.status_path, state)
@@ -232,8 +246,8 @@ class BatchRunner:
         if len({sample.sample_id for sample in samples}) != len(samples):
             raise ValueError("sample IDs must be unique")
         self._prepare_manifest()
-        state = self._load_status(samples)
         records = self._load_records()
+        state = self._load_status(samples, records)
         by_id = {sample.sample_id: sample for sample in samples}
         invocation_samples = samples
         if max_samples is not None:
@@ -285,30 +299,60 @@ class BatchRunner:
                 status = record["status"]
                 error_type = None if status == "success" else trajectory.status
                 error = trajectory.error
+                systemic = find_systemic_tool_error(trajectory)
+                if systemic is not None:
+                    status = "pending"
+                    error_type = systemic["error_type"]
+                    error = (f"systemic provider error in {systemic['tool']}: "
+                             f"{error_type}")
+                    record.update(status="failed", error=error, systemic_error=systemic)
             except Exception as exc:
                 elapsed = self.clock() - started
-                status, error_type = "failed", type(exc).__name__
+                error_type = getattr(exc, "error_type", type(exc).__name__)
+                systemic = ({"error_type": error_type, "turn_index": None,
+                             "tool": None, "provider": None, "attempt_count":
+                             getattr(exc, "attempt_count", None)}
+                            if isinstance(error_type, str)
+                            and error_type in SYSTEMIC_ERROR_TYPES else None)
+                status = "pending" if systemic is not None else "failed"
                 error = str(exc)
                 record = {
                     "sample_id": sample.sample_id, "benchmark": sample.benchmark,
-                    "question": sample.question, "status": status,
+                    "question": sample.question, "status": "failed",
                     "trajectory_status": "exception", "final_answer": None,
                     "error": error, "elapsed_seconds": elapsed,
                     "tool_call_count": 0, "trajectory": None,
                 }
+                if systemic is not None:
+                    record["systemic_error"] = systemic
+            record = carry_interruption_history(record, records.get(sample_id))
             records[sample_id] = redact_secrets(record)
             self._persist_records(records)
             item.update(status=status, error_type=error_type, error=redact_secrets(error))
+            if systemic is not None:
+                interruption = redact_secrets({"sample_id": sample_id, **systemic,
+                                               "attempt": item["attempts"]})
+                item["last_interruption"] = interruption
+                state["last_interruption"] = interruption
             _atomic_json(self.status_path, state)
-            _atomic_json(self.summary_path, self._summary(state, records))
+            summary = self._summary(state, records)
+            if systemic is not None:
+                summary["interruption"] = interruption
+            _atomic_json(self.summary_path, summary)
             done = (
                 f"[{progress_index}/{len(eligible)}] DONE  "
                 f"{sample.benchmark} / {sample.sample_id} status={status} "
                 f"tools={record['tool_call_count']} elapsed={elapsed:.1f}s"
             )
-            if status == "failed":
+            if status != "success":
                 done += f" error_type={error_type}"
             print(done, flush=True)
+            if systemic is not None:
+                print("Agent batch stopped early due to systemic error: "
+                      f"{error_type} sample_id={sample_id} "
+                      f"tool={systemic['tool'] or 'unknown'} "
+                      f"provider={systemic['provider'] or 'unknown'}", flush=True)
+                return summary
 
         summary = self._summary(state, records)
         _atomic_json(self.summary_path, summary)

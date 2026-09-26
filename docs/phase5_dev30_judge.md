@@ -54,10 +54,16 @@ requests in the current `judge()` call; `judge_status.json.attempts` remains the
 number of JudgeRunner invocations for that sample.
 
 Authentication, quota, and configuration errors are systemic: the current
-sample becomes failed and later samples remain pending. Status is persisted as
+sample's error result is durably recorded, then that sample and later samples
+remain pending. Repeat the same Judge command and run ID after fixing the
+provider; **no `--retry-failed` is needed** for the systemic-interrupted
+sample. Its previous error result survives in `attempt_history` after a
+successful retry. Status is persisted as
 `pending/running/success/failed`; a stale `running` becomes
-`failed/interrupted`. Default resume skips success and failed records, while
-`--retry-failed` explicitly retries failed ones. A judge manifest binds the
+`failed/interrupted` unless its saved result already shows a systemic error,
+in which case it becomes `pending`. Default resume skips success and ordinary
+failed records, while `--retry-failed` explicitly retries those failed ones.
+A judge manifest binds the
 parent Agent fingerprint, public judge config, model, prompt version, and exact
 judge inputs. Incompatible reuse is rejected. The API key value is never part
 of identity, output, or logs and all artifacts pass through secret redaction.

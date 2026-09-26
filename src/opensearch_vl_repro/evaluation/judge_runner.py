@@ -14,6 +14,7 @@ from opensearch_vl_repro.agent.reliability import canonical_json, redact_secrets
 from .judge import (JUDGE_PROMPT_VERSION, SYSTEMIC_ERROR_TYPES, JudgeConfig,
                     JudgeResult, JudgeSample)
 from .run_manifest import RunManifestMismatchError
+from .systemic_errors import carry_interruption_history
 
 
 JUDGE_MANIFEST_VERSION = 1
@@ -95,7 +96,8 @@ class JudgeRunner:
             )
         _atomic_json(self.manifest_path, self.manifest)
 
-    def _load_status(self, samples: Sequence[JudgeSample]) -> dict[str, Any]:
+    def _load_status(self, samples: Sequence[JudgeSample],
+                     records: dict[str, dict[str, Any]]) -> dict[str, Any]:
         if self.status_path.is_file():
             state = json.loads(self.status_path.read_text(encoding="utf-8"))
             if not isinstance(state, dict) or not isinstance(state.get("samples"), dict):
@@ -111,10 +113,21 @@ class JudgeRunner:
                 "benchmark": sample.benchmark, "status": "pending", "attempts": 0,
                 "error_type": None, "error": None,
             })
-        for item in known.values():
+        for sample_id, item in known.items():
             if item.get("status") not in {"pending", "running", "success", "failed"}:
                 raise ValueError("unsupported judge sample status")
-            if item["status"] == "running":
+            if item["status"] not in {"running", "failed"}:
+                continue
+            prior = records.get(sample_id, {})
+            if prior.get("error_type") in SYSTEMIC_ERROR_TYPES:
+                item.update(status="pending", error_type=prior["error_type"],
+                            error=prior.get("reason"))
+                interruption = {"sample_id": sample_id, "error_type": prior["error_type"],
+                                "provider": prior.get("provider"),
+                                "attempt": item.get("attempts", 0)}
+                item["last_interruption"] = interruption
+                state["last_interruption"] = interruption
+            elif item["status"] == "running":
                 item.update(status="failed", error_type="interrupted",
                             error="previous judge invocation ended while running")
         _atomic_json(self.status_path, state)
@@ -176,8 +189,8 @@ class JudgeRunner:
         if len({item.sample_id for item in samples}) != len(samples):
             raise ValueError("judge sample IDs must be globally unique")
         self._prepare_manifest()
-        state = self._load_status(samples)
         records = self._load_records()
+        state = self._load_status(samples, records)
         by_id = {item.sample_id: item for item in samples}
         eligible = [item.sample_id for item in samples
                     if state["samples"][item.sample_id]["status"] == "pending"
@@ -230,18 +243,28 @@ class JudgeRunner:
                 "model": metadata.get("model", self.manifest["judge_model"]),
                 "prompt_version": metadata.get("prompt_version", JUDGE_PROMPT_VERSION),
             })
+            record = carry_interruption_history(record, records.get(sample_id))
             records[sample_id] = record
             self._persist_records(records)
-            final_status = "success" if result.status == "success" else "failed"
+            systemic = result.error_type in SYSTEMIC_ERROR_TYPES
+            final_status = ("pending" if systemic else
+                            "success" if result.status == "success" else "failed")
             item.update(status=final_status, error_type=result.error_type,
                         error=redact_secrets(result.reason))
+            if systemic:
+                interruption = {"sample_id": sample_id, "error_type": result.error_type,
+                                "provider": record["provider"], "attempt": item["attempts"]}
+                item["last_interruption"] = interruption
+                state["last_interruption"] = interruption
             _atomic_json(self.status_path, state)
-            _atomic_json(self.summary_path, self._summary(state, records))
+            summary = self._summary(state, records)
+            if systemic:
+                summary["interruption"] = interruption
+            _atomic_json(self.summary_path, summary)
             if final_status == "success":
                 invocation_success += 1
             else:
                 invocation_failed += 1
-            systemic = result.error_type in SYSTEMIC_ERROR_TYPES
             if processed % 5 == 0 or processed == len(eligible) or systemic:
                 print(
                     f"Judge progress: {processed}/{len(eligible)} processed | "
@@ -252,10 +275,10 @@ class JudgeRunner:
             if systemic:
                 print(
                     "Judge stopped early due to systemic error: "
-                    f"{result.error_type}",
+                    f"{result.error_type} sample_id={sample_id} provider={record['provider']}",
                     flush=True,
                 )
-                break
+                return summary
         summary = self._summary(state, records)
         _atomic_json(self.summary_path, summary)
         return summary

@@ -25,7 +25,20 @@ The full 300-sample ordered-ID checksum is part of `run_manifest.json`.
 identity. Therefore the first invocation creates all 300 status entries, runs
 200, and leaves 100 pending. A later invocation with the same run ID and no cap
 skips success and failed records and executes only pending records.
-`--retry-failed` remains an explicit, independent operation.
+`--retry-failed` remains an explicit, independent operation for ordinary
+per-sample failures. After a provider exhausts its bounded retries with
+`quota_error`, or returns `authentication_error`/`configuration_error`, Agent
+batch execution stops after durably saving the current failed trajectory.
+That sample is `pending` (not permanently `failed`), later samples remain
+`pending`, and completed successes remain untouched. Status/summary record
+the latest interruption; retries preserve the prior error trajectory in
+`attempt_history`. The command exits nonzero even with `--max-samples`.
+After fixing credentials or quota, repeat **the same command and run ID**;
+no `--retry-failed` is needed for the interrupted sample. Ordinary timeout,
+network, provider, and invalid-response failures keep their per-sample
+behavior and still need `--retry-failed` if marked failed. Existing `failed`
+records with a saved systemic tool-turn error are also restored to `pending`
+on resume; already successful records are never demoted.
 The cap always denotes the same prefix of the full universe; rerunning the
 first-batch command after an interruption fills only unfinished items within
 that prefix and never spills into the remaining 100.
@@ -65,6 +78,8 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_agent_batch.py \
 python -m json.tool reports/eval_runs/base-eval300-v1/summary.json
 
 # E. Resume only the remaining pending samples in the same formal run.
+# If B stopped for a systemic error, first repeat B verbatim to finish its
+# fixed prefix; do not add --retry-failed for that interruption.
 CUDA_VISIBLE_DEVICES=0 python scripts/run_agent_batch.py \
   --run-id base-eval300-v1 \
   --config configs/eval_base_300.yaml \
@@ -103,6 +118,10 @@ hits/misses, external backend executions (`real_tool_executions`), duplicate
 call/unknown-image recovery counts, and provider-error counts. A cache miss
 means the external tool backend executed; it is not claimed to equal exactly
 one HTTP request because some backends perform multiple HTTP operations.
+Provider HTTP 429 only stops the batch after the existing bounded provider
+retry is exhausted; a transient 429 followed by success or a cache hit does
+not. Jina's ordinary page-read failures retain snippet fallback, while
+quota/auth/config errors do not use that fallback.
 
 Judge `judge_summary.json` retains the existing successful-Judge accuracy and
 macro definition, and also reports `end_to_end_accuracy = correct / total`
