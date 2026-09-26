@@ -6,7 +6,10 @@ import pytest
 from PIL import Image
 
 from opensearch_vl_repro.agent.runtime import AGENT_SYSTEM_GUIDANCE
-from opensearch_vl_repro.data import (SFT_RUNTIME_IMAGE_RULES, build_messages, render_prompt,
+from opensearch_vl_repro.data import (LEGACY_IMAGE_SEARCH_URL_LINE,
+                                      RUNTIME_IMAGE_SEARCH_URL_LINE,
+                                      SFT_RUNTIME_IMAGE_RULES, build_messages,
+                                      canonicalize_sft_source_system, render_prompt,
                                       validate_raw_sample)
 from opensearch_vl_repro.sft_image_grounding import (audit_sample_image_grounding,
                                                      summarize_image_grounding)
@@ -63,12 +66,24 @@ def test_first_turn_image_id_is_grounded_in_final_context_without_target_or_tool
 
 def test_legacy_system_is_preserved_but_runtime_id_rule_is_last(tmp_path):
     sample = _sample(tmp_path)
-    sample["system"] = 'Legacy example: image_search.url can be a direct URL.'
+    sample["system"] = f"Legacy introduction.\n{LEGACY_IMAGE_SEARCH_URL_LINE}\nOther instructions stay."
     messages, _, _ = build_messages(sample, tmp_path / "shard.json")
     system = messages[0]["content"]
-    assert system.startswith(sample["system"])
-    assert system.index("Registered input images:") > system.index("Legacy example:")
+    assert system.startswith(sample["system"].replace(
+        LEGACY_IMAGE_SEARCH_URL_LINE, RUNTIME_IMAGE_SEARCH_URL_LINE))
+    assert LEGACY_IMAGE_SEARCH_URL_LINE not in system
+    assert 'url can be an image reference like "img_1" or a direct URL' not in system
+    assert "direct URL" not in system
+    assert system.index("Registered input images:") > system.index("Other instructions stay.")
     assert system.endswith(SFT_RUNTIME_IMAGE_RULES)
+
+
+def test_only_known_conflicting_source_line_is_canonicalized():
+    source = f"Keep this text.\n{LEGACY_IMAGE_SEARCH_URL_LINE}\nKeep this too."
+    assert canonicalize_sft_source_system(source) == source.replace(
+        LEGACY_IMAGE_SEARCH_URL_LINE, RUNTIME_IMAGE_SEARCH_URL_LINE)
+    with pytest.raises(ValueError, match="unrecognized direct-URL"):
+        canonicalize_sft_source_system("image_search.url accepts a direct URL")
 
 
 @pytest.mark.parametrize("count", [2, 3])

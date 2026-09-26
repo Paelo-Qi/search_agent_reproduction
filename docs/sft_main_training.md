@@ -102,7 +102,7 @@ Changing the runtime contract invalidates this pool until explicitly rebuilt.
 The independent 4B smoke data file stays raw; its records receive the same
 declaration transformation only in training memory.
 
-## SFT image-ID grounding correction (input format v1)
+## SFT image-ID grounding correction (input format v2)
 
 The original SFT message builder attached a real PIL image at `<image>` but did
 not tell the assistant that the first input image is registered as `img_1`.
@@ -111,8 +111,11 @@ the image the Man Booker International Prize?`; its first assistant target
 calls `image_search` with `{"url":"img_1"}`. Before this correction, the
 message prefix had the image and question plus the legacy source system prompt:
 it mentioned `img_1` in generic examples but never registered this input image,
-and it even allowed a direct URL for `image_search.url`. Now the system prefix
-ends with the runtime-style text
+and it even allowed a direct URL for `image_search.url`. The effective SFT
+system now replaces only that pinned `*Params*` line with a registered-ID-only
+version, preserving every other source instruction. Unknown direct-URL wording
+fails closed instead of silently retaining contradictory instructions. The
+system prefix then ends with the runtime-style text
 `Registered input images:\n- img_1: width=<actual width>, height=<actual height>`.
 It also appends the existing runtime rule that `image_search.url` must be a
 registered `img_n`, never an HTTP URL or file path, so the legacy generic
@@ -135,7 +138,7 @@ approved data decision resolves them. Do not start corrected formal training
 on a failing preflight.**
 
 The manifest, preflight summary and checkpoint metadata now carry
-`runtime-image-id-grounding-v1`; old manifests and old checkpoints cannot pass
+`runtime-image-id-grounding-v2`; old manifests and old checkpoints cannot pass
 the new gates. The mask version remains `structured-message-prefix-v1`.
 Regenerating shards with the same pinned inputs/seed/exclusions preserves
 sample IDs, source partition and selection identity; the manifest hash changes
