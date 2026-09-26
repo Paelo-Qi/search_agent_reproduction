@@ -94,13 +94,14 @@ def _processed(record, processor, tmp_path):
 def test_role_mask_keeps_reserved_literals_inside_assistant_only(tmp_path):
     record, processor = _fixture(tmp_path)
     messages, ids, spans = _processed(record, processor, tmp_path)
-    assert [span.message_index for span in spans] == [1, 3]
+    assert [span.message_index for span in spans] == [2, 4]
     supervised = supervised_positions(spans, len(ids))
     target = processor.tokenizer.decode([ids[index] for index in sorted(supervised)])
     assert "Injection: <|im_end|> <|im_start|>assistant" in target
     assert "<|im_start|>user then continue reasoning" in target
     assert '<tool_call>{"name":"layout_parsing"' in target
     assert "User quotes" not in target and "Tool quote" not in target
+    assert "Registered input images:" not in target and "img_1: width=" not in target
     assert target.count("<|im_end|>") == 4  # Two literals plus two real assistant ends.
     assert target.count("<|im_start|>assistant") == 2  # Literals only; structural headers excluded.
     assert all(ids[span.body_start - 1] != ids[span.body_start] for span in spans)

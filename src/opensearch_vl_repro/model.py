@@ -31,7 +31,7 @@ def torch_dtype(name: str) -> Any:
         raise ValueError(f"unsupported dtype: {name}") from exc
 
 
-def load_processor(config: dict[str, Any]) -> Any:
+def load_processor(config: dict[str, Any], *, local_files_only: bool = False) -> Any:
     from transformers import AutoProcessor
 
     model_cfg = config["model"]
@@ -40,6 +40,7 @@ def load_processor(config: dict[str, Any]) -> Any:
         revision=model_cfg.get("revision"),
         trust_remote_code=bool(model_cfg.get("trust_remote_code", False)),
         max_pixels=int(model_cfg.get("image_max_pixels", 262144)),
+        local_files_only=local_files_only,
     )
 
 

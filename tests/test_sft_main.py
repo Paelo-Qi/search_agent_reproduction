@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from opensearch_vl_repro.data import RoleTokenSpan
+from opensearch_vl_repro.data import SFT_INPUT_MESSAGE_VERSION
 
 from opensearch_vl_repro.agent.tool_contracts import TOOL_DECLARATIONS_BY_NAME
 from opensearch_vl_repro.evaluation.run_manifest import create_run_manifest, manifest_mismatches
@@ -82,6 +83,7 @@ def test_small_pool_manifest_is_rebuildable_and_detects_tampering(tmp_path, monk
     first = prepare_sft_pool(raw, output)
     assert first["total_selected_count"] == 8 and first["disjointness_verified"]
     assert first["version"] == 2 and first["canonicalization_applied"] is True
+    assert first["sft_input_message_version"] == SFT_INPUT_MESSAGE_VERSION
     assert first["effective_runtime_tool_contract_fingerprint"]
     assert first["source_tool_declaration_fingerprint"]
     assert first["source_validity"]["fvqa"] == {"eligible": 5, "excluded_invalid": 1}
@@ -92,6 +94,13 @@ def test_small_pool_manifest_is_rebuildable_and_detects_tampering(tmp_path, monk
     assert len(set(ids)) == 8
     assert all(item["source_index"] < 5 for item in first["membership"])
     assert load_sft_manifest(output / "manifest.json")["shards"] == first["shards"]
+    manifest_bytes = (output / "manifest.json").read_bytes()
+    legacy_manifest = json.loads(manifest_bytes)
+    legacy_manifest.pop("sft_input_message_version")
+    (output / "manifest.json").write_text(json.dumps(legacy_manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="input/message format"):
+        load_sft_manifest(output / "manifest.json")
+    (output / "manifest.json").write_bytes(manifest_bytes)
     checksums = {name: first["shards"][name]["sha256"] for name in first["shards"]}
     assert {name: entry["sha256"] for name, entry in prepare_sft_pool(raw, output)["shards"].items()} == checksums
     manifest_sha = sha256_file(output / "manifest.json")
@@ -146,7 +155,8 @@ def test_tool_contract_audit_reports_drift_without_remapping():
     assert report["raw_declaration_mismatches"][0]["kind"] == "declaration_schema_drift"
     assert report["raw_declaration_mismatches"][0]["extra_dataset_properties"] == ["file_path"]
     assert report["effective_declaration_drift_count"] == report["actual_call_drift_count"] == 0
-    safe_sequence = {"full_8k": {"zero_supervised_count": 0,
+    safe_sequence = {"image_grounding": {"passed": True},
+                     "full_8k": {"zero_supervised_count": 0,
                                  "partial_assistant_span_cut_count": 0,
                                  "partial_tool_call_cut_count": 0,
                                  "complete_assistant_span_dropped_count": 1}}
@@ -222,7 +232,7 @@ def test_token_cut_boundaries_and_formal_report_only_drop():
     checks = formal_preflight_checks(
         {"effective_declaration_drift_count": 0, "actual_call_drift_count": 0},
         {"complete": True, "question_overlap_count": 0, "image_overlap_count": 0},
-        {"full_8k": summary})
+        {"full_8k": summary, "image_grounding": {"passed": True}})
     assert all(checks.values())
     assert summary["complete_assistant_span_dropped_count"] == 1
 
@@ -312,6 +322,17 @@ def _metadata(plan, global_step, phase_step):
     return checkpoint_metadata(plan, _state(global_step, phase_step), config=_config(),
                                pool_sha256="pool-sha", shard_sha256="shard-sha",
                                resumed_from=None, complete_stage=True)
+
+
+def test_legacy_checkpoint_input_format_cannot_resume():
+    first = plan_stage(_config(), "main_a_1k")
+    second = plan_stage(_config(), "main_b_2k")
+    metadata = _metadata(first, 250, 250)
+    assert metadata["sft_input_message_version"] == SFT_INPUT_MESSAGE_VERSION
+    del metadata["sft_input_message_version"]
+    with pytest.raises(ValueError, match="input/message format"):
+        validate_resume_metadata(second, metadata, model_name=MODEL,
+                                 revision=REVISION, pool_sha256="pool-sha")
 
 
 def test_phase_1_steps_and_cross_shard_resume_do_not_reset_scheduler():

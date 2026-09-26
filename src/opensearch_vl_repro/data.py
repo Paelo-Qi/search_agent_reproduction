@@ -11,6 +11,13 @@ from PIL import Image
 ROLE_MAP = {"human": "user", "gpt": "assistant", "observation": "tool"}
 IMAGE_MARKER = "<image>"
 SFT_MASK_VERSION = "structured-message-prefix-v1"
+SFT_INPUT_MESSAGE_VERSION = "runtime-image-id-grounding-v1"
+SFT_RUNTIME_IMAGE_RULES = (
+    "Use image tools only with registered runtime image IDs such as img_1, img_2, "
+    "and later IDs listed in observations. For image_search, pass a registered "
+    "img_n in its url argument. Never use a dataset filename, filesystem path, "
+    "or HTTP URL as an image ID."
+)
 
 
 def load_json_records(path: str | Path) -> list[dict[str, Any]]:
@@ -89,6 +96,17 @@ def build_messages(
     image_iter = iter(opened_images)
     messages: list[dict[str, Any]] = []
     system = sample.get("system") or ""
+    # The first human turn is the runtime's initial user input. Later image
+    # markers belong to tool observations and must be registered there, not
+    # advertised as initial images before their producing tool has run.
+    initial_count = sample["conversations"][0]["value"].count(IMAGE_MARKER)
+    if initial_count:
+        registered = "\n".join(
+            f"- img_{index}: width={image.width}, height={image.height}"
+            for index, image in enumerate(opened_images[:initial_count], 1)
+        )
+        grounding = f"Registered input images:\n{registered}\n\nRuntime rules:\n{SFT_RUNTIME_IMAGE_RULES}"
+        system = f"{system}\n\n{grounding}" if system else grounding
     if system:
         messages.append({"role": "system", "content": system})
 

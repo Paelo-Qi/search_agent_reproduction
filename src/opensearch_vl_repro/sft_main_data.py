@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .agent.tool_contracts import TOOL_DECLARATIONS
-from .data import validate_raw_sample
+from .data import SFT_INPUT_MESSAGE_VERSION, validate_raw_sample
 from .evaluation.run_manifest import tool_contract_fingerprint
 from .sft_preflight import normalized_question, sample_questions
 from .sft_tool_audit import DATASET_ID, DATASET_REVISION, SOURCE_FILES, iter_json_array, sha256_file
@@ -292,6 +292,7 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
                        for record in all_records for image in record["images"])
     manifest = {
         "version": 2, "selection_algorithm": SELECTION_VERSION,
+        "sft_input_message_version": SFT_INPUT_MESSAGE_VERSION,
         "tool_declaration_transform_version": TOOL_TRANSFORM_VERSION,
         "source_tool_declaration_fingerprint": _fingerprint(sorted(
             [[row["_sample_id"], row["_source_tools"]] for row in all_records])),
@@ -320,6 +321,8 @@ def load_sft_manifest(path: str | Path) -> dict[str, Any]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     if manifest.get("version") != 2 or manifest.get("selection_algorithm") != SELECTION_VERSION:
         raise ValueError("SFT selection algorithm/version mismatch")
+    if manifest.get("sft_input_message_version") != SFT_INPUT_MESSAGE_VERSION:
+        raise ValueError("SFT input/message format version mismatch; regenerate the pool")
     if (manifest.get("tool_declaration_transform_version") != TOOL_TRANSFORM_VERSION
             or manifest.get("canonicalization_applied") is not True
             or manifest.get("effective_runtime_tool_contract_fingerprint") != tool_contract_fingerprint()):

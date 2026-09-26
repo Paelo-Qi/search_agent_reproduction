@@ -18,7 +18,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-from .data import SFT_MASK_VERSION, OpenSearchVLCollator, load_json_records
+from .data import SFT_INPUT_MESSAGE_VERSION, SFT_MASK_VERSION, OpenSearchVLCollator, load_json_records
 from .model import (add_lora, freeze_vision_components, load_base_model,
                     load_processor, move_batch, parameter_audit, select_probe_parameter)
 from .reporting import environment_report, write_json
@@ -105,6 +105,7 @@ def checkpoint_metadata(plan: StagePlan, state: dict[str, Any], *, config: dict[
         "model_revision": config["model"]["revision"], "stage": plan.stage,
         "lineage": list(plan.lineage if complete_stage else plan.lineage[:-1]),
         "stage_complete": complete_stage, "pool_manifest_sha256": pool_sha256,
+        "sft_input_message_version": SFT_INPUT_MESSAGE_VERSION,
         "shard_sha256": shard_sha256, "shard_samples": plan.shard_samples,
         "world_size": plan.world_size, "micro_batch": plan.micro_batch,
         "gradient_accumulation": plan.gradient_accumulation,
@@ -245,13 +246,15 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
             raise RuntimeError("full SFT preflight audit must run before formal training")
         preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
         if (preflight.get("mask_version") != SFT_MASK_VERSION
+                or preflight.get("sft_input_message_version") != SFT_INPUT_MESSAGE_VERSION
                 or not preflight.get("passed") or not preflight.get("sequence_complete")
                 or not preflight.get("tool_contract_passed") or not preflight.get("leakage_complete")
                 or not isinstance(preflight.get("checks"), dict)
                 or set(preflight["checks"]) != {
                     "effective_tool_contract", "actual_tool_calls", "leakage_complete",
                     "zero_question_overlap", "zero_image_overlap", "sequence_complete",
-                    "supervised_targets", "assistant_spans_intact", "tool_calls_intact"}
+                    "supervised_targets", "assistant_spans_intact", "tool_calls_intact",
+                    "image_id_grounding"}
                 or not all(value is True for value in preflight["checks"].values())
                 or preflight.get("question_overlap_count") != 0
                 or preflight.get("image_overlap_count") != 0

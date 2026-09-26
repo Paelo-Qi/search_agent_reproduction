@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from opensearch_vl_repro.data import SFT_MASK_VERSION, load_json_records  # noqa: E402
+from opensearch_vl_repro.data import SFT_INPUT_MESSAGE_VERSION, SFT_MASK_VERSION, load_json_records  # noqa: E402
 from opensearch_vl_repro.inference.eval_reader import read_eval_samples_by_ids  # noqa: E402
 from opensearch_vl_repro.evaluation.eval300 import build_eval300_plan  # noqa: E402
 from opensearch_vl_repro.model import load_processor  # noqa: E402
@@ -36,6 +36,7 @@ def main() -> int:
     write_json(args.report_dir / "summary.json", {
         "passed": False, "reason": "SFT preflight is incomplete",
         "mask_version": SFT_MASK_VERSION,
+        "sft_input_message_version": SFT_INPUT_MESSAGE_VERSION,
         "pool_manifest_sha256": pool_sha256,
     })
     by_shard = {shard: load_json_records(args.data_dir / manifest["shards"][shard]["path"])
@@ -54,6 +55,7 @@ def main() -> int:
         checks = formal_preflight_checks(tool_report, leakage, None)
         summary = {"passed": False, "reason": "SFT images are missing; sequence/image audit incomplete",
                    "mask_version": SFT_MASK_VERSION,
+                   "sft_input_message_version": SFT_INPUT_MESSAGE_VERSION,
                    "tool_contract_passed": tool_report["passed"], "leakage_complete": False,
                    "sequence_complete": False, "pool_manifest_sha256": pool_sha256,
                    "eval_sha256": eval_plan.dataset_sha256,
@@ -71,10 +73,13 @@ def main() -> int:
     sequence = sequence_audit(by_shard, processor, args.data_dir,
                               max_length=int(config["data"]["max_length"]))
     write_json(args.report_dir / "sequence.json", sequence)
+    write_json(args.report_dir / "image_grounding.json", sequence["image_grounding"])
     checks = formal_preflight_checks(tool_report, leakage, sequence)
     summary = {
         "passed": all(checks.values()), "checks": checks,
         "mask_version": SFT_MASK_VERSION,
+        "sft_input_message_version": SFT_INPUT_MESSAGE_VERSION,
+        "image_grounding_failed_sample_count": sequence["image_grounding"]["failed_sample_count"],
         "tool_contract_passed": tool_report["passed"], "leakage_complete": True,
         "raw_declaration_drift_count": tool_report["raw_declaration_drift_count"],
         "effective_declaration_drift_count": tool_report["effective_declaration_drift_count"],

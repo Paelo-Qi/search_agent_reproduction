@@ -384,17 +384,17 @@ semantics, cache reuse, and overall/per-benchmark metrics.
 
 SFT-0 now provides the pinned 8k split, independent 4B transition smoke,
 resumable two-GPU LoRA training infrastructure, read-only preflight audits,
-and optional Base+adapter evaluation loading. AutoDL 4B smoke A/B has passed;
-formal 1k training and SFT Eval-300 have **not** run. Formal 4B SFT now uses
-FlashAttention-2 with fixed micro-batch 1/accumulation 4, and the longest
-`main_a_1k` sample passed single-GPU forward/backward but has little VRAM
-headroom. A separate two-GPU DDP/AdamW longest-sample stress test is required
-before considering formal training; it is not itself a training run.
+and optional Base+adapter evaluation loading. AutoDL 4B smoke A/B and the
+original formal SFT-3k have completed. The original checkpoint-3k predates
+the SFT image-ID grounding fix and is not a corrected SFT Eval-300 adapter.
+The corrected pool must be regenerated and pass the image-grounding and full
+preflight gates before retraining from pinned Base. Formal 4B SFT uses
+FlashAttention-2 with fixed micro-batch 1/accumulation 4; the independent
+two-GPU DDP/AdamW longest-sample test is diagnostic, not formal training.
 See [the SFT-0 runbook](docs/sft_main_training.md) for exact commands,
 artifacts, scheduler phases, and human review points.
 
 Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate.
-Phase 4 includes reliability and batch-execution infrastructure but does not
-run formal baseline scoring, the 300-item benchmark, judging, 3K SFT, RL, full
-fine-tuning, or QLoRA. A local/mock test pass is not a live provider or model
-acceptance.
+Phase 4 includes reliability and batch-execution infrastructure. A local/mock
+test pass is not a live provider or model acceptance, and this grounding fix
+does not run corrected SFT, Eval-300, RL, full fine-tuning, or QLoRA.

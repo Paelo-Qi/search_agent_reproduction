@@ -15,8 +15,9 @@ from .agent.question_normalization import normalize_model_question
 from .agent.reliability import image_sha256
 from .agent.tool_contracts import TOOL_DECLARATIONS, TOOL_DECLARATIONS_BY_NAME
 from .agent.tool_parser import ToolCallParser
-from .data import (SFT_MASK_VERSION, RoleTokenSpan, build_messages, message_role_spans, parse_tools,
+from .data import (SFT_INPUT_MESSAGE_VERSION, SFT_MASK_VERSION, RoleTokenSpan, build_messages, message_role_spans, parse_tools,
                    render_prompt)
+from .sft_image_grounding import audit_sample_image_grounding, summarize_image_grounding
 
 
 RESERVED_CHAT_LITERALS = ("<|im_start|>", "<|im_end|>")
@@ -280,11 +281,13 @@ def sequence_audit(records_by_shard: dict[str, list[dict[str, Any]]],
                    max_length: int = 32000) -> dict[str, Any]:
     """Use the actual multimodal processor/template, never text-only estimates."""
     rows_by_shard: dict[str, list[dict[str, Any]]] = {}
+    grounding_rows: list[dict[str, Any]] = []
     for shard, records in records_by_shard.items():
         rows = []
         dataset_path = Path(data_dir) / f"{shard}.json"
         for record in records:
             messages, images, tools = build_messages(record, dataset_path)
+            grounding_rows.append(audit_sample_image_grounding(record, messages))
             prompt = render_prompt(processor, messages, tools)
             full = processor(text=[prompt], images=[images], padding=False,
                              truncation=False, return_tensors="pt")
@@ -299,6 +302,8 @@ def sequence_audit(records_by_shard: dict[str, list[dict[str, Any]]],
         rows_by_shard[shard] = rows
     all_rows = [row for rows in rows_by_shard.values() for row in rows]
     return {"mask_version": SFT_MASK_VERSION,
+            "sft_input_message_version": SFT_INPUT_MESSAGE_VERSION,
+            "image_grounding": summarize_image_grounding(grounding_rows),
             "shards": {shard: sequence_summary(rows, max_length)
                        for shard, rows in rows_by_shard.items()},
             "full_8k": sequence_summary(all_rows, max_length),
@@ -324,4 +329,5 @@ def formal_preflight_checks(tool: dict[str, Any], leakage: dict[str, Any],
         "supervised_targets": full.get("zero_supervised_count") == 0,
         "assistant_spans_intact": full.get("partial_assistant_span_cut_count") == 0,
         "tool_calls_intact": full.get("partial_tool_call_cut_count") == 0,
+        "image_id_grounding": bool(sequence and sequence.get("image_grounding", {}).get("passed")),
     }

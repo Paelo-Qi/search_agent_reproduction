@@ -1,7 +1,8 @@
 # SFT-0: fixed data, resumable 4B LoRA, and adapter evaluation
 
-The 4B smoke A/B runs have passed on AutoDL; **formal main_a_1k training and
-SFT Eval-300 have not run**. The paper's full-parameter, large-scale SFT is intentionally replaced by a small
+The 4B smoke A/B runs and the original formal SFT-3k training have completed.
+That original checkpoint-3k is **legacy pre-image-ID-grounding** and must not
+be used as the corrected SFT Eval-300 adapter. The paper's full-parameter, large-scale SFT is intentionally replaced by a small
 BF16 LoRA experiment to isolate the contribution of SFT and later RL under the
 same fixed Eval-300 protocol. No QLoRA or full fine-tuning is used.
 
@@ -101,9 +102,76 @@ Changing the runtime contract invalidates this pool until explicitly rebuilt.
 The independent 4B smoke data file stays raw; its records receive the same
 declaration transformation only in training memory.
 
+## SFT image-ID grounding correction (input format v1)
+
+The original SFT message builder attached a real PIL image at `<image>` but did
+not tell the assistant that the first input image is registered as `img_1`.
+For example, `fvqa:2921` starts with `<image>Which novel earned the woman in
+the image the Man Booker International Prize?`; its first assistant target
+calls `image_search` with `{"url":"img_1"}`. Before this correction, the
+message prefix had the image and question plus the legacy source system prompt:
+it mentioned `img_1` in generic examples but never registered this input image,
+and it even allowed a direct URL for `image_search.url`. Now the system prefix
+ends with the runtime-style text
+`Registered input images:\n- img_1: width=<actual width>, height=<actual height>`.
+It also appends the existing runtime rule that `image_search.url` must be a
+registered `img_n`, never an HTTP URL or file path, so the legacy generic
+instruction does not contradict the effective training input.
+The image remains the same PIL payload; assistant text, tool declarations and
+the structured assistant-only loss mask are unchanged. No image is duplicated.
+
+Only images in the first human turn are registered up front, in marker order.
+Images appearing later in tool observations are **not** promoted to initial
+images: their own `New image ID: img_n` text must register them before later
+assistant calls. The read-only image-grounding audit checks this monotonic
+runtime order, all image-tool `img_n` references, and reports exact sample IDs
+on gaps. The local legacy 3k JSON has six trajectories with `img_3` announced
+without a prior `img_2`: `fvqa:2711`, `fvqa:3371`, `fvqa:4016`,
+`fvqa:3026`, `fvqa:1145`, `fvqa:219`. At least `fvqa:3371` also calls
+`image_search(img_2)` before registration. These are source-data anomalies;
+the correction does not invent missing images or rewrite expert targets.
+**Expect the fail-closed preflight to reject these records until a separately
+approved data decision resolves them. Do not start corrected formal training
+on a failing preflight.**
+
+The manifest, preflight summary and checkpoint metadata now carry
+`runtime-image-id-grounding-v1`; old manifests and old checkpoints cannot pass
+the new gates. The mask version remains `structured-message-prefix-v1`.
+Regenerating shards with the same pinned inputs/seed/exclusions preserves
+sample IDs, source partition and selection identity; the manifest hash changes
+because its message-format version changes. The old checkpoint-3k must be
+retired for corrected SFT comparison and training must restart from pinned
+Base after all gates pass. Do not resume the old adapter/optimizer state.
+
+On AutoDL, back up the old pool before using the existing preparation entry:
+
+```bash
+mv data/sft_main data/sft_main_before_imgn_grounding_fix
+python scripts/prepare_sft_main.py --extract-images --download-images
+python scripts/audit_sft_image_grounding.py \
+  --previous-manifest data/sft_main_before_imgn_grounding_fix/manifest.json \
+  --output reports/sft_preflight/image_grounding_main_3k.json
+python scripts/preflight_sft_main.py
+python -m pytest
+```
+
+Omit `--download-images` only when all seven official ZIP archives are already
+local. The audit uses the locally cached pinned processor, no model weights,
+GPU or API. Its report contains JSON-safe messages, tools, actual
+`apply_chat_template` prompt, pre-first-tool context, a 3k grounding summary,
+and `selection_identity_unchanged`. It exits nonzero on any ungrounded or
+out-of-order ID. The full preflight checks all 8k shard counts (1000/2000/
+1000/4000), manifest/shard hashes and membership, leakage, tool contract,
+grounding, and actual processor token/mask/truncation. Confirm
+`image_search_img_n == grounded_image_search_img_n` in the grounding report,
+`selection_identity_unchanged=true`, and `summary.json.passed=true` before
+any corrected training. The two historical HTTP-url targets are reported as
+non-`img_n`, not silently rewritten. If the six source anomalies remain,
+the nonzero audit/preflight is the intended safety result, not a pass.
+
 ## Read-only preflight and current blockers
 
-`scripts/preflight_sft_main.py` writes five reports under
+`scripts/preflight_sft_main.py` writes six reports under
 `reports/sft_preflight/`:
 
 - `reserved_literals.json`: read-only counts of literal `<|im_start|>` and
@@ -125,6 +193,9 @@ declaration transformation only in training memory.
   The first three are hard failures. A complete later turn dropped is
   report-only when earlier intact supervised content remains; it does not
   automatically fail. Problem and report-only sample lists are separate.
+- `image_grounding.json`: initial and derived image-ID registrations and
+  image-tool references in actual constructed messages; ungrounded IDs or
+  nonmonotonic derived registrations fail the formal gate with sample IDs.
 - `summary.json`: bound to the pool manifest and frozen Eval SHA256; blocks
   formal training unless media/sequence audits are complete, effective tool
   and call drift are zero, question/image overlap is zero, and all hard
