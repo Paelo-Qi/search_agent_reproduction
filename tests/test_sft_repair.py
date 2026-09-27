@@ -15,7 +15,9 @@ from opensearch_vl_repro.sft_repair_data import (REPAIR_VERSION, SELECTION_VERSI
                                                 filter_repair_candidates,
                                                 repair_category, select_repair_records,
                                                 validate_repair_manifest)
-from opensearch_vl_repro.sft_repair_mask import (MASK_VERSIONS, _unique_subsequence_start,
+from opensearch_vl_repro.sft_repair_mask import (MASK_VERSIONS, _audit_r1_covering_text,
+                                                _r1_covering_token_bounds,
+                                                _unique_subsequence_start,
                                                 target_character_spans, RepairCollator,
                                                 target_token_spans)
 from opensearch_vl_repro.sft_repair_training import (REPAIR_KIND, load_repair_config,
@@ -93,6 +95,43 @@ class _Processor:
         return {"input_ids": [_Row(ids[:max_length] if truncation else ids)]}
 
 
+class _BoundaryMergeTokenizer(_Tokenizer):
+    """Merge chosen strings into one contextual token in the complete prompt."""
+
+    def __init__(self, *merges):
+        self.merges = {2000 + index: value for index, value in enumerate(merges)}
+
+    def encode_with_offsets(self, text):
+        ids, offsets = super().encode_with_offsets(text)
+        if "Thinking before." not in text:
+            return ids, offsets
+        for token_id, fragment in self.merges.items():
+            position = (text.rfind(' "arguments"') if fragment == ' "'
+                        else text.rfind(fragment))
+            if position < 0:
+                continue
+            first = next(index for index, pair in enumerate(offsets)
+                         if pair[0] == position)
+            last = next(index for index, pair in enumerate(offsets)
+                        if pair[1] == position + len(fragment))
+            if offsets[first][0] != position or offsets[last][1] != position + len(fragment):
+                raise AssertionError("test merge does not align with source characters")
+            ids[first:last + 1] = [token_id]
+            offsets[first:last + 1] = [(position, position + len(fragment))]
+        return ids, offsets
+
+    def decode(self, values, **kwargs):
+        parent_decode = super().decode
+        return "".join(self.merges[value] if value in self.merges else
+                       parent_decode([value], **kwargs) for value in values)
+
+
+def _merged_processor(*merges):
+    processor = _Processor()
+    processor.tokenizer = _BoundaryMergeTokenizer(*merges)
+    return processor
+
+
 def _record(tmp_path: Path, mode="argument_only", image_id="img_1", multi=False):
     Image.new("RGB", (3, 4), "red").save(tmp_path / "one.png")
     Image.new("RGB", (3, 4), "blue").save(tmp_path / "two.png")
@@ -121,6 +160,8 @@ def test_r1_only_argument_fragment_with_complete_prompt_offsets(tmp_path, image_
                                      "argument_only")
     assert len(spans) == 1
     assert spans[0]["decoded"] == f'"arguments": {{"url": "{image_id}"}}'
+    assert spans[0]["exact_character_alignment"] is True
+    assert spans[0]["left_expansion_text"] == spans[0]["right_expansion_text"] == ""
     assert processor.render_calls >= 2 and processor.token_calls >= 2
     supervised = processor.tokenizer.decode(full[spans[0]["start"]:spans[0]["end_exclusive"]])
     assert "image_search" not in supervised and "Thinking" not in supervised
@@ -260,25 +301,72 @@ def test_contextual_bpe_inside_target_uses_full_prompt_offsets(tmp_path):
     assert len(r2_spans) == 1 and r2_spans[0]["decoded"].startswith("<tool_call>")
 
 
-def test_contextual_bpe_crossing_target_boundary_fails_closed(tmp_path):
-    class _BoundaryTokenizer(_Tokenizer):
-        def encode_with_offsets(self, text):
-            ids, offsets = super().encode_with_offsets(text)
-            if '"name": "image_search"' not in text:
-                return ids, offsets
-            position = text.index(' "arguments"')
-            first = next(index for index, pair in enumerate(offsets) if pair[0] == position)
-            return (ids[:first] + [1001] + ids[first + 2:],
-                    offsets[:first] + [(position, position + 2)] + offsets[first + 2:])
+@pytest.mark.parametrize(("merges", "left", "right"), [
+    ((' "',), " ", ""),
+    (("}}",), "", "}"),
+    ((' "', "}}"), " ", "}"),
+])
+def test_r1_contextual_bpe_covering_span_is_minimal(tmp_path, merges, left, right):
+    processor = _merged_processor(*merges)
+    record = _record(tmp_path)
+    full, spans = target_token_spans(processor, record, tmp_path / "repair.json",
+                                     "argument_only")
+    target = '"arguments": {"url": "img_1"}'
+    assert len(spans) == 1
+    assert spans[0]["decoded"] == left + target + right
+    assert spans[0]["exact_character_alignment"] is False
+    assert spans[0]["left_expansion_text"] == left
+    assert spans[0]["right_expansion_text"] == right
+    assert processor.tokenizer.decode(full[spans[0]["start"]:spans[0]["end_exclusive"]]) == (
+        left + target + right)
+    assert "image_search" not in spans[0]["decoded"]
+    assert "<tool_call>" not in spans[0]["decoded"]
+    _, r2 = target_token_spans(processor, record, tmp_path / "repair.json", "full_tool_call")
+    assert r2[0]["decoded"] == target_character_spans(record, "full_tool_call")[0][3]
 
-        def decode(self, values, **kwargs):
-            parent_decode = super().decode
-            return "".join(' "' if value == 1001 else parent_decode([value])
-                           for value in values)
 
-    processor = _Processor()
-    processor.tokenizer = _BoundaryTokenizer()
-    with pytest.raises(ValueError, match="boundary falls inside"):
+def test_r1_boundary_expansion_is_limited_to_one_token_each_side():
+    offsets = [(0, 2), (2, 3), (3, 4)]
+    assert _r1_covering_token_bounds(offsets, body_text_start=0, body_token_start=0,
+                                     body_token_end=3, begin_char=1, end_char=4) == (0, 3)
+    # Two independently overlapping tokens on the left are not a safe covering span.
+    with pytest.raises(ValueError, match="one boundary token"):
+        _r1_covering_token_bounds([(0, 2), (0, 2), (2, 3)], body_text_start=0,
+                                  body_token_start=0, body_token_end=3,
+                                  begin_char=1, end_char=3)
+
+
+@pytest.mark.parametrize(("left", "right", "expected_error"), [
+    ('"name": "image_search", ', "", "tool name or wrapper"),
+    ("<tool_call>", "", "tool name or wrapper"),
+    ("", "</tool_call>", "tool name or wrapper"),
+    ("Because ", "", "natural language or unsafe syntax"),
+    (" " * 17, "", "safe character threshold"),
+])
+def test_r1_unsafe_covering_expansion_fails_closed(left, right, expected_error):
+    fragment = '"arguments": {"url": "img_1"}'
+    content = left + fragment + right
+    with pytest.raises(ValueError, match=expected_error):
+        _audit_r1_covering_text(content, fragment, content,
+                                len(left), len(left) + len(fragment))
+
+
+def test_r1_ambiguous_or_nonadjacent_decoding_fails_closed():
+    fragment = '"arguments": {"url": "img_1"}'
+    with pytest.raises(ValueError, match="unique complete argument"):
+        _audit_r1_covering_text(fragment + fragment, fragment, fragment, 0, len(fragment))
+    with pytest.raises(ValueError, match="adjacent assistant text"):
+        _audit_r1_covering_text(" " + fragment, fragment, fragment, 0, len(fragment))
+
+
+def test_r1_expanded_json_punctuation_is_allowed_but_tool_name_is_not(tmp_path):
+    fragment = '"arguments": {"url": "img_1"}'
+    content = '", ' + fragment
+    audit = _audit_r1_covering_text(content, fragment, content, 3, len(content))
+    assert audit == {"exact_character_alignment": False,
+                     "left_expansion_text": '", ', "right_expansion_text": ""}
+    processor = _merged_processor('image_search", "arguments')
+    with pytest.raises(ValueError, match="tool name or wrapper"):
         target_token_spans(processor, _record(tmp_path), tmp_path / "repair.json",
                            "argument_only")
 
@@ -524,7 +612,9 @@ def test_cached_qwen_processor_chat_template_alignment_if_available(tmp_path):
                                "argument_only")
     _, r2 = target_token_spans(processor, record, tmp_path / "repair.json",
                                "full_tool_call")
-    assert r1[0]["decoded"] == '"arguments": {"url": "img_1"}'
+    assert r1[0]["text"] in r1[0]["decoded"]
+    assert r1[0]["exact_character_alignment"] == (
+        not r1[0]["left_expansion_text"] and not r1[0]["right_expansion_text"])
     assert r2[0]["decoded"].startswith("<tool_call>")
     # AutoDL has the materialized pinned repair data and media. Exercise every
     # real R1 target so the reported processor regression cannot hide behind a
@@ -533,8 +623,12 @@ def test_cached_qwen_processor_chat_template_alignment_if_available(tmp_path):
     if r1_path.is_file():
         for item in load_json_records(r1_path):
             _, spans = target_token_spans(processor, item, r1_path, "argument_only")
-            assert [span["decoded"] for span in spans] == [
+            assert [span["text"] for span in spans] == [
                 target[3] for target in target_character_spans(item, "argument_only")]
+            assert all(span["text"] in span["decoded"] for span in spans)
+            assert all("image_search" not in span["decoded"]
+                       and "<tool_call" not in span["decoded"]
+                       and "</tool_call" not in span["decoded"] for span in spans)
 
 
 def test_torch_repair_labels_only_exact_targets_if_available(tmp_path):

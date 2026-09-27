@@ -59,6 +59,11 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
     token_counts = []
     per_sample_tokens = []
     multi_call = 0
+    exact_boundary_samples = 0
+    token_expanded_samples = 0
+    max_left_expansion_chars = 0
+    max_right_expansion_chars = 0
+    representative_expanded_spans = []
     for index, record in enumerate(records):
         batch = collator([record])
         full, spans = target_token_spans(processor, record, data_path, repair["repair_mode"])
@@ -73,10 +78,27 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
             raise ValueError(f"unexpected assistant tokens entered repair loss: {record['_sample_id']}")
         supervised_total += len(actual_positions)
         token_counts.append(len(actual_positions))
+        sample_exact = all(span["exact_character_alignment"] for span in spans)
+        if repair["repair_mode"] == "argument_only":
+            exact_boundary_samples += int(sample_exact)
+            token_expanded_samples += int(not sample_exact)
+            for span in spans:
+                left = span["left_expansion_text"]
+                right = span["right_expansion_text"]
+                max_left_expansion_chars = max(max_left_expansion_chars, len(left))
+                max_right_expansion_chars = max(max_right_expansion_chars, len(right))
+                if (left or right) and len(representative_expanded_spans) < 20:
+                    representative_expanded_spans.append({
+                        "sample_id": record["_sample_id"], "source": record["_source"],
+                        "turn_index": span["turn_index"],
+                        "supervised_decoded_span": span["decoded"],
+                        "exact_character_alignment": False,
+                        "left_expansion_text": left, "right_expansion_text": right})
         per_sample_tokens.append({"sample_id": record["_sample_id"],
                                   "category": record["_repair_category"],
                                   "supervised_token_count": len(actual_positions),
-                                  "supervised_span_count": len(spans)})
+                                  "supervised_span_count": len(spans),
+                                  "exact_character_alignment": sample_exact})
         tool_supervised_total += len(actual_positions)
         multi_call += int(len(spans) > 1)
         if index not in example_indices:
@@ -88,8 +110,11 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
                           "excerpt": messages[0]["content"][:300]}]
                         if messages[0]["role"] == "system" else [])
         targets_by_turn = {}
-        for turn_index, start, end, _ in target_character_spans(record, repair["repair_mode"]):
-            targets_by_turn.setdefault(turn_index, []).append((start, end))
+        for (turn_index, start, end, _), span in zip(
+                target_character_spans(record, repair["repair_mode"]), spans, strict=True):
+            targets_by_turn.setdefault(turn_index, []).append((
+                start - len(span["left_expansion_text"]),
+                end + len(span["right_expansion_text"])))
         for turn_index, turn in enumerate(record["conversations"]):
             text = turn["value"]
             if turn["from"] != "gpt":
@@ -125,7 +150,8 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
                                                  manifest["membership"] if row["sample_id"] ==
                                                  record["_sample_id"]][0],
                      "registered_image_ids": registered,
-                     "span_alignment_exact": True, "unexpected_assistant_tokens_in_loss": False})
+                     "span_alignment_exact": sample_exact,
+                     "unexpected_assistant_tokens_in_loss": False})
     stats = {
         "passed": True, "repair_mode": repair["repair_mode"],
         "sample_count": len(records), "source_counts": dict(sorted(Counter(
@@ -140,6 +166,11 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
         "max_supervised_tokens_per_sample": max(token_counts),
         "multi_image_search_call_samples": multi_call if repair["repair_mode"] ==
         "argument_only" else 0,
+        "exact_boundary_sample_count": exact_boundary_samples,
+        "token_expanded_sample_count": token_expanded_samples,
+        "max_left_expansion_chars": max_left_expansion_chars,
+        "max_right_expansion_chars": max_right_expansion_chars,
+        "representative_expanded_spans": representative_expanded_spans,
         "tool_call_supervised_token_total": tool_supervised_total,
         "direct_answer_supervised_token_total": 0,
         "direct_answer_sample_count": 0,
@@ -150,7 +181,9 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
     write_json_atomic(report_dir / f"{prefix}_mask_audit.json", stats)
     lines = [f"# {prefix.upper()} targeted repair mask audit", "",
              f"Samples: {len(records)}; supervised tokens: {supervised_total}; "
-             f"alignment exact: yes", "", "## Representative supervised spans", ""]
+             f"exact-boundary samples: {exact_boundary_samples}; "
+             f"token-expanded samples: {token_expanded_samples}", "",
+             "## Representative supervised spans", ""]
     for row in rows:
         lines.extend([f"### {row['sample_id']} ({row['repair_category']})", "",
                       f"Tokens: {row['supervised_token_count']}", "",

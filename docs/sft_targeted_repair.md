@@ -14,8 +14,15 @@ opens the whole assistant trajectory. Both modes reuse the formal processor,
 message construction, canonicalized tool declarations and base collator;
 target boundaries use complete-prompt tokenizer offsets matched to the actual
 multimodal assistant-body token IDs and decoded tokens. An ambiguous or
-truncated target aborts the audit
-or training rather than silently widening loss.
+truncated target aborts the audit or training. R1 maps the exact argument
+fragment to the smallest overlapping contextual-token span. If a BPE token
+straddles a character boundary, supervision may include only adjacent inert
+punctuation/whitespace, at most one boundary token and 16 extra characters on
+each side. The decoded span must still contain the complete original fragment
+and its `img_n`; any tool name, wrapper, explanation, message crossing, or
+non-unique alignment fails closed. The R1 audit reports exact-boundary versus
+token-expanded samples and representative expansion text. R2 still requires
+exact boundaries around the entire selected `<tool_call>` block.
 
 R1 requests 180 `img_1`, 70 `img_2`, 50 `img_3` or later. R2 requests 220
 image-search and 80 other image-tool records. R2 intentionally contains no

@@ -17,6 +17,8 @@ MASK_VERSIONS = {"argument_only": "targeted-repair-v1-argument-only",
 TOOL_BLOCK = re.compile(r"<tool_call>.*?</tool_call>", re.S)
 ARGUMENT_FRAGMENT = re.compile(
     r'"arguments"\s*:\s*\{\s*"url"\s*:\s*"img_[1-9][0-9]*"\s*\}')
+MAX_R1_EXPANSION_CHARS_PER_SIDE = 16
+SAFE_R1_EXPANSION_PUNCTUATION = frozenset('",;:{}[]')
 
 
 def target_character_spans(record: dict[str, Any], mode: str) -> list[tuple[int, int, int, str]]:
@@ -169,6 +171,48 @@ def _target_token_bounds(offsets: list[tuple[int, int]], *, body_text_start: int
     return selected[0], selected[-1] + 1
 
 
+def _r1_covering_token_bounds(offsets: list[tuple[int, int]], *, body_text_start: int,
+                              body_token_start: int, body_token_end: int,
+                              begin_char: int, end_char: int) -> tuple[int, int]:
+    """Choose the minimum complete contextual tokens touching the argument fragment."""
+    absolute_begin = body_text_start + begin_char
+    absolute_end = body_text_start + end_char
+    selected = [index for index in range(body_token_start, body_token_end)
+                if offsets[index][0] < absolute_end and offsets[index][1] > absolute_begin]
+    if (not selected or selected != list(range(selected[0], selected[-1] + 1))
+            or offsets[selected[0]][0] > absolute_begin
+            or offsets[selected[-1]][1] < absolute_end):
+        raise ValueError("R1 argument has no contiguous covering token span")
+    left_crossing = sum(offsets[index][0] < absolute_begin for index in selected)
+    right_crossing = sum(offsets[index][1] > absolute_end for index in selected)
+    if left_crossing > 1 or right_crossing > 1:
+        raise ValueError("R1 argument expansion exceeds one boundary token per side")
+    return selected[0], selected[-1] + 1
+
+
+def _audit_r1_covering_text(decoded: str, expected: str, content: str,
+                            begin_char: int, end_char: int) -> dict[str, Any]:
+    """Prove any unavoidable BPE spill is adjacent inert syntax, not tool policy."""
+    if decoded.count(expected) != 1:
+        raise ValueError("R1 decoded covering span lacks a unique complete argument fragment")
+    left, right = decoded.split(expected, 1)
+    lowered = decoded.casefold()
+    if ('"name"' in lowered or "image_search" in lowered
+            or "<tool_call" in lowered or "</tool_call" in lowered):
+        raise ValueError("R1 covering span reaches a tool name or wrapper")
+    if (len(left) > MAX_R1_EXPANSION_CHARS_PER_SIDE
+            or len(right) > MAX_R1_EXPANSION_CHARS_PER_SIDE):
+        raise ValueError("R1 argument expansion exceeds the safe character threshold")
+    if any(not (char.isspace() or char in SAFE_R1_EXPANSION_PUNCTUATION)
+           for char in left + right):
+        raise ValueError("R1 covering span reaches natural language or unsafe syntax")
+    if (begin_char < len(left) or content[begin_char - len(left):begin_char] != left
+            or content[end_char:end_char + len(right)] != right):
+        raise ValueError("R1 covering span does not match adjacent assistant text")
+    return {"exact_character_alignment": not bool(left or right),
+            "left_expansion_text": left, "right_expansion_text": right}
+
+
 def target_token_spans(processor: Any, record: dict[str, Any], dataset_path: Path,
                        mode: str) -> tuple[list[int], list[dict[str, Any]]]:
     """Locate targets via full-prompt offsets and verified multimodal body IDs."""
@@ -193,10 +237,12 @@ def target_token_spans(processor: Any, record: dict[str, Any], dataset_path: Pat
             aligned_bodies[message_index] = _assistant_body_alignment(
                 prompt, full, text_ids, offsets, role_span, message["content"])
         text_body_start, body_char_start = aligned_bodies[message_index]
-        text_begin, text_end = _target_token_bounds(
-            offsets, body_text_start=body_char_start, body_token_start=text_body_start,
-            body_token_end=text_body_start + role_span.body_end - role_span.body_start - 1,
-            begin_char=begin_char, end_char=end_char)
+        bounds = dict(offsets=offsets, body_text_start=body_char_start,
+                      body_token_start=text_body_start,
+                      body_token_end=text_body_start + role_span.body_end - role_span.body_start - 1,
+                      begin_char=begin_char, end_char=end_char)
+        text_begin, text_end = (_r1_covering_token_bounds(**bounds)
+                                if mode == "argument_only" else _target_token_bounds(**bounds))
         begin = role_span.body_start + text_begin - text_body_start
         end = role_span.body_start + text_end - text_body_start
         if not role_span.body_start <= begin < end < role_span.body_end:
@@ -205,11 +251,18 @@ def target_token_spans(processor: Any, record: dict[str, Any], dataset_path: Pat
             raise ValueError("repair target does not match complete rendered prompt")
         decoded = processor.tokenizer.decode(full[begin:end], skip_special_tokens=False,
                                              clean_up_tokenization_spaces=False)
-        if decoded != expected:
-            raise ValueError("repair span tokenizer decode differs from exact source fragment")
+        if mode == "argument_only":
+            alignment = _audit_r1_covering_text(
+                decoded, expected, message["content"], begin_char, end_char)
+        else:
+            if decoded != expected:
+                raise ValueError("repair span tokenizer decode differs from exact source fragment")
+            alignment = {"exact_character_alignment": True,
+                         "left_expansion_text": "", "right_expansion_text": ""}
         positions.extend(range(begin, end))
         spans.append({"turn_index": turn_index, "start": begin, "end_exclusive": end,
-                      "text": expected, "decoded": decoded, "alignment_exact": True})
+                      "text": expected, "decoded": decoded, "alignment_exact": True,
+                      **alignment})
     if len(positions) != len(set(positions)):
         raise ValueError("overlapping repair targets")
     return full, spans
