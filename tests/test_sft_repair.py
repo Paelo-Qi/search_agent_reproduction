@@ -11,9 +11,13 @@ from PIL import Image
 from opensearch_vl_repro.data import build_messages, load_json_records
 from opensearch_vl_repro.sft_protocol_diagnostics import CORRECTED_POOL_MANIFEST_SHA256
 from opensearch_vl_repro.sft_repair_data import (REPAIR_VERSION, SELECTION_VERSION,
-                                                TARGETS, OTHER_IMAGE_TOOLS,
+                                                TARGETS, OTHER_IMAGE_TOOLS, R3_SIZE,
+                                                R3_SELECTION_VERSION,
+                                                build_r3_dataset,
                                                 filter_repair_candidates,
-                                                repair_category, select_repair_records,
+                                                r3_candidate, repair_category,
+                                                select_r3_records, select_repair_records,
+                                                validate_r3_selection_membership,
                                                 validate_repair_manifest)
 from opensearch_vl_repro.sft_repair_mask import (MASK_VERSIONS, _audit_r1_covering_text,
                                                 _r1_covering_token_bounds,
@@ -22,10 +26,12 @@ from opensearch_vl_repro.sft_repair_mask import (MASK_VERSIONS, _audit_r1_coveri
                                                 target_token_spans)
 from opensearch_vl_repro.sft_repair_training import (REPAIR_KIND, load_repair_config,
                                                     repair_checkpoint_metadata,
+                                                    require_r3_mask_audit,
                                                     validate_repair_checkpoint,
                                                     validate_parent_metadata)
 from opensearch_vl_repro.eval_subset import canonical_json_sha256
 from opensearch_vl_repro.sft_long_training import PROJECT_ROOT
+from opensearch_vl_repro.sft_train_plan import load_main_config
 
 
 class _Row:
@@ -597,6 +603,221 @@ def test_original_expert_target_is_unchanged_by_repair_mask(tmp_path):
     assert json.dumps(record["conversations"], ensure_ascii=False) == before
 
 
+def test_r3_selection_is_600_derived_first_and_deterministic():
+    candidates = [
+        {"sample_id": f"fvqa:{index}", "repair_category": (
+            "img_3_or_later" if index < 10 else "img_2" if index < 30 else "img_1")}
+        for index in range(625)
+    ]
+    kwargs = {"image_hashes": lambda item: [item["sample_id"]],
+              "forbidden_hashes": {"fvqa:0"}}
+    first, report = select_r3_records(candidates, **kwargs)
+    second, _ = select_r3_records(list(reversed(candidates)), **kwargs)
+    assert len(first) == R3_SIZE == 600
+    assert [row["sample_id"] for row in first] == [row["sample_id"] for row in second]
+    assert report["selected_category_counts"] == {
+        "img_1": 571, "img_2": 20, "img_3_or_later": 9}
+    assert report["selection_rejections"] == {"eval_or_dev_image_overlap": 1}
+    assert first[0]["repair_category"] == "img_3_or_later"
+    assert first[-1]["repair_category"] == "img_1"
+
+
+def test_r3_membership_rejects_frozen_dev_eval_and_image_overlap():
+    selected = [{"sample_id": "fvqa:1", "image_sha256": ["clean"]}]
+    kwargs = {"pool_ids": {"fvqa:1"}, "forbidden_ids": set(),
+              "forbidden_hashes": set(), "size": 1}
+    validate_r3_selection_membership(selected, **kwargs)
+    for changed in ({"forbidden_ids": {"fvqa:1"}},
+                    {"pool_ids": set()}, {"forbidden_hashes": {"clean"}}):
+        with pytest.raises(ValueError, match="overlaps forbidden"):
+            validate_r3_selection_membership(selected, **{**kwargs, **changed})
+
+
+def test_r3_reuses_grounded_r1_arguments_and_masks_final_answer(tmp_path):
+    record = _record(tmp_path, image_id="img_3", multi=True)
+    category, target = r3_candidate(record)
+    assert category == "img_3_or_later"
+    assert target["target_image_ids"] == ["img_3", "img_2"]
+    record.update({"_repair_category": category,
+                   "_repair_target_turn_index": target["target_turn_index"],
+                   "_repair_target_tool": target["target_tool"]})
+    _, spans = target_token_spans(_Processor(), record, tmp_path / "repair.json",
+                                  "argument_only")
+    assert len(spans) == 2
+    assert all('"arguments"' in span["decoded"] for span in spans)
+    assert all("image_search" not in span["decoded"] and
+               "Natural-language answer" not in span["decoded"] for span in spans)
+    assert all(span["exact_character_alignment"] is True for span in spans)
+    record["conversations"][1]["value"] = record["conversations"][1]["value"].replace(
+        '"img_3"', '"https://example.com/a.jpg"')
+    assert r3_candidate(record) is None
+    record["conversations"][1]["value"] = record["conversations"][1]["value"].replace(
+        '"https://example.com/a.jpg"', '"img_4"')
+    assert r3_candidate(record) is None  # img_4 was never registered.
+    record = _record(tmp_path)
+    record["conversations"][1]["value"] += (
+        '\n<tool_call>{"name":"image_search","arguments":'
+        '{"url":"https://example.com/a.jpg",}}</tool_call>')
+    assert r3_candidate(record) is None  # An unparseable HTTP target cannot hide.
+
+
+def test_r3_derived_id_requires_prior_observation_registration(tmp_path):
+    record = _record(tmp_path)
+    record["images"] = ["one.png", "two.png"]
+    record["conversations"] = [
+        {"from": "human", "value": "<image>Question"},
+        {"from": "gpt", "value": '<tool_call>{"name":"sharpen",'
+         '"arguments":{"image":"img_1","amount":1}}</tool_call>'},
+        {"from": "observation", "value": "New image ID: img_2 <image>"},
+        {"from": "gpt", "value": '<tool_call>{"name":"image_search",'
+         '"arguments":{"url":"img_2"}}</tool_call>'},
+    ]
+    assert r3_candidate(record)[0] == "img_2"
+    record["conversations"][2]["value"] = "New image ID: img_3 <image>"
+    assert r3_candidate(record) is None
+
+
+def test_r3_config_and_checkpoint_metadata_keep_corrected_3k_parent():
+    repair = load_repair_config(PROJECT_ROOT / "configs/sft_repair_r3.yaml")
+    assert repair["repair_experiment"] == "r3"
+    assert repair["repair_mode"] == "argument_only"
+    assert repair["parent_checkpoint"] == "outputs/sft_main/checkpoint-3k"
+    assert repair["max_steps"] == 100 and repair["save_steps"] == [50, 75, 100]
+    assert repair["world_size"] * repair["micro_batch"] * repair["gradient_accumulation"] == 8
+    assert repair["learning_rate"] == 1e-5 and repair["scheduler"] == "constant"
+    with pytest.raises(ValueError, match="R3 requires 100 steps"):
+        load_repair_config(PROJECT_ROOT / "configs/sft_repair_r3.yaml", max_steps=50)
+    base = load_main_config(PROJECT_ROOT / "configs/sft_main.yaml",
+                            base_eval_config=PROJECT_ROOT / "configs/eval_base_300.yaml")
+    metadata = repair_checkpoint_metadata(
+        repair=repair, base=base, manifest_sha="m" * 64, dataset_sha="d" * 64,
+        parent_sha="p" * 64, step=75, config_sha="c" * 64)
+    assert metadata["repair_experiment"] == "r3"
+    assert metadata["repair_mask_version"] == MASK_VERSIONS["argument_only"]
+    assert metadata["repair_config_sha256"] == "c" * 64
+    assert metadata["repair_save_steps"] == [50, 75, 100]
+    assert R3_SELECTION_VERSION != SELECTION_VERSION
+
+
+def test_r3_training_requires_current_passing_mask_audit(tmp_path):
+    from opensearch_vl_repro.sft_tool_audit import sha256_file
+    paths = [tmp_path / name for name in ("config.yaml", "repair.json", "manifest.json")]
+    for path in paths:
+        path.write_text(path.name, encoding="utf-8")
+    audit_path = tmp_path / "r3_mask_audit.json"
+    audit = {"passed": True, "sample_count": 600, "repair_experiment": "r3",
+             "repair_config_sha256": sha256_file(paths[0]),
+             "repair_dataset_sha256": sha256_file(paths[1]),
+             "repair_manifest_sha256": sha256_file(paths[2]),
+             "overlap_counts": {key: 0 for key in (
+                 "eval300_id_overlap_count", "eval300_question_overlap_count",
+                 "eval300_image_overlap_count", "dev50_id_overlap_count",
+                 "dev50_question_overlap_count", "dev50_image_overlap_count",
+                 "frozen_exclusion_overlap_count", "image_contract_bad_count")}}
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    assert require_r3_mask_audit(*paths, audit_path) == audit
+    paths[1].write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError, match="current full processor/mask audit"):
+        require_r3_mask_audit(*paths, audit_path)
+
+
+def test_r3_builder_rejects_unpinned_pool_before_reading_dev_or_media(tmp_path):
+    pool = tmp_path / "manifest.json"
+    pool.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="exact corrected SFT pool"):
+        build_r3_dataset(raw_dir=tmp_path, pool_manifest_path=pool,
+                         eval_path=tmp_path / "missing.parquet",
+                         dev_dir=tmp_path / "missing_dev",
+                         output_root=tmp_path / "r3")
+    assert not (tmp_path / "r3").exists()
+
+
+def test_r3_builder_materializes_600_from_corrected_membership_only(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from opensearch_vl_repro import sft_repair_data as repair_data
+    from opensearch_vl_repro.sft_tool_audit import sha256_file
+
+    root = tmp_path / "pool"
+    root.mkdir()
+    rows = []
+    membership = []
+    for index in range(600):
+        image_id = "img_3" if index < 5 else "img_2" if index < 15 else "img_1"
+        count = int(image_id[4:])
+        row = {"_sample_id": f"fvqa:{index}", "_source": "fvqa",
+               "_source_index": index, "_source_images": [f"{index}-{n}.png"
+                                                   for n in range(count)],
+               "images": [f"media/fvqa/{index}-{n}.png" for n in range(count)],
+               "conversations": [
+                   {"from": "human", "value": "<image>" * count + f"Question {index}"},
+                   {"from": "gpt", "value": '<tool_call>{"name":"image_search",'
+                    f'"arguments":{{"url":"{image_id}"}}}}</tool_call>'}],
+               "tools": []}
+        rows.append(row)
+        membership.append({"sample_id": row["_sample_id"], "source": "fvqa",
+                           "source_index": index, "shard": "main_a_1k"})
+    (root / "main_a_1k.json").write_text(json.dumps(rows), encoding="utf-8")
+    pool = {"membership": membership,
+            "shards": {"main_a_1k": {"path": "main_a_1k.json"}}}
+    pool_path = root / "manifest.json"
+    pool_path.write_text(json.dumps(pool), encoding="utf-8")
+    monkeypatch.setattr(repair_data, "CORRECTED_POOL_MANIFEST_SHA256", sha256_file(pool_path))
+    monkeypatch.setattr(repair_data, "load_sft_manifest", lambda _: pool)
+    monkeypatch.setattr(repair_data, "require_data_quality_exclusions", lambda _: None)
+    monkeypatch.setattr(repair_data, "load_data_quality_exclusions",
+                        lambda: {"fvqa:999": "frozen"})
+    monkeypatch.setattr(repair_data, "build_eval300_plan",
+                        lambda _: SimpleNamespace(entries=[], dataset_sha256="eval"))
+    monkeypatch.setattr(repair_data, "read_eval_samples_by_ids", lambda *_: [])
+    dev_record = {"conversations": [{"from": "human", "value": "<image>Dev question"},
+                                    {"from": "gpt", "value": "answer"}],
+                  "images": ["dev.png"]}
+    monkeypatch.setattr(repair_data, "candidate_metadata",
+                        lambda *_: ([{"sample_id": "fvqa:900", "source": "fvqa",
+                                      "source_index": 900, "record": dev_record}],
+                                    {"total_source_records": 601}))
+    monkeypatch.setattr(repair_data, "validate_dev_manifest", lambda *_: None)
+    monkeypatch.setattr(repair_data, "materialize_images", lambda *_args, **_kwargs: 0)
+    dev_dir = tmp_path / "dev"
+    dev_dir.mkdir()
+    (dev_dir / "ids.json").write_text('["fvqa:900"]', encoding="utf-8")
+    (dev_dir / "tool_protocol_dev50_manifest.json").write_text("{}", encoding="utf-8")
+    manifest = build_r3_dataset(
+        raw_dir=tmp_path, pool_manifest_path=pool_path,
+        eval_path=tmp_path / "eval.parquet", dev_dir=dev_dir,
+        output_root=tmp_path / "repair",
+        image_hasher=lambda item: [item["sample_id"]])
+    assert manifest["sample_count"] == 600
+    assert manifest["source_counts"] == {"fvqa": 600}
+    assert manifest["repair_mode"] == "argument_only"
+    assert manifest["repair_mask_version"] == MASK_VERSIONS["argument_only"]
+    assert manifest["protocol_category_counts"] == {
+        "img_1": 585, "img_2": 10, "img_3_or_later": 5}
+    assert manifest["sample_image_target_coverage_counts"] == {
+        "img_1": 585, "img_2": 10, "img_3_or_later": 5}
+    assert manifest["image_target_occurrence_category_counts"] == {
+        "img_1": 585, "img_2": 10, "img_3_or_later": 5}
+    assert manifest["total_supervised_image_search_argument_occurrences"] == 600
+    assert manifest["candidate_rejections"] == {}
+    assert manifest["frozen_exclusion_overlap_count"] == 0
+    assert manifest["dev50_id_overlap_count"] == manifest["eval300_id_overlap_count"] == 0
+    data_path = tmp_path / "repair/r3_argument_only_derived/repair.json"
+    manifest_path = data_path.with_name("manifest.json")
+    assert len(load_json_records(data_path)) == 600
+    selected_records = load_json_records(data_path)
+    assert all(item["conversations"] == rows[item["_source_index"]]["conversations"]
+               for item in selected_records)
+    assert validate_repair_manifest(data_path, manifest_path, mode="argument_only",
+                                    pool_manifest_path=pool_path,
+                                    dev_dir=dev_dir)["sample_count"] == 600
+    tampered = load_json_records(data_path)
+    tampered[0]["conversations"][1]["value"] += " changed"
+    data_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="checksum"):
+        validate_repair_manifest(data_path, manifest_path, mode="argument_only",
+                                 pool_manifest_path=pool_path, dev_dir=dev_dir)
+
+
 def test_cached_qwen_processor_chat_template_alignment_if_available(tmp_path):
     pytest.importorskip("transformers")
     from opensearch_vl_repro.model import load_processor
@@ -619,10 +840,13 @@ def test_cached_qwen_processor_chat_template_alignment_if_available(tmp_path):
     # AutoDL has the materialized pinned repair data and media. Exercise every
     # real R1 target so the reported processor regression cannot hide behind a
     # synthetic-only example; no GPU model, network, or training is involved.
-    r1_path = PROJECT_ROOT / "data/sft_repair/r1_argument_only/repair.json"
-    if r1_path.is_file():
-        for item in load_json_records(r1_path):
-            _, spans = target_token_spans(processor, item, r1_path, "argument_only")
+    for relative in ("data/sft_repair/r1_argument_only/repair.json",
+                     "data/sft_repair/r3_argument_only_derived/repair.json"):
+        repair_path = PROJECT_ROOT / relative
+        if not repair_path.is_file():
+            continue
+        for item in load_json_records(repair_path):
+            _, spans = target_token_spans(processor, item, repair_path, "argument_only")
             assert [span["text"] for span in spans] == [
                 target[3] for target in target_character_spans(item, "argument_only")]
             assert all(span["text"] in span["decoded"] for span in spans)

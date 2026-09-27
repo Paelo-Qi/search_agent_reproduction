@@ -1,0 +1,14 @@
+repair_experiment: r3
+repair_mode: argument_only
+dataset: data/sft_repair/r3_argument_only_derived/repair.json
+manifest: data/sft_repair/r3_argument_only_derived/manifest.json
+output_dir: outputs/sft_repair/r3_argument_only_derived
+parent_checkpoint: outputs/sft_main/checkpoint-3k
+base_config: configs/sft_main.yaml
+learning_rate: 0.00001
+max_steps: 100
+save_steps: [50, 75, 100]
+scheduler: constant
+world_size: 2
+micro_batch: 1
+gradient_accumulation: 4

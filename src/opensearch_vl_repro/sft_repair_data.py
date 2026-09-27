@@ -4,22 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
 from .agent.reliability import image_sha256
-from .data import validate_raw_sample
+from .data import (canonicalize_sft_source_system, load_json_records,
+                   validate_raw_sample)
 from .eval_subset import canonical_json_sha256
 from .evaluation.eval300 import build_eval300_plan
 from .inference.eval_reader import read_eval_samples_by_ids
 from .sft_main_data import (_image_path, canonicalize_tool_declarations,
                             load_data_quality_exclusions, load_sft_manifest,
                             materialize_images, require_data_quality_exclusions)
+from .sft_image_grounding import audit_raw_image_contract
 from .sft_preflight import normalized_question, sample_questions
 from .sft_protocol_diagnostics import (CORRECTED_POOL_MANIFEST_SHA256,
                                        parsed_calls)
-from .sft_tool_audit import DATASET_ID, DATASET_REVISION, sha256_file
+from .sft_repair_mask import MASK_VERSIONS, TOOL_BLOCK, target_character_spans
+from .sft_tool_audit import DATASET_ID, DATASET_REVISION, iter_json_array, sha256_file
 from .tool_protocol_dev import (candidate_metadata, source_zip_image_hasher,
                                 validate_dev_manifest)
 
@@ -27,6 +31,10 @@ from .tool_protocol_dev import (candidate_metadata, source_zip_image_hasher,
 REPAIR_VERSION = "targeted-repair-data-v1"
 SELECTION_VERSION = "sha256-rank-stratified-image-verified-v1"
 REPAIR_SEED = 20260927
+R3_SIZE = 600
+R3_NAME = "r3_argument_only_derived"
+R3_SELECTION_VERSION = "corrected-8k-derived-priority-sha256-v1"
+R3_CATEGORIES = ("img_3_or_later", "img_2", "img_1")
 TARGETS = {
     "argument_only": {"img_1": 180, "img_2": 70, "img_3_or_later": 50},
     "full_tool_call": {"image_search": 220, "other_image_tool": 80},
@@ -135,6 +143,97 @@ def filter_repair_candidates(candidates: list[dict[str, Any]], *,
     """Exclude Dev50, Eval/Dev question duplicates before image verification."""
     return [item for item in candidates if item["sample_id"] not in excluded_ids
             and not sample_questions(item["record"]) & forbidden_questions]
+
+
+def r3_candidate_diagnostic(record: dict[str, Any]
+                            ) -> tuple[tuple[str, dict[str, Any]] | None, str | None]:
+    """Reuse R1 targets and explain every CPU-only legality rejection."""
+    for turn in record["conversations"]:
+        if turn["from"] != "gpt":
+            continue
+        for block in TOOL_BLOCK.finditer(turn["value"]):
+            if not re.search(r'"name"\s*:\s*"image_search"', block.group()):
+                continue
+            try:
+                parsed = json.loads(block.group()[len("<tool_call>"):-len("</tool_call>")])
+            except (TypeError, ValueError):
+                return None, "malformed_image_search_block"
+            args = parsed.get("arguments") if isinstance(parsed, dict) else None
+            if (not isinstance(args, dict) or set(args) != {"url"}
+                    or not isinstance(args["url"], str)
+                    or re.fullmatch(r"img_[1-9][0-9]*", args["url"]) is None):
+                return None, "non_runtime_image_search_argument"
+    if not audit_raw_image_contract(record)["passed"]:
+        return None, "image_contract_bad"
+    try:
+        canonicalize_sft_source_system(record.get("system") or "")
+    except ValueError:
+        return None, "legacy_direct_url_system"
+    chosen = repair_category(record, "argument_only")
+    if chosen is None:
+        return None, "no_valid_image_search_target"
+    category, target = chosen
+    try:
+        spans = target_character_spans({**record, "_repair_target_turn_index":
+                                        target["target_turn_index"], "_repair_target_tool":
+                                        "image_search"}, "argument_only")
+    except ValueError:
+        return None, "unmaskable_argument"
+    ids = [call["arguments"]["url"] for call in parsed_calls(record)
+           if call["name"] == "image_search"]
+    if len(spans) != len(ids) or ids != target["target_image_ids"]:
+        return None, "target_occurrence_mismatch"
+    return (category, target), None
+
+
+def r3_candidate(record: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    return r3_candidate_diagnostic(record)[0]
+
+
+def select_r3_records(candidates: list[dict[str, Any]], *,
+                      image_hashes: Callable[[dict[str, Any]], list[str]],
+                      forbidden_hashes: set[str], seed: int = REPAIR_SEED,
+                      size: int = R3_SIZE) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Exhaust legal derived-ID categories before filling with img_1."""
+    if size <= 0:
+        raise ValueError("R3 size must be positive")
+    ranked = sorted(candidates, key=lambda item: (
+        R3_CATEGORIES.index(item["repair_category"]),
+        _rank(seed, "r3", item["sample_id"]), item["sample_id"]))
+    available = Counter(item["repair_category"] for item in ranked)
+    selected = []
+    rejects = Counter()
+    for item in ranked:
+        if len(selected) == size:
+            break
+        hashes = image_hashes(item)
+        if not hashes:
+            rejects["missing_decodable_image"] += 1
+            continue
+        if set(hashes) & forbidden_hashes:
+            rejects["eval_or_dev_image_overlap"] += 1
+            continue
+        selected.append({**item, "image_sha256": hashes})
+    if len(selected) != size:
+        raise ValueError(f"only {len(selected)}/{size} legal, image-disjoint R3 candidates")
+    return selected, {
+        "available_category_counts": dict(sorted(available.items())),
+        "selected_category_counts": dict(sorted(Counter(
+            item["repair_category"] for item in selected).items())),
+        "selection_rejections": dict(sorted(rejects.items())),
+        "priority_order": list(R3_CATEGORIES),
+    }
+
+
+def validate_r3_selection_membership(selected: list[dict[str, Any]], *,
+                                     pool_ids: set[str], forbidden_ids: set[str],
+                                     forbidden_hashes: set[str],
+                                     size: int = R3_SIZE) -> None:
+    ids = [row["sample_id"] for row in selected]
+    if (len(ids) != size or len(set(ids)) != size
+            or not set(ids).issubset(pool_ids) or set(ids) & forbidden_ids
+            or any(set(row["image_sha256"]) & forbidden_hashes for row in selected)):
+        raise ValueError("R3 selection is incomplete, duplicated, or overlaps forbidden data")
 
 
 def build_repair_datasets(*, raw_dir: Path, pool_manifest_path: Path,
@@ -269,11 +368,170 @@ def build_repair_datasets(*, raw_dir: Path, pool_manifest_path: Path,
     return results
 
 
+def build_r3_dataset(*, raw_dir: Path, pool_manifest_path: Path,
+                     eval_path: Path, dev_dir: Path, output_root: Path,
+                     seed: int = REPAIR_SEED,
+                     image_hasher: Callable[[dict[str, Any]], list[str]] | None = None,
+                     ) -> dict[str, Any]:
+    """Build R3 solely from the pinned corrected 8k, never from R1/R2 or Dev50."""
+    output_dir = output_root / R3_NAME
+    if output_dir.exists():
+        raise FileExistsError(f"refusing to overwrite R3 dataset: {output_dir}")
+    pool_sha = sha256_file(pool_manifest_path)
+    if pool_sha != CORRECTED_POOL_MANIFEST_SHA256:
+        raise ValueError("R3 requires the exact corrected SFT pool")
+    pool = load_sft_manifest(pool_manifest_path)
+    require_data_quality_exclusions(pool)
+    members = {row["sample_id"]: row for row in pool["membership"]}
+    frozen = load_data_quality_exclusions()
+
+    dev_ids = json.loads((dev_dir / "ids.json").read_text(encoding="utf-8"))
+    dev_manifest_path = dev_dir / "tool_protocol_dev50_manifest.json"
+    dev_manifest = json.loads(dev_manifest_path.read_text(encoding="utf-8"))
+    validate_dev_manifest(dev_ids, dev_manifest)
+    eval_plan = build_eval300_plan(eval_path)
+    eval_samples = read_eval_samples_by_ids(eval_path, list(eval_plan.entries))
+    eval_questions = {normalized_question(sample.question) for sample in eval_samples}
+    eval_ids = {str(sample.sample_id) for sample in eval_samples}
+    eval_hashes = {image_sha256(image) for sample in eval_samples for image in sample.images}
+
+    # The existing pinned-source scanner locates Dev50's original records and
+    # verifies source-file hashes. It excludes the corrected 8k by design.
+    external_candidates, external_scan = candidate_metadata(raw_dir, pool,
+                                                             eval_questions, frozen)
+    by_id = {item["sample_id"]: item for item in external_candidates}
+    if not set(dev_ids).issubset(by_id):
+        raise ValueError("Dev50 source records are missing from pinned clean candidates")
+    dev_questions = set().union(*(sample_questions(by_id[identity]["record"])
+                                  for identity in dev_ids))
+    owned_hasher = image_hasher is None
+    hasher = image_hasher or source_zip_image_hasher(raw_dir)
+    try:
+        dev_hashes = {value for identity in dev_ids for value in hasher(by_id[identity])}
+        forbidden_hashes = eval_hashes | dev_hashes
+        candidates = []
+        rejected = Counter()
+        seen = set()
+        for shard in pool["shards"]:
+            for record in iter_json_array(pool_manifest_path.parent /
+                                          pool["shards"][shard]["path"]):
+                sample_id = record["_sample_id"]
+                if sample_id in seen or sample_id not in members:
+                    raise ValueError("R3 source is not unique corrected-pool membership")
+                seen.add(sample_id)
+                if sample_id in frozen:
+                    rejected["frozen_exclusion"] += 1
+                    continue
+                if sample_id in dev_ids:
+                    rejected["dev50_id_overlap"] += 1
+                    continue
+                if sample_id in eval_ids or sample_questions(record) & eval_questions:
+                    rejected["eval300_id_or_question_overlap"] += 1
+                    continue
+                if sample_questions(record) & dev_questions:
+                    rejected["dev50_question_overlap"] += 1
+                    continue
+                chosen, reason = r3_candidate_diagnostic(record)
+                if chosen is None:
+                    rejected[reason or "unknown_rejection"] += 1
+                    continue
+                category, target = chosen
+                candidates.append({"sample_id": sample_id, "source": record["_source"],
+                                   "source_index": record["_source_index"],
+                                   "record": {"images": record["_source_images"]},
+                                   "corrected_record": record,
+                                   "repair_category": category, **target})
+        if seen != set(members):
+            raise ValueError("R3 scan did not cover all corrected-pool members")
+        selected, selection = select_r3_records(
+            candidates, image_hashes=hasher, forbidden_hashes=forbidden_hashes,
+            seed=seed)
+    finally:
+        if owned_hasher:
+            hasher.close()  # type: ignore[attr-defined]
+
+    records = []
+    membership = []
+    for item in selected:
+        original = item["corrected_record"]
+        record = {**original,
+                  "_repair_category": item["repair_category"],
+                  "_repair_target_turn_index": item["target_turn_index"],
+                  "_repair_target_tool": "image_search",
+                  "_repair_target_call_policy": "all_valid_image_search_calls"}
+        records.append(record)
+        membership.append({"sample_id": item["sample_id"], "source": item["source"],
+                           "source_index": item["source_index"],
+                           "category": item["repair_category"],
+                           "target_turn_index": item["target_turn_index"],
+                           "target_tool": "image_search",
+                           "target_image_ids": item["target_image_ids"],
+                           "image_sha256": item["image_sha256"],
+                           "corrected_shard": members[item["sample_id"]]["shard"]})
+    validate_r3_selection_membership(membership, pool_ids=set(members),
+                                     forbidden_ids=set(frozen) | set(dev_ids) | eval_ids,
+                                     forbidden_hashes=forbidden_hashes)
+    occurrence = Counter("img_3_or_later" if int(image_id[4:]) >= 3 else image_id
+                         for row in membership for image_id in row["target_image_ids"])
+    coverage = Counter(category for row in membership for category in R3_CATEGORIES
+                       if any(("img_3_or_later" if int(image_id[4:]) >= 3 else image_id)
+                              == category for image_id in row["target_image_ids"]))
+    for category in R3_CATEGORIES:
+        occurrence.setdefault(category, 0)
+        coverage.setdefault(category, 0)
+    payload = (json.dumps(records, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":")) + "\n").encode("utf-8")
+    manifest = {
+        "repair_version": REPAIR_VERSION, "repair_experiment": "r3",
+        "repair_mode": "argument_only", "repair_mask_version": MASK_VERSIONS["argument_only"],
+        "selection_algorithm": R3_SELECTION_VERSION, "seed": seed,
+        "source_pool": "corrected_sft_8k", "parent_checkpoint":
+        "outputs/sft_main/checkpoint-3k",
+        "dataset_id": DATASET_ID, "dataset_revision": DATASET_REVISION,
+        "corrected_pool_manifest_sha256": pool_sha,
+        "dev50_manifest_sha256": sha256_file(dev_manifest_path),
+        "dev50_ids_sha256": canonical_json_sha256(dev_ids),
+        "eval300_dataset_sha256": eval_plan.dataset_sha256,
+        "frozen_exclusion_population_count": len(frozen),
+        "sample_count": len(records), "source_counts": dict(sorted(Counter(
+            row["source"] for row in membership).items())),
+        "protocol_category_counts": selection["selected_category_counts"],
+        "sample_image_target_coverage_counts": dict(sorted(coverage.items())),
+        "image_target_occurrence_category_counts": dict(sorted(occurrence.items())),
+        "total_supervised_image_search_argument_occurrences": sum(occurrence.values()),
+        "multi_image_search_call_samples": sum(len(row["target_image_ids"]) > 1
+                                                for row in membership),
+        "target_tool_counts": {"image_search": len(records)},
+        "image_target_counts": dict(sorted(Counter(
+            image_id for row in membership for image_id in row["target_image_ids"]).items())),
+        "eval300_id_overlap_count": 0, "eval300_question_overlap_count": 0,
+        "eval300_image_overlap_count": 0, "dev50_id_overlap_count": 0,
+        "dev50_question_overlap_count": 0, "dev50_image_overlap_count": 0,
+        "frozen_exclusion_overlap_count": 0, "image_contract_bad_count": 0,
+        "http_url_supervised_count": 0, "ungrounded_supervised_count": 0,
+        "repair_json_sha256": hashlib.sha256(payload).hexdigest(),
+        "membership_sha256": canonical_json_sha256(membership),
+        "membership": membership, "selection": selection,
+        "candidate_rejections": dict(sorted(rejected.items())),
+        "external_source_scan": external_scan,
+    }
+    output_dir.mkdir(parents=True)
+    materialize_images(records, raw_dir, output_dir, download_missing=False)
+    (output_dir / "repair.json").write_bytes(payload)
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
 def validate_repair_manifest(dataset_path: Path, manifest_path: Path, *,
-                             mode: str | None = None) -> dict[str, Any]:
+                             mode: str | None = None,
+                             pool_manifest_path: Path | None = None,
+                             dev_dir: Path | None = None) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    is_r3 = manifest.get("repair_experiment") == "r3"
     if (manifest.get("repair_version") != REPAIR_VERSION
-            or manifest.get("selection_algorithm") != SELECTION_VERSION
+            or manifest.get("selection_algorithm") != (
+                R3_SELECTION_VERSION if is_r3 else SELECTION_VERSION)
             or manifest.get("dataset_id") != DATASET_ID
             or manifest.get("dataset_revision") != DATASET_REVISION
             or manifest.get("corrected_pool_manifest_sha256") != CORRECTED_POOL_MANIFEST_SHA256
@@ -287,16 +545,90 @@ def validate_repair_manifest(dataset_path: Path, manifest_path: Path, *,
             or len({row["sample_id"] for row in members}) != len(members)
             or canonical_json_sha256(members) != manifest.get("membership_sha256")):
         raise ValueError("repair membership checksum mismatch")
-    for key in ("eval300_id_overlap_count", "eval300_question_overlap_count",
+    isolation_keys = ("eval300_id_overlap_count", "eval300_question_overlap_count",
                 "eval300_image_overlap_count", "dev30_overlap_count",
                 "dev50_id_overlap_count", "dev50_question_overlap_count",
                 "dev50_image_overlap_count", "sft8k_overlap_count",
-                "frozen_exclusion_overlap_count", "image_contract_bad_count"):
+                "frozen_exclusion_overlap_count", "image_contract_bad_count")
+    if is_r3:
+        isolation_keys = tuple(key for key in isolation_keys
+                               if key not in ("dev30_overlap_count", "sft8k_overlap_count"))
+    for key in isolation_keys:
         if manifest.get(key) != 0:
             raise ValueError(f"repair dataset failed isolation: {key}")
     records = json.loads(dataset_path.read_text(encoding="utf-8"))
     if [row["_sample_id"] for row in records] != [row["sample_id"] for row in members]:
         raise ValueError("repair records and membership diverged")
+    if is_r3:
+        if (manifest.get("repair_mode") != "argument_only"
+                or manifest.get("repair_mask_version") != MASK_VERSIONS["argument_only"]
+                or manifest.get("source_pool") != "corrected_sft_8k"
+                or manifest.get("parent_checkpoint") != "outputs/sft_main/checkpoint-3k"
+                or len(records) != R3_SIZE
+                or manifest.get("http_url_supervised_count") != 0
+                or manifest.get("ungrounded_supervised_count") != 0):
+            raise ValueError("R3 recipe, size, or image grounding changed")
+        pool_path = pool_manifest_path or (Path(__file__).resolve().parents[2]
+                                           / "data/sft_main/manifest.json")
+        if sha256_file(pool_path) != CORRECTED_POOL_MANIFEST_SHA256:
+            raise ValueError("R3 corrected-pool manifest SHA mismatch")
+        pool = load_sft_manifest(pool_path)
+        require_data_quality_exclusions(pool)
+        pool_members = {row["sample_id"]: row for row in pool["membership"]}
+        frozen = load_data_quality_exclusions()
+        if not set(row["sample_id"] for row in members).issubset(pool_members):
+            raise ValueError("R3 contains a sample outside corrected 8k")
+        dev_root = dev_dir or (Path(__file__).resolve().parents[2]
+                               / "data/eval/tool_protocol_dev50")
+        dev_ids = json.loads((dev_root / "ids.json").read_text(encoding="utf-8"))
+        if (canonical_json_sha256(dev_ids) != manifest.get("dev50_ids_sha256")
+                or set(dev_ids) & {row["sample_id"] for row in members}
+                or set(frozen) & {row["sample_id"] for row in members}):
+            raise ValueError("R3 overlaps Dev50/frozen exclusions or their provenance changed")
+        expected_records = {}
+        wanted = {row["sample_id"] for row in members}
+        for shard in pool["shards"]:
+            for row in iter_json_array(pool_path.parent / pool["shards"][shard]["path"]):
+                if row["_sample_id"] in wanted:
+                    expected_records[row["_sample_id"]] = row
+        coverage = Counter()
+        occurrences = Counter()
+        for record, member in zip(records, members):
+            sample_id = member["sample_id"]
+            source_record = expected_records.get(sample_id)
+            original = {key: value for key, value in record.items()
+                        if key not in ("_repair_category", "_repair_target_turn_index",
+                                       "_repair_target_tool", "_repair_target_call_policy")}
+            if (original != source_record or member.get("source") != record.get("_source")
+                    or member.get("source_index") != record.get("_source_index")
+                    or member.get("corrected_shard") != pool_members[sample_id]["shard"]):
+                raise ValueError("R3 expert record differs from the corrected source pool")
+            chosen = r3_candidate(record)
+            if (chosen is None or chosen[0] != member.get("category")
+                    or chosen[1]["target_image_ids"] != member.get("target_image_ids")
+                    or chosen[1]["target_turn_index"] != member.get("target_turn_index")
+                    or record.get("_repair_target_turn_index") !=
+                    chosen[1]["target_turn_index"]
+                    or record.get("_repair_target_tool") != "image_search"
+                    or record.get("_repair_target_call_policy") !=
+                    "all_valid_image_search_calls"):
+                raise ValueError("R3 target is ungrounded, unmaskable, or changed")
+            for image_id in member["target_image_ids"]:
+                occurrences["img_3_or_later" if int(image_id[4:]) >= 3 else image_id] += 1
+            for category in R3_CATEGORIES:
+                if any(("img_3_or_later" if int(image_id[4:]) >= 3 else image_id)
+                       == category for image_id in member["target_image_ids"]):
+                    coverage[category] += 1
+        for category in R3_CATEGORIES:
+            occurrences.setdefault(category, 0)
+            coverage.setdefault(category, 0)
+        if (dict(sorted(occurrences.items())) !=
+                manifest.get("image_target_occurrence_category_counts")
+                or dict(sorted(coverage.items())) !=
+                manifest.get("sample_image_target_coverage_counts")
+                or sum(occurrences.values()) !=
+                manifest.get("total_supervised_image_search_argument_occurrences")):
+            raise ValueError("R3 sample coverage or target occurrences changed")
     if manifest["repair_mode"] == "full_tool_call":
         if manifest.get("requested_category_targets") != TARGETS["full_tool_call"]:
             raise ValueError("R2 repair target recipe changed; rebuild its dataset")

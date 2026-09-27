@@ -13,8 +13,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from opensearch_vl_repro.agent.reliability import image_sha256  # noqa: E402
 from opensearch_vl_repro.data import build_messages, load_json_records  # noqa: E402
+from opensearch_vl_repro.evaluation.eval300 import build_eval300_plan  # noqa: E402
+from opensearch_vl_repro.inference.eval_reader import read_eval_samples_by_ids  # noqa: E402
 from opensearch_vl_repro.model import load_processor  # noqa: E402
+from opensearch_vl_repro.sft_main_data import (load_data_quality_exclusions,  # noqa: E402
+                                                load_sft_manifest)
+from opensearch_vl_repro.sft_preflight import normalized_question, sample_questions  # noqa: E402
 from opensearch_vl_repro.sft_repair_data import validate_repair_manifest  # noqa: E402
 from opensearch_vl_repro.sft_repair_mask import (RepairCollator, target_character_spans,  # noqa: E402
                                                   target_token_spans)
@@ -22,6 +28,8 @@ from opensearch_vl_repro.sft_repair_training import load_repair_config  # noqa: 
 from opensearch_vl_repro.sft_tool_audit import (sha256_file, write_json_atomic,  # noqa: E402
                                                  write_text_atomic)
 from opensearch_vl_repro.sft_train_plan import load_main_config  # noqa: E402
+from opensearch_vl_repro.tool_protocol_dev import (candidate_metadata,  # noqa: E402
+                                                    source_zip_image_hasher)
 
 
 def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
@@ -40,6 +48,45 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
             != manifest["dev50_manifest_sha256"]):
         raise ValueError("repair audit provenance no longer matches corrected pool/Dev50")
     records = load_json_records(data_path)
+    is_r3 = repair.get("repair_experiment") == "r3"
+    if is_r3:
+        if (manifest.get("repair_experiment") != "r3" or len(records) != 600
+                or manifest.get("repair_mode") != "argument_only"):
+            raise ValueError("R3 audit requires 600 corrected-pool argument-only samples")
+        eval_path = ROOT / "data/eval/combined_eval_300.parquet"
+        eval_plan = build_eval300_plan(eval_path)
+        if eval_plan.dataset_sha256 != manifest.get("eval300_dataset_sha256"):
+            raise ValueError("R3 Eval300 provenance changed")
+        eval_samples = read_eval_samples_by_ids(eval_path, list(eval_plan.entries))
+        eval_ids = {str(sample.sample_id) for sample in eval_samples}
+        eval_questions = {normalized_question(sample.question) for sample in eval_samples}
+        eval_hashes = {image_sha256(image) for sample in eval_samples
+                       for image in sample.images}
+        dev_dir = ROOT / "data/eval/tool_protocol_dev50"
+        dev_ids = json.loads((dev_dir / "ids.json").read_text(encoding="utf-8"))
+        external, _ = candidate_metadata(ROOT / "data/raw",
+                                         load_sft_manifest(ROOT / "data/sft_main/manifest.json"),
+                                         eval_questions, load_data_quality_exclusions())
+        by_id = {item["sample_id"]: item for item in external}
+        if not set(dev_ids).issubset(by_id):
+            raise ValueError("R3 audit cannot locate all pinned Dev50 source records")
+        dev_questions = set().union(*(sample_questions(by_id[identity]["record"])
+                                      for identity in dev_ids))
+        hasher = source_zip_image_hasher(ROOT / "data/raw")
+        try:
+            dev_hashes = {value for identity in dev_ids
+                          for value in hasher(by_id[identity])}
+        finally:
+            hasher.close()  # type: ignore[attr-defined]
+        for record, member in zip(records, manifest["membership"], strict=True):
+            if (record["_sample_id"] in eval_ids or record["_sample_id"] in dev_ids
+                    or sample_questions(record) & (eval_questions | dev_questions)):
+                raise ValueError("R3 sample overlaps Eval300/Dev50 identity/question")
+            actual_hashes = [image_sha256(data_path.parent / path)
+                             for path in record["images"]]
+            if (actual_hashes != member["image_sha256"]
+                    or set(actual_hashes) & (eval_hashes | dev_hashes)):
+                raise ValueError("R3 media hash changed or overlaps Eval300/Dev50")
     by_category = {}
     for index, record in enumerate(records):
         by_category.setdefault(record["_repair_category"], []).append(index)
@@ -154,6 +201,10 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
                      "unexpected_assistant_tokens_in_loss": False})
     stats = {
         "passed": True, "repair_mode": repair["repair_mode"],
+        "repair_experiment": repair.get("repair_experiment"),
+        "repair_config_sha256": sha256_file(config_path),
+        "repair_dataset_sha256": sha256_file(data_path),
+        "repair_manifest_sha256": sha256_file(ROOT / repair["manifest"]),
         "sample_count": len(records), "source_counts": dict(sorted(Counter(
             record["_source"] for record in records).items())),
         "category_counts": dict(sorted(Counter(record["_repair_category"]
@@ -177,7 +228,21 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
         "per_sample_supervision": per_sample_tokens,
         "examples": rows,
     }
-    prefix = "r1" if repair["repair_mode"] == "argument_only" else "r2"
+    if is_r3:
+        stats["sample_image_target_coverage_counts"] = manifest[
+            "sample_image_target_coverage_counts"]
+        stats["image_target_occurrence_category_counts"] = manifest[
+            "image_target_occurrence_category_counts"]
+        stats["total_supervised_image_search_argument_occurrences"] = manifest[
+            "total_supervised_image_search_argument_occurrences"]
+        stats["candidate_rejections"] = manifest["candidate_rejections"]
+        stats["selection_rejections"] = manifest["selection"]["selection_rejections"]
+        stats["overlap_counts"] = {key: manifest[key] for key in (
+            "eval300_id_overlap_count", "eval300_question_overlap_count",
+            "eval300_image_overlap_count", "dev50_id_overlap_count",
+            "dev50_question_overlap_count", "dev50_image_overlap_count",
+            "frozen_exclusion_overlap_count", "image_contract_bad_count")}
+    prefix = "r3" if is_r3 else "r1" if repair["repair_mode"] == "argument_only" else "r2"
     write_json_atomic(report_dir / f"{prefix}_mask_audit.json", stats)
     lines = [f"# {prefix.upper()} targeted repair mask audit", "",
              f"Samples: {len(records)}; supervised tokens: {supervised_total}; "
