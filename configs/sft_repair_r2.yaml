@@ -1,0 +1,13 @@
+repair_mode: full_tool_call
+dataset: data/sft_repair/r2_full_tool_call/repair.json
+manifest: data/sft_repair/r2_full_tool_call/manifest.json
+output_dir: outputs/sft_repair/r2_full_tool_call
+parent_checkpoint: outputs/sft_main/checkpoint-3k
+base_config: configs/sft_main.yaml
+learning_rate: 0.00001
+max_steps: 50
+save_steps: [25, 50, 100]
+scheduler: constant
+world_size: 2
+micro_batch: 1
+gradient_accumulation: 4
