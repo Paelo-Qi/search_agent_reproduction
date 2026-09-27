@@ -12,8 +12,9 @@ R2 (`full_tool_call`) supervises the first call of the selected category in
 the designated assistant turn, including `<tool_call>` wrappers. It never simply
 opens the whole assistant trajectory. Both modes reuse the formal processor,
 message construction, canonicalized tool declarations and base collator;
-target boundaries are checked against actual multimodal processor token
-prefixes and decoded tokens. An ambiguous/truncated target aborts the audit
+target boundaries use complete-prompt tokenizer offsets matched to the actual
+multimodal assistant-body token IDs and decoded tokens. An ambiguous or
+truncated target aborts the audit
 or training rather than silently widening loss.
 
 R1 requests 180 `img_1`, 70 `img_2`, 50 `img_3` or later. R2 requests 220

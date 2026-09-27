@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .data import (OpenSearchVLCollator, _message_image_count, _processor_ids,
-                   build_messages, message_role_spans, render_prompt)
+from .data import (OpenSearchVLCollator, build_messages, message_role_spans,
+                   render_prompt)
 
 
 MASK_VERSIONS = {"argument_only": "targeted-repair-v1-argument-only",
@@ -62,46 +62,147 @@ def target_character_spans(record: dict[str, Any], mode: str) -> list[tuple[int,
     return found
 
 
-def _prefix_boundary(processor: Any, messages: list[dict[str, Any]], images: list[Any],
-                     tools: list[dict[str, Any]], message_index: int, char_cut: int,
-                     full_ids: list[int]) -> int:
-    prefix = messages[:message_index] + [{**messages[message_index],
-                                          "content": messages[message_index]["content"][:char_cut]}]
-    prefix_images = images[:_message_image_count(prefix)]
-    ids = _processor_ids(processor, prefix, prefix_images, tools)
-    end_id = processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
-    if end_id not in ids:
-        raise ValueError("assistant prefix has no template end")
-    boundary = len(ids) - 1 - ids[::-1].index(end_id)
-    if full_ids[:boundary] != ids[:boundary]:
-        raise ValueError("repair span is not an exact processor token prefix")
-    return boundary
+def _unique_subsequence_start(haystack: list[int], needle: list[int]) -> int:
+    """Find one exact token run in linear time; duplicated runs are ambiguous."""
+    if not needle:
+        raise ValueError("empty assistant token body")
+    prefix = [0] * len(needle)
+    matched = 0
+    for index in range(1, len(needle)):
+        while matched and needle[index] != needle[matched]:
+            matched = prefix[matched - 1]
+        if needle[index] == needle[matched]:
+            matched += 1
+        prefix[index] = matched
+    found = None
+    matched = 0
+    for index, value in enumerate(haystack):
+        while matched and value != needle[matched]:
+            matched = prefix[matched - 1]
+        if value == needle[matched]:
+            matched += 1
+        if matched == len(needle):
+            start = index + 1 - len(needle)
+            if found is not None:
+                raise ValueError("assistant body token alignment is ambiguous")
+            found = start
+            matched = prefix[matched - 1]
+    if found is None:
+        raise ValueError("assistant body tokens are absent from complete rendered prompt")
+    return found
+
+
+def _complete_prompt_offsets(tokenizer: Any, prompt: str) -> tuple[list[int], list[tuple[int, int]]]:
+    """Offsets come from tokenizing the complete rendered prompt, never a prefix."""
+    try:
+        encoded = tokenizer(prompt, add_special_tokens=False,
+                            return_offsets_mapping=True)
+    except (TypeError, ValueError, NotImplementedError) as exc:
+        raise ValueError("repair alignment requires complete-prompt tokenizer offsets") from exc
+    ids = encoded["input_ids"]
+    offsets = encoded["offset_mapping"]
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    if hasattr(offsets, "tolist"):
+        offsets = offsets.tolist()
+    if (not isinstance(ids, list) or not ids or isinstance(ids[0], list)
+            or not isinstance(offsets, list) or len(ids) != len(offsets)):
+        raise ValueError("invalid complete-prompt tokenizer offsets")
+    pairs = []
+    for pair in offsets:
+        if (len(pair) != 2 or not all(isinstance(value, int) for value in pair)
+                or pair[0] < 0 or pair[1] < pair[0] or pair[1] > len(prompt)):
+            raise ValueError("invalid tokenizer character offset")
+        pairs.append((pair[0], pair[1]))
+    return ids, pairs
+
+
+def _assistant_body_alignment(prompt: str, processor_ids: list[int],
+                              tokenizer_ids: list[int], offsets: list[tuple[int, int]],
+                              role_span: Any, content: str) -> tuple[int, int]:
+    """Map a verified processor assistant body to one complete-prompt text-token run."""
+    body_ids = processor_ids[role_span.body_start:role_span.body_end]
+    if len(body_ids) < 2:
+        raise ValueError("invalid assistant body token span")
+    start = _unique_subsequence_start(tokenizer_ids, body_ids)
+    end_marker_index = start + len(body_ids) - 1
+    end_marker_start = offsets[end_marker_index][0]
+    if end_marker_start <= 0:
+        raise ValueError("assistant structural end has no character offset")
+    direct_start = end_marker_start - len(content)
+    if direct_start >= 0 and prompt[direct_start:end_marker_start] == content:
+        return start, direct_start
+    lower = offsets[start - 1][1] if start else 0
+    if lower > end_marker_start:
+        raise ValueError("assistant body offset window is inverted")
+    occurrences = []
+    cursor = lower
+    while True:
+        position = prompt.find(content, cursor, end_marker_start + 1)
+        if position < 0:
+            break
+        if position + len(content) <= end_marker_start:
+            occurrences.append(position)
+        cursor = position + 1
+    if len(occurrences) != 1:
+        raise ValueError("assistant text is not unique inside its token offset window")
+    return start, occurrences[0]
+
+
+def _target_token_bounds(offsets: list[tuple[int, int]], *, body_text_start: int,
+                         body_token_start: int, body_token_end: int,
+                         begin_char: int, end_char: int) -> tuple[int, int]:
+    """Require exact token boundaries; a BPE token crossing either edge fails."""
+    absolute_begin = body_text_start + begin_char
+    absolute_end = body_text_start + end_char
+    selected = []
+    for token_index in range(body_token_start, body_token_end):
+        start, end = offsets[token_index]
+        if start < absolute_end and end > absolute_begin:
+            if start < absolute_begin or end > absolute_end:
+                raise ValueError("repair target boundary falls inside a contextual BPE token")
+            selected.append(token_index)
+    if (not selected or selected != list(range(selected[0], selected[-1] + 1))
+            or offsets[selected[0]][0] != absolute_begin
+            or offsets[selected[-1]][1] != absolute_end):
+        raise ValueError("repair target has no exact contiguous token/character alignment")
+    return selected[0], selected[-1] + 1
 
 
 def target_token_spans(processor: Any, record: dict[str, Any], dataset_path: Path,
                        mode: str) -> tuple[list[int], list[dict[str, Any]]]:
-    """Verify every character boundary against full multimodal processor tokens."""
+    """Locate targets via full-prompt offsets and verified multimodal body IDs."""
     messages, images, tools = build_messages(record, dataset_path)
     prompt = render_prompt(processor, messages, tools)
     full = processor(text=[prompt], images=[images], padding=False,
                      truncation=False, return_tensors="pt")["input_ids"][0].tolist()
+    text_ids, offsets = _complete_prompt_offsets(processor.tokenizer, prompt)
     assistant_spans = {span.message_index: span for span in message_role_spans(
         processor, messages, images, tools, full)}
     raw_targets = target_character_spans(record, mode)
     spans = []
     positions: list[int] = []
+    aligned_bodies: dict[int, tuple[int, int]] = {}
     for turn_index, begin_char, end_char, expected in raw_targets:
         message_index = turn_index + (1 if messages[0]["role"] == "system" else 0)
         message = messages[message_index]
         if message["role"] != "assistant" or not isinstance(message["content"], str):
             raise ValueError("repair target is not assistant text")
         role_span = assistant_spans[message_index]
-        begin = _prefix_boundary(processor, messages, images, tools,
-                                 message_index, begin_char, full)
-        end = _prefix_boundary(processor, messages, images, tools,
-                               message_index, end_char, full)
+        if message_index not in aligned_bodies:
+            aligned_bodies[message_index] = _assistant_body_alignment(
+                prompt, full, text_ids, offsets, role_span, message["content"])
+        text_body_start, body_char_start = aligned_bodies[message_index]
+        text_begin, text_end = _target_token_bounds(
+            offsets, body_text_start=body_char_start, body_token_start=text_body_start,
+            body_token_end=text_body_start + role_span.body_end - role_span.body_start - 1,
+            begin_char=begin_char, end_char=end_char)
+        begin = role_span.body_start + text_begin - text_body_start
+        end = role_span.body_start + text_end - text_body_start
         if not role_span.body_start <= begin < end < role_span.body_end:
             raise ValueError("repair target crosses assistant message boundary")
+        if prompt[body_char_start + begin_char:body_char_start + end_char] != expected:
+            raise ValueError("repair target does not match complete rendered prompt")
         decoded = processor.tokenizer.decode(full[begin:end], skip_special_tokens=False,
                                              clean_up_tokenization_spaces=False)
         if decoded != expected:

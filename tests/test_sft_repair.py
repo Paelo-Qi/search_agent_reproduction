@@ -8,15 +8,16 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from opensearch_vl_repro.data import build_messages
+from opensearch_vl_repro.data import build_messages, load_json_records
 from opensearch_vl_repro.sft_protocol_diagnostics import CORRECTED_POOL_MANIFEST_SHA256
 from opensearch_vl_repro.sft_repair_data import (REPAIR_VERSION, SELECTION_VERSION,
                                                 TARGETS, OTHER_IMAGE_TOOLS,
                                                 filter_repair_candidates,
                                                 repair_category, select_repair_records,
                                                 validate_repair_manifest)
-from opensearch_vl_repro.sft_repair_mask import (MASK_VERSIONS, target_character_spans,
-                                                RepairCollator, target_token_spans)
+from opensearch_vl_repro.sft_repair_mask import (MASK_VERSIONS, _unique_subsequence_start,
+                                                target_character_spans, RepairCollator,
+                                                target_token_spans)
 from opensearch_vl_repro.sft_repair_training import (REPAIR_KIND, load_repair_config,
                                                     repair_checkpoint_metadata,
                                                     validate_repair_checkpoint,
@@ -41,15 +42,27 @@ class _Tokenizer:
     def convert_tokens_to_ids(self, value):
         return self.specials.get(value, 0)
 
-    def encode(self, text):
+    def encode_with_offsets(self, text):
         ids = []
+        offsets = []
         offset = 0
         for match in self.pattern.finditer(text):
             ids.extend(ord(char) + 10 for char in text[offset:match.start()])
+            offsets.extend((index, index + 1) for index in range(offset, match.start()))
             ids.append(self.specials[match.group()])
+            offsets.append((match.start(), match.end()))
             offset = match.end()
         ids.extend(ord(char) + 10 for char in text[offset:])
-        return ids
+        offsets.extend((index, index + 1) for index in range(offset, len(text)))
+        return ids, offsets
+
+    def encode(self, text):
+        return self.encode_with_offsets(text)[0]
+
+    def __call__(self, text, *, add_special_tokens, return_offsets_mapping):
+        ids, offsets = self.encode_with_offsets(text)
+        assert add_special_tokens is False and return_offsets_mapping is True
+        return {"input_ids": ids, "offset_mapping": offsets}
 
     def decode(self, values, **kwargs):
         reverse = {value: key for key, value in self.specials.items()}
@@ -101,14 +114,14 @@ def _record(tmp_path: Path, mode="argument_only", image_id="img_1", multi=False)
 
 
 @pytest.mark.parametrize("image_id", ["img_1", "img_2", "img_3"])
-def test_r1_only_argument_fragment_with_real_processor_prefix_checks(tmp_path, image_id):
+def test_r1_only_argument_fragment_with_complete_prompt_offsets(tmp_path, image_id):
     record = _record(tmp_path, image_id=image_id)
     processor = _Processor()
     full, spans = target_token_spans(processor, record, tmp_path / "repair.json",
                                      "argument_only")
     assert len(spans) == 1
     assert spans[0]["decoded"] == f'"arguments": {{"url": "{image_id}"}}'
-    assert processor.render_calls >= 4 and processor.token_calls >= 4
+    assert processor.render_calls >= 2 and processor.token_calls >= 2
     supervised = processor.tokenizer.decode(full[spans[0]["start"]:spans[0]["end_exclusive"]])
     assert "image_search" not in supervised and "Thinking" not in supervised
     assert "Do not supervise" not in supervised and "Question" not in supervised
@@ -202,7 +215,7 @@ def test_r2_selection_fallback_remains_tool_only_and_deterministic():
     assert stats["unmet_requested_slots"] == {"other_image_tool": 1}
 
 
-def test_alignment_failure_fails_closed(tmp_path):
+def test_clipped_prefix_token_instability_no_longer_breaks_alignment(tmp_path):
     class _MergingProcessor(_Processor):
         def __call__(self, **kwargs):
             result = super().__call__(**kwargs)
@@ -211,8 +224,98 @@ def test_alignment_failure_fails_closed(tmp_path):
                 result["input_ids"][0].ids[-3] += 1
             return result
     record = _record(tmp_path)
-    with pytest.raises((ValueError, RuntimeError)):
-        target_token_spans(_MergingProcessor(), record, tmp_path / "repair.json",
+    _, spans = target_token_spans(_MergingProcessor(), record, tmp_path / "repair.json",
+                                  "argument_only")
+    assert [span["decoded"] for span in spans] == ['"arguments": {"url": "img_1"}']
+
+
+def test_contextual_bpe_inside_target_uses_full_prompt_offsets(tmp_path):
+    class _ContextualTokenizer(_Tokenizer):
+        def encode_with_offsets(self, text):
+            ids, offsets = super().encode_with_offsets(text)
+            if '"name": "image_search"' not in text:
+                return ids, offsets
+            position = text.index('"url"')
+            first = next(index for index, pair in enumerate(offsets) if pair[0] == position)
+            assert offsets[first + 4][1] == position + 5
+            return (ids[:first] + [1000] + ids[first + 5:],
+                    offsets[:first] + [(position, position + 5)] + offsets[first + 5:])
+
+        def decode(self, values, **kwargs):
+            parent_decode = super().decode
+            return "".join('"url"' if value == 1000 else parent_decode([value])
+                           for value in values)
+
+    processor = _Processor()
+    processor.tokenizer = _ContextualTokenizer()
+    record = _record(tmp_path)
+    target = '"arguments": {"url": "img_1"}'
+    assert 1000 not in processor.tokenizer.encode(target)
+    full, spans = target_token_spans(processor, record, tmp_path / "repair.json",
+                                     "argument_only")
+    assert 1000 in full[spans[0]["start"]:spans[0]["end_exclusive"]]
+    assert spans[0]["decoded"] == target
+    _, r2_spans = target_token_spans(processor, record, tmp_path / "repair.json",
+                                     "full_tool_call")
+    assert len(r2_spans) == 1 and r2_spans[0]["decoded"].startswith("<tool_call>")
+
+
+def test_contextual_bpe_crossing_target_boundary_fails_closed(tmp_path):
+    class _BoundaryTokenizer(_Tokenizer):
+        def encode_with_offsets(self, text):
+            ids, offsets = super().encode_with_offsets(text)
+            if '"name": "image_search"' not in text:
+                return ids, offsets
+            position = text.index(' "arguments"')
+            first = next(index for index, pair in enumerate(offsets) if pair[0] == position)
+            return (ids[:first] + [1001] + ids[first + 2:],
+                    offsets[:first] + [(position, position + 2)] + offsets[first + 2:])
+
+        def decode(self, values, **kwargs):
+            parent_decode = super().decode
+            return "".join(' "' if value == 1001 else parent_decode([value])
+                           for value in values)
+
+    processor = _Processor()
+    processor.tokenizer = _BoundaryTokenizer()
+    with pytest.raises(ValueError, match="boundary falls inside"):
+        target_token_spans(processor, _record(tmp_path), tmp_path / "repair.json",
+                           "argument_only")
+
+
+def test_multimodal_image_token_expansion_does_not_shift_target(tmp_path):
+    class _ExpandedImageProcessor(_Processor):
+        def __call__(self, **kwargs):
+            values = super().__call__(**kwargs)["input_ids"][0].tolist()
+            expanded = [token for value in values
+                        for token in ([value, value, value] if value == 3 else [value])]
+            return {"input_ids": [_Row(expanded)]}
+
+    record = _record(tmp_path)
+    processor = _ExpandedImageProcessor()
+    full, spans = target_token_spans(processor, record, tmp_path / "repair.json",
+                                     "argument_only")
+    _, unexpanded = target_token_spans(_Processor(), record, tmp_path / "repair.json",
+                                       "argument_only")
+    assert full.count(3) == 9  # Three images, each expanded to three model tokens.
+    assert spans[0]["decoded"] == '"arguments": {"url": "img_1"}'
+    assert spans[0]["start"] == unexpanded[0]["start"] + 6
+
+
+def test_token_run_must_be_unique_and_offsets_available(tmp_path):
+    assert _unique_subsequence_start([1, 2, 3], [2, 3]) == 1
+    with pytest.raises(ValueError, match="ambiguous"):
+        _unique_subsequence_start([1, 2, 1, 2], [1, 2])
+    with pytest.raises(ValueError, match="absent"):
+        _unique_subsequence_start([1, 2], [3])
+
+    processor = _Processor()
+    class _NoOffsetsTokenizer(_Tokenizer):
+        def __call__(self, *args, **kwargs):
+            raise NotImplementedError("no fast offsets")
+    processor.tokenizer = _NoOffsetsTokenizer()
+    with pytest.raises(ValueError, match="requires complete-prompt tokenizer offsets"):
+        target_token_spans(processor, _record(tmp_path), tmp_path / "repair.json",
                            "argument_only")
 
 
@@ -423,6 +526,15 @@ def test_cached_qwen_processor_chat_template_alignment_if_available(tmp_path):
                                "full_tool_call")
     assert r1[0]["decoded"] == '"arguments": {"url": "img_1"}'
     assert r2[0]["decoded"].startswith("<tool_call>")
+    # AutoDL has the materialized pinned repair data and media. Exercise every
+    # real R1 target so the reported processor regression cannot hide behind a
+    # synthetic-only example; no GPU model, network, or training is involved.
+    r1_path = PROJECT_ROOT / "data/sft_repair/r1_argument_only/repair.json"
+    if r1_path.is_file():
+        for item in load_json_records(r1_path):
+            _, spans = target_token_spans(processor, item, r1_path, "argument_only")
+            assert [span["decoded"] for span in spans] == [
+                target[3] for target in target_character_spans(item, "argument_only")]
 
 
 def test_torch_repair_labels_only_exact_targets_if_available(tmp_path):
