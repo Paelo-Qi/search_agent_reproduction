@@ -11,6 +11,7 @@ from PIL import Image
 from opensearch_vl_repro.data import build_messages
 from opensearch_vl_repro.sft_protocol_diagnostics import CORRECTED_POOL_MANIFEST_SHA256
 from opensearch_vl_repro.sft_repair_data import (REPAIR_VERSION, SELECTION_VERSION,
+                                                TARGETS, OTHER_IMAGE_TOOLS,
                                                 filter_repair_candidates,
                                                 repair_category, select_repair_records,
                                                 validate_repair_manifest)
@@ -134,17 +135,71 @@ def test_r2_only_selected_complete_tool_call(tmp_path):
     assert "Unrelated explanation" not in spans[0]["decoded"]
 
 
-def test_r2_no_tool_only_response_block(tmp_path):
+def test_r2_no_tool_has_no_repair_category_or_mask_target(tmp_path):
     record = _record(tmp_path)
     record["conversations"] = [record["conversations"][0],
                                {"from": "gpt", "value": "<think>Private text</think>"
                                 "<response>Final answer</response>"}]
     record["images"] = ["one.png", "two.png", "three.png"]
     record["_repair_target_tool"] = None
-    assert repair_category(record, "full_tool_call")[0] == "no_tool"
-    _, spans = target_token_spans(_Processor(), record, tmp_path / "repair.json",
-                                  "full_tool_call")
-    assert [span["decoded"] for span in spans] == ["<response>Final answer</response>"]
+    assert repair_category(record, "full_tool_call") is None
+    with pytest.raises(ValueError, match="requires a selected tool call"):
+        target_token_spans(_Processor(), record, tmp_path / "repair.json",
+                           "full_tool_call")
+
+
+def test_r2_targets_and_allowed_categories_are_tool_only():
+    assert TARGETS["full_tool_call"] == {"image_search": 220,
+                                         "other_image_tool": 80}
+    assert sum(TARGETS["full_tool_call"].values()) == 300
+    assert TARGETS["argument_only"] == {"img_1": 180, "img_2": 70,
+                                        "img_3_or_later": 50}
+    assert OTHER_IMAGE_TOOLS == {"layout_parsing", "crop", "sharpen",
+                                 "super_resolution", "perspective_correct"}
+    for name, expected in (("image_search", "image_search"),
+                           ("layout_parsing", "other_image_tool"),
+                           ("crop", "other_image_tool"),
+                           ("sharpen", "other_image_tool"),
+                           ("super_resolution", "other_image_tool"),
+                           ("perspective_correct", "other_image_tool"),
+                           ("text_search", None), ("web_search", None)):
+        argument = "url" if name == "image_search" else "image"
+        record = {"conversations": [{"from": "human", "value": "<image>Q"},
+                                    {"from": "gpt", "value": "<tool_call>"
+                                     + json.dumps({"name": name,
+                                                   "arguments": {argument: "img_1"}})
+                                     + "</tool_call>"}], "images": ["one.png"]}
+        chosen = repair_category(record, "full_tool_call")
+        assert (chosen[0] if chosen else None) == expected
+
+
+def test_r2_selection_fallback_remains_tool_only_and_deterministic():
+    def item(index, tool):
+        argument = "url" if tool == "image_search" else "image"
+        record = {"conversations": [{"from": "human", "value": "<image>Q"},
+                                    {"from": "gpt", "value": "<tool_call>"
+                                     + json.dumps({"name": tool,
+                                                   "arguments": {argument: "img_1"}})
+                                     + "</tool_call>"}], "images": ["one.png"]}
+        return {"sample_id": f"fvqa:{index}", "source": "fvqa",
+                "source_index": index, "record": record}
+    rows = [item(0, "image_search"), item(1, "image_search"),
+            item(2, "layout_parsing"), item(3, "text_search")]
+    rows.append({"sample_id": "fvqa:4", "source": "fvqa", "source_index": 4,
+                 "record": {"conversations": [{"from": "human", "value": "<image>Q"},
+                                              {"from": "gpt", "value":
+                                               "<response>Answer</response>"}],
+                            "images": ["one.png"]}})
+    kwargs = {"mode": "full_tool_call", "image_hashes": lambda row: [row["sample_id"]],
+              "forbidden_hashes": set(), "seed": 7,
+              "targets": {"image_search": 1, "other_image_tool": 2}}
+    first, stats = select_repair_records(rows, **kwargs)
+    second, _ = select_repair_records(list(reversed(rows)), **kwargs)
+    assert [row["sample_id"] for row in first] == [row["sample_id"] for row in second]
+    assert len(first) == 3
+    assert set(row["repair_category"] for row in first) == {
+        "image_search", "other_image_tool"}
+    assert stats["unmet_requested_slots"] == {"other_image_tool": 1}
 
 
 def test_alignment_failure_fails_closed(tmp_path):
@@ -264,6 +319,35 @@ def test_manifest_checksum_and_isolation_fail_closed(tmp_path):
     path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="isolation"):
         validate_repair_manifest(data, path)
+
+
+def test_old_r2_no_tool_manifest_is_rejected(tmp_path):
+    rows = [{"sample_id": "fvqa:1", "category": "no_tool", "target_tool": None}]
+    records = [{"_sample_id": "fvqa:1", "_repair_category": "no_tool",
+                "_repair_target_tool": None}]
+    payload = json.dumps(records).encode()
+    data = tmp_path / "repair.json"
+    data.write_bytes(payload)
+    manifest = {"repair_version": REPAIR_VERSION, "repair_mode": "full_tool_call",
+                "selection_algorithm": SELECTION_VERSION,
+                "dataset_id": "OpenSearch-VL/Search-VL-SFT-36K",
+                "dataset_revision": "2c1c460af4fa15bd63210cbf426a96664b959944",
+                "corrected_pool_manifest_sha256": CORRECTED_POOL_MANIFEST_SHA256,
+                "repair_json_sha256": hashlib.sha256(payload).hexdigest(),
+                "membership": rows, "membership_sha256": canonical_json_sha256(rows),
+                "sample_count": 1, "protocol_category_counts": {"no_tool": 1},
+                "requested_category_targets": dict(TARGETS["full_tool_call"]),
+                "target_tool_counts": {"no_tool": 1}}
+    for key in ("eval300_id_overlap_count", "eval300_question_overlap_count",
+                "eval300_image_overlap_count", "dev30_overlap_count",
+                "dev50_id_overlap_count", "dev50_question_overlap_count",
+                "dev50_image_overlap_count", "sft8k_overlap_count",
+                "frozen_exclusion_overlap_count", "image_contract_bad_count"):
+        manifest[key] = 0
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="no-tool"):
+        validate_repair_manifest(data, path, mode="full_tool_call")
 
 
 def test_parent_metadata_and_repair_checkpoint_not_formal(tmp_path):

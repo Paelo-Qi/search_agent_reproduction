@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
@@ -30,7 +29,7 @@ SELECTION_VERSION = "sha256-rank-stratified-image-verified-v1"
 REPAIR_SEED = 20260927
 TARGETS = {
     "argument_only": {"img_1": 180, "img_2": 70, "img_3_or_later": 50},
-    "full_tool_call": {"image_search": 220, "other_image_tool": 40, "no_tool": 40},
+    "full_tool_call": {"image_search": 220, "other_image_tool": 80},
 }
 OTHER_IMAGE_TOOLS = frozenset(("layout_parsing", "crop", "sharpen",
                                "super_resolution", "perspective_correct"))
@@ -69,15 +68,6 @@ def repair_category(record: dict[str, Any], mode: str) -> tuple[str, dict[str, A
     elif any(call["name"] in OTHER_IMAGE_TOOLS for call in calls):
         target = next(call for call in calls if call["name"] in OTHER_IMAGE_TOOLS)
         category = "other_image_tool"
-    elif not calls:
-        if not any(re.search(r"<response>.*?</response>", turn["value"], re.S)
-                   for turn in record["conversations"] if turn["from"] == "gpt"):
-            return None
-        target = {"turn_index": max(index for index, turn in enumerate(record["conversations"])
-                                    if turn["from"] == "gpt" and re.search(
-                                        r"<response>.*?</response>", turn["value"], re.S)),
-                  "name": None}
-        category = "no_tool"
     else:
         return None
     return category, {"target_turn_index": target["turn_index"],
@@ -150,9 +140,12 @@ def filter_repair_candidates(candidates: list[dict[str, Any]], *,
 def build_repair_datasets(*, raw_dir: Path, pool_manifest_path: Path,
                           eval_path: Path, dev_dir: Path, output_root: Path,
                           seed: int = REPAIR_SEED,
+                          modes: tuple[str, ...] = tuple(TARGETS),
                           image_hasher: Callable[[dict[str, Any]], list[str]] | None = None,
                           ) -> dict[str, dict[str, Any]]:
     """Build both modes only after all pinned provenance and overlap checks pass."""
+    if not modes or any(mode not in TARGETS for mode in modes) or len(set(modes)) != len(modes):
+        raise ValueError("repair modes must be a non-empty unique subset of R1/R2")
     pool_sha = sha256_file(pool_manifest_path)
     if pool_sha != CORRECTED_POOL_MANIFEST_SHA256:
         raise ValueError(f"corrected pool SHA mismatch: {pool_sha}")
@@ -191,7 +184,7 @@ def build_repair_datasets(*, raw_dir: Path, pool_manifest_path: Path,
                                                forbidden_questions=dev_questions)
         plans = {mode: select_repair_records(
             candidates, mode=mode, image_hashes=hasher,
-            forbidden_hashes=forbidden, seed=seed) for mode in TARGETS}
+            forbidden_hashes=forbidden, seed=seed) for mode in modes}
     finally:
         if owned_hasher:
             hasher.close()  # type: ignore[attr-defined]
@@ -257,7 +250,7 @@ def build_repair_datasets(*, raw_dir: Path, pool_manifest_path: Path,
                 row["source"] for row in membership).items())),
             "protocol_category_counts": selection["selected_category_counts"],
             "target_tool_counts": dict(sorted(Counter(
-                row["target_tool"] or "no_tool" for row in membership).items())),
+                row["target_tool"] for row in membership).items())),
             "image_target_counts": dict(sorted(image_targets.items())),
             "eval300_id_overlap_count": 0, "eval300_question_overlap_count": 0,
             "eval300_image_overlap_count": 0, "dev30_overlap_count": 0,
@@ -268,6 +261,8 @@ def build_repair_datasets(*, raw_dir: Path, pool_manifest_path: Path,
             "membership_sha256": canonical_json_sha256(membership),
             "membership": membership, "selection": selection, "source_scan": scan,
         }
+        if mode == "full_tool_call":
+            manifest["requested_category_targets"] = dict(TARGETS[mode])
         (output_dir / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         results[mode] = manifest
@@ -302,4 +297,19 @@ def validate_repair_manifest(dataset_path: Path, manifest_path: Path, *,
     records = json.loads(dataset_path.read_text(encoding="utf-8"))
     if [row["_sample_id"] for row in records] != [row["sample_id"] for row in members]:
         raise ValueError("repair records and membership diverged")
+    if manifest["repair_mode"] == "full_tool_call":
+        if manifest.get("requested_category_targets") != TARGETS["full_tool_call"]:
+            raise ValueError("R2 repair target recipe changed; rebuild its dataset")
+        allowed = set(TARGETS["full_tool_call"])
+        def valid_target(category: Any, tool: Any) -> bool:
+            return ((category == "image_search" and tool == "image_search")
+                    or (category == "other_image_tool" and tool in OTHER_IMAGE_TOOLS))
+        if (any(not valid_target(row.get("category"), row.get("target_tool"))
+                for row in members)
+                or any(not valid_target(record.get("_repair_category"),
+                                        record.get("_repair_target_tool")) for record in records)
+                or any(key not in allowed or count <= 0 for key, count in
+                       manifest.get("protocol_category_counts", {}).items())
+                or "no_tool" in manifest.get("target_tool_counts", {})):
+            raise ValueError("R2 repair manifest contains a no-tool or unsupported target")
     return manifest

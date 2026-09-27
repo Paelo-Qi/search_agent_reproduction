@@ -56,7 +56,6 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
     rows = []
     supervised_total = 0
     tool_supervised_total = 0
-    direct_supervised_total = 0
     token_counts = []
     per_sample_tokens = []
     multi_call = 0
@@ -78,10 +77,7 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
                                   "category": record["_repair_category"],
                                   "supervised_token_count": len(actual_positions),
                                   "supervised_span_count": len(spans)})
-        if record["_repair_category"] == "no_tool":
-            direct_supervised_total += len(actual_positions)
-        else:
-            tool_supervised_total += len(actual_positions)
+        tool_supervised_total += len(actual_positions)
         multi_call += int(len(spans) > 1)
         if index not in example_indices:
             continue
@@ -145,9 +141,8 @@ def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
         "multi_image_search_call_samples": multi_call if repair["repair_mode"] ==
         "argument_only" else 0,
         "tool_call_supervised_token_total": tool_supervised_total,
-        "direct_answer_supervised_token_total": direct_supervised_total,
-        "direct_answer_sample_count": sum(record["_repair_category"] == "no_tool"
-                                          for record in records),
+        "direct_answer_supervised_token_total": 0,
+        "direct_answer_sample_count": 0,
         "per_sample_supervision": per_sample_tokens,
         "examples": rows,
     }

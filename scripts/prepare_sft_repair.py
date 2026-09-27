@@ -21,10 +21,14 @@ def main() -> int:
     cli.add_argument("--dev-dir", type=Path, default=ROOT / "data/eval/tool_protocol_dev50")
     cli.add_argument("--output-root", type=Path, default=ROOT / "data/sft_repair")
     cli.add_argument("--seed", type=int, default=REPAIR_SEED)
+    cli.add_argument("--mode", choices=("argument_only", "full_tool_call"),
+                     help="Build only one mode; leave the other dataset untouched")
     args = cli.parse_args()
     results = build_repair_datasets(raw_dir=args.raw_dir, pool_manifest_path=args.pool_manifest,
                                     eval_path=args.eval, dev_dir=args.dev_dir,
-                                    output_root=args.output_root, seed=args.seed)
+                                    output_root=args.output_root, seed=args.seed,
+                                    modes=(args.mode,) if args.mode else
+                                    ("argument_only", "full_tool_call"))
     for mode, manifest in results.items():
         print(f"{mode}: samples={manifest['sample_count']} "
               f"categories={manifest['protocol_category_counts']} "

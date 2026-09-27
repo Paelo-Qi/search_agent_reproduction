@@ -17,7 +17,6 @@ MASK_VERSIONS = {"argument_only": "targeted-repair-v1-argument-only",
 TOOL_BLOCK = re.compile(r"<tool_call>.*?</tool_call>", re.S)
 ARGUMENT_FRAGMENT = re.compile(
     r'"arguments"\s*:\s*\{\s*"url"\s*:\s*"img_[1-9][0-9]*"\s*\}')
-RESPONSE_BLOCK = re.compile(r"<response>.*?</response>", re.S)
 
 
 def target_character_spans(record: dict[str, Any], mode: str) -> list[tuple[int, int, int, str]]:
@@ -26,6 +25,8 @@ def target_character_spans(record: dict[str, Any], mode: str) -> list[tuple[int,
         raise ValueError(f"unknown repair mask mode: {mode}")
     target_turn = record["_repair_target_turn_index"]
     target_tool = record["_repair_target_tool"]
+    if mode == "full_tool_call" and target_tool is None:
+        raise ValueError("R2 requires a selected tool call")
     found = []
     for turn_index, turn in enumerate(record["conversations"]):
         if turn["from"] != "gpt":
@@ -56,13 +57,6 @@ def target_character_spans(record: dict[str, Any], mode: str) -> list[tuple[int,
                 break
         if mode == "full_tool_call" and found:
             break
-    if mode == "full_tool_call" and target_tool is None:
-        content = record["conversations"][target_turn]["value"]
-        matches = list(RESPONSE_BLOCK.finditer(content))
-        if len(matches) != 1 or TOOL_BLOCK.search(content):
-            raise ValueError("R2 direct-answer target is not one isolated response block")
-        match = matches[0]
-        found = [(target_turn, match.start(), match.end(), match.group())]
     if not found or (mode == "full_tool_call" and len(found) != 1):
         raise ValueError("repair target missing or ambiguous")
     return found
