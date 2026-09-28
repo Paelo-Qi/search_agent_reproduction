@@ -24,7 +24,8 @@ from opensearch_vl_repro.sft_preflight import normalized_question, sample_questi
 from opensearch_vl_repro.sft_repair_data import validate_repair_manifest  # noqa: E402
 from opensearch_vl_repro.sft_repair_mask import (RepairCollator, target_character_spans,  # noqa: E402
                                                   target_token_spans)
-from opensearch_vl_repro.sft_repair_training import load_repair_config  # noqa: E402
+from opensearch_vl_repro.sft_repair_training import (load_repair_config,  # noqa: E402
+                                                      require_legacy_repair_runtime)
 from opensearch_vl_repro.sft_tool_audit import (sha256_file, write_json_atomic,  # noqa: E402
                                                  write_text_atomic)
 from opensearch_vl_repro.sft_train_plan import load_main_config  # noqa: E402
@@ -33,6 +34,7 @@ from opensearch_vl_repro.tool_protocol_dev import (candidate_metadata,  # noqa: 
 
 
 def audit(config_path: Path, report_dir: Path, *, examples: int = 30) -> dict:
+    require_legacy_repair_runtime()
     if examples < 20:
         raise ValueError("mask audit requires at least 20 representative samples")
     repair = load_repair_config(config_path)

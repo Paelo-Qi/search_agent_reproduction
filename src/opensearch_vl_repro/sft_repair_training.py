@@ -29,6 +29,15 @@ PARENT_STAGE = "main_b_2k"
 LEGACY_REPAIR_PARENT_PROTOCOL_VERSION = "runtime-image-id-grounding-v2"
 
 
+def require_legacy_repair_runtime() -> None:
+    """Keep historical image_search.url repair artifacts out of the v3 runtime."""
+    if SFT_INPUT_MESSAGE_VERSION != LEGACY_REPAIR_PARENT_PROTOCOL_VERSION:
+        raise RuntimeError(
+            "legacy v2 targeted repair only supports image_search.url; "
+            "current v3 image_search.image_id runtime cannot use these repair artifacts"
+        )
+
+
 def load_repair_config(path: Path, *, max_steps: int | None = None) -> dict[str, Any]:
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(config, dict) or config.get("repair_mode") not in MASK_VERSIONS:
@@ -202,8 +211,7 @@ def _save_repair_checkpoint(path: Path, *, model: Any, processor: Any,
 
 
 def run_repair(config_path: Path, *, max_steps: int | None = None) -> None:
-    if SFT_INPUT_MESSAGE_VERSION != LEGACY_REPAIR_PARENT_PROTOCOL_VERSION:
-        raise RuntimeError("legacy v2 targeted repair cannot train under the v3 image_id runtime")
+    require_legacy_repair_runtime()
     import numpy as np
     import torch
     import torch.distributed as dist

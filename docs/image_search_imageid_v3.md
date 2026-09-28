@@ -94,6 +94,11 @@ python scripts/eval_tool_protocol.py \
   --report-dir reports/tool_protocol_imageid_v3/base
 ```
 
+The Dev50 CLI also defaults to `configs/eval_base_300.yaml` (512 new tokens,
+16 Agent turns) when `--config` is omitted. This v3 runtime records
+`AGENT_BEHAVIOR_VERSION=5` in new run manifests; historical v4 manifests
+cannot be resumed under v5.
+
 Metrics read `image_search.image_id` and retain the HTTP hallucination count
 for bad values such as `{"image_id":"https://..."}` under
 `image_search_http_image_id_hallucination_count`. They also count legacy
@@ -107,6 +112,6 @@ pinned Base using the v3 pool/config after all gates pass. Runtime tool
 fingerprints prevent old run manifests from resuming with the new schema, and
 adapter identity rejects v2 metadata. Legacy targeted-repair R1/R2/R3 data,
 targets, and checkpoints remain historical v2 experiments; they are not
-silently converted into v3 training material. The legacy repair training
-entrypoint fails closed under v3; no repair experiment is run or redesigned
-by this upgrade.
+silently converted into v3 training material. The legacy repair prepare,
+mask-audit, and training entrypoints all fail closed under v3; no repair
+experiment is run or redesigned by this upgrade.

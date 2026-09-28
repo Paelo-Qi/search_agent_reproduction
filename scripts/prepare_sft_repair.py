@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from opensearch_vl_repro.sft_repair_data import (REPAIR_SEED, build_r3_dataset,  # noqa: E402
                                                  build_repair_datasets)
+from opensearch_vl_repro.sft_repair_training import require_legacy_repair_runtime  # noqa: E402
 
 
 def main() -> int:
@@ -25,6 +26,7 @@ def main() -> int:
     cli.add_argument("--mode", choices=("argument_only", "full_tool_call", "r3"),
                      help="Build one isolated dataset; r3 uses corrected 8k membership")
     args = cli.parse_args()
+    require_legacy_repair_runtime()
     if args.mode == "r3":
         manifest = build_r3_dataset(raw_dir=args.raw_dir,
                                     pool_manifest_path=args.pool_manifest,

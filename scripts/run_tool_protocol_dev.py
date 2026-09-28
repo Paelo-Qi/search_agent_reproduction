@@ -30,7 +30,7 @@ def main() -> int:
     cli.add_argument("--pool-manifest", type=Path, default=ROOT / "data/sft_main_imageid_v3/manifest.json")
     cli.add_argument("--expected-ids", type=Path, default=ROOT / "data/eval/tool_protocol_dev50/ids.json")
     cli.add_argument("--raw-dir", type=Path, default=ROOT / "data/raw")
-    cli.add_argument("--config", type=Path, default=ROOT / "configs/eval_4b.yaml")
+    cli.add_argument("--config", type=Path, default=ROOT / "configs/eval_base_300.yaml")
     cli.add_argument("--search-config", type=Path, default=ROOT / "configs/search_backends.example.yaml")
     cli.add_argument("--layout-config", type=Path, default=ROOT / "configs/layout_parsing.example.yaml")
     cli.add_argument("--cache-dir", type=Path, default=ROOT / ".eval-runtime/cache")
