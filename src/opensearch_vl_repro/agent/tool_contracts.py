@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
+RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION = "runtime-image-id-grounding-v3"
+
+
 @dataclass(frozen=True)
 class ToolDeclaration:
     name: str
@@ -60,8 +63,8 @@ def _object_schema(
     }
 
 
-# These declarations intentionally mirror the schemas observed in the pinned
-# SearchVL-SFT-36K audit. Do not rename image_search.url to image.
+# Runtime declarations are intentionally separate from the pinned source's
+# legacy image_search.url schema. Other visual-tool arguments stay unchanged.
 TOOL_DECLARATIONS = (
     ToolDeclaration(
         "text_search",
@@ -72,8 +75,8 @@ TOOL_DECLARATIONS = (
     ),
     ToolDeclaration(
         "image_search",
-        "Visually identify an unknown landmark, object, artwork, product, or scene using reverse-image-style matches and source links. Pass a registered runtime image ID such as img_1 in the url argument, not a filename, filesystem path, or HTTP URL. Follow with text_search if the question needs detailed facts about a likely match.",
-        _object_schema({"url": "string"}, ("url",)),
+        "Visually identify an unknown landmark, object, artwork, product, or scene using reverse-image-style matches and source links. Pass a currently registered runtime image ID such as img_1 or img_2 in the image_id argument, never an HTTP URL, filename, or filesystem path. Follow with text_search if the question needs detailed facts about a likely match.",
+        _object_schema({"image_id": "string"}, ("image_id",)),
     ),
     ToolDeclaration(
         "crop",

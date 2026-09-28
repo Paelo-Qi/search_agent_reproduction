@@ -21,7 +21,7 @@ from opensearch_vl_repro.agent.runtime import AgentRuntime  # noqa: E402
 def main() -> None:
     model = ScriptedAgentModel(
         [
-            'image_search({"url":"img_1"})',
+            'image_search({"image_id":"img_1"})',
             '<tool_call>{"name":"text_search","arguments":'
             '{"q":"example entity","hl":"en","top_k":5}}</tool_call>',
             "The example entity is supported by the mock search observations.",
@@ -45,4 +45,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

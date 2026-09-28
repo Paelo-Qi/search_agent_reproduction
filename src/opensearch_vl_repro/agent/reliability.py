@@ -165,7 +165,7 @@ def _normalized_args(tool: str, arguments: dict[str, Any], context: ToolContext,
         if tool == "text_search" and arguments.get("top_k") is not None:
             normalized["top_k"] = int(arguments["top_k"])
         return normalized
-    reference_name = "url" if tool == "image_search" else "image"
+    reference_name = "image_id" if tool == "image_search" else "image"
     image = context.image_registry.get(arguments[reference_name])
     normalized = {"image_sha256": image_sha256(image)}
     for name, value in arguments.items():

@@ -24,6 +24,8 @@ data/sft_4b_smoke_100.meta.json
 data/sft_4b_media/
 data/sft_main/*
 !data/sft_main/manifest.json
+data/sft_main_imageid_v3/*
+!data/sft_main_imageid_v3/manifest.json
 data/eval/source/
 data/eval/*.parquet
 outputs/
@@ -35,6 +37,10 @@ reports/phase5_judge_smoke/
 reports/sft_main/
 reports/sft_4b_smoke/
 reports/sft_preflight/
+reports/sft_main_imageid_v3/
+reports/sft_preflight_imageid_v3/
+reports/sft_diagnostics_imageid_v3/
+reports/tool_protocol_imageid_v3/
 !reports/eval_subset_report.json
 logs/
 

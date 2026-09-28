@@ -82,7 +82,7 @@ def test_small_pool_manifest_is_rebuildable_and_detects_tampering(tmp_path, monk
     output = tmp_path / "prepared"
     first = prepare_sft_pool(raw, output)
     assert first["total_selected_count"] == 8 and first["disjointness_verified"]
-    assert first["version"] == 2 and first["canonicalization_applied"] is True
+    assert first["version"] == 3 and first["canonicalization_applied"] is True
     assert first["sft_input_message_version"] == SFT_INPUT_MESSAGE_VERSION
     assert first["effective_runtime_tool_contract_fingerprint"]
     assert first["source_tool_declaration_fingerprint"]
@@ -137,17 +137,17 @@ def test_tool_contract_audit_reports_drift_without_remapping():
     record = {"_sample_id": "fvqa:2", "_source": "fvqa",
               "_source_tools": [declaration], "tools": runtime_tools(),
               "conversations": [{"from": "gpt", "value":
-                                 '<tool_call>{"name":"image_search","arguments":{"url":"img_1"}}</tool_call>'}]}
+                                 '<tool_call>{"name":"image_search","arguments":{"image_id":"img_1"}}</tool_call>'}]}
     assert tool_contract_audit([record])["passed"] is True
     function_style = {**record, "conversations": [{"from": "gpt", "value":
-                                                   'image_search({"url":"img_1"})'}]}
+                                                   'image_search({"image_id":"img_1"})'}]}
     assert tool_contract_audit([function_style])["tool_call_counts"] == {"image_search": 1}
     bad = {**record, "conversations": [{"from": "gpt", "value":
                                          '<tool_call>{"name":"image_search","arguments":{"image":"img_1"}}</tool_call>'}]}
     report = tool_contract_audit([bad])
     assert report["passed"] is False
     assert report["mismatches"][0]["kind"] == "call_schema_drift"
-    assert "url" in report["mismatches"][0]["detail"]
+    assert "image_id" in report["mismatches"][0]["detail"]
     extra = json.loads(json.dumps(declaration))
     extra["function"]["parameters"]["properties"]["file_path"] = {"type": "string"}
     report = tool_contract_audit([{**record, "_source_tools": [extra]}])
@@ -230,7 +230,10 @@ def test_token_cut_boundaries_and_formal_report_only_drop():
     assert audit(len(full))["complete_assistant_span_dropped"] == 0
     summary = sequence_summary([audit(4)], 4)
     checks = formal_preflight_checks(
-        {"effective_declaration_drift_count": 0, "actual_call_drift_count": 0},
+        {"effective_declaration_drift_count": 0, "actual_call_drift_count": 0,
+         "effective_image_search_counts": {"image_search_image_id": 1,
+             "image_search_legacy_url": 0, "image_search_http_target": 0,
+             "image_search_non_img_n": 0, "image_search_extra_arguments": 0}},
         {"complete": True, "question_overlap_count": 0, "image_overlap_count": 0},
         {"full_8k": summary, "image_grounding": {"passed": True}})
     assert all(checks.values())
@@ -275,7 +278,7 @@ def test_deterministic_question_and_image_exclusion_replacement(tmp_path, monkey
             assert row["tools"] == runtime_tools()
             assert row["_source_tools"] == "[]"
             assert row["conversations"] == _record(row["_source_index"])["conversations"]
-    assert load_sft_manifest(tmp_path / "prepared/manifest.json")["version"] == 2
+    assert load_sft_manifest(tmp_path / "prepared/manifest.json")["version"] == 3
     image_victim = sorted(item for item in original_ids if item.startswith("webqa:")
                           and int(item.split(":")[1]) != victim_index)[0]
     second = prepare_sft_pool(raw_dir, tmp_path / "prepared", eval_path="fake-eval",
@@ -398,6 +401,8 @@ def _fake_checkpoint(path: Path, *, weights: bytes = b"weights") -> Path:
                  for item in path.rglob("*") if item.is_file()}
     (path / "metadata.json").write_text(json.dumps({
         "checkpoint_complete": True, "model": MODEL, "model_revision": REVISION,
+        "sft_input_message_version": SFT_INPUT_MESSAGE_VERSION,
+        "runtime_tool_protocol_version": SFT_INPUT_MESSAGE_VERSION,
         "stage": "main_a_1k", "lineage": ["main_a_1k"], "global_step": 250,
         "file_sha256": checksums,
     }), encoding="utf-8")

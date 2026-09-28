@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from .agent.question_normalization import normalize_model_question
 from .agent.runtime import AGENT_SYSTEM_GUIDANCE, AgentRuntime
+from .agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
 from .agent.tool_contracts import TOOL_DECLARATIONS_BY_NAME
 from .agent.tool_parser import TOOL_CALL_BLOCK, ToolCallParser
 from .data import (IMAGE_MARKER, OpenSearchVLCollator, build_messages, load_json_records,
@@ -32,15 +33,16 @@ URL_PATTERNS = {
     "images.unsplash": re.compile(r"images\.unsplash", re.I),
     "domain": re.compile(r"\b(?:[a-z0-9-]+\.)+(?:com|org|net|cn|io|edu)\b", re.I),
     '"url":': re.compile(r'"url"\s*:', re.I),
+    '"image_id":': re.compile(r'"image_id"\s*:', re.I),
 }
 
 
 def load_corrected_shards(data_dir: Path, shard_names: Iterable[str],
-                          expected_sha256: str = CORRECTED_POOL_MANIFEST_SHA256,
+                          expected_sha256: str | None = None,
                           ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
     path = data_dir / "manifest.json"
     actual = sha256_file(path)
-    if actual != expected_sha256:
+    if expected_sha256 is not None and actual != expected_sha256:
         raise ValueError(f"corrected SFT manifest SHA256 mismatch: expected {expected_sha256}, got {actual}")
     manifest = load_sft_manifest(path)
     require_data_quality_exclusions(manifest)
@@ -58,6 +60,13 @@ def parsed_calls(record: dict[str, Any]) -> list[dict[str, Any]]:
             for call in PARSER.parse(turn["value"]).tool_calls]
 
 
+def image_search_reference(record: dict[str, Any], call: dict[str, Any]) -> Any:
+    """Pinned source uses url; v3 effective SFT calls use image_id."""
+    key = ("image_id" if record.get("_runtime_tool_protocol_version") ==
+           RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION else "url")
+    return call["arguments"].get(key)
+
+
 def protocol_tags(record: dict[str, Any]) -> set[str]:
     calls = parsed_calls(record)
     names = [call["name"] for call in calls]
@@ -70,7 +79,7 @@ def protocol_tags(record: dict[str, Any]) -> set[str]:
         tags.add("non_image_search_visual")
     for call in calls:
         if call["name"] == "image_search":
-            tags.add("image_search_img_1" if call["arguments"].get("url") == "img_1"
+            tags.add("image_search_img_1" if image_search_reference(record, call) == "img_1"
                      else "image_search_derived")
         elif call["name"] in ("layout_parsing", "crop"):
             tags.add(call["name"])
@@ -111,7 +120,7 @@ def tool_distribution(records_by_shard: dict[str, list[dict[str, Any]]]) -> dict
                 calls[name] += 1
                 by_source[source]["calls"][name] += 1
                 if name == "image_search":
-                    targets[str(call["arguments"].get("url"))] += 1
+                    targets[str(image_search_reference(record, call))] += 1
         total = len(records)
         visual_three = sum(calls[name] for name in ("image_search", "layout_parsing", "crop"))
         result[shard] = {
@@ -169,9 +178,10 @@ def system_instruction_features(system: str) -> dict[str, bool]:
         "must_use_text_search": "must use `text_search`" in lowered or "must use text_search" in lowered,
         "clear_image_may_answer_without_tool":
             "clear image with a directly answerable question needs no tool call" in lowered,
-        "image_search_registered_url": ("image_search" in lowered and
-                                        "registered" in lowered and "url" in lowered),
-        "no_http_image_id": "never use" in lowered and "http url" in lowered,
+        "image_search_registered_image_id": ("image_search" in lowered and
+                                              "registered" in lowered and "image_id" in lowered),
+        "no_http_image_id": ("never use" in lowered or "never pass" in lowered)
+                            and "http url" in lowered,
         "duplicate_call_guard": "do not repeat an identical tool call" in lowered,
         "verify_dont_guess_policy": "verify, don't guess" in lowered,
         "visual_to_text_retrieval_guidance": ("image_search" in lowered and
@@ -234,10 +244,10 @@ def prompt_alignment_record(record: dict[str, Any], dataset_path: Path,
     train_user_shape = [part.get("type") for part in train_user] if isinstance(train_user, list) else ["text"]
     runtime_user_shape = [part.get("type") for part in runtime_user]
     observation_messages = [message for message in messages if message["role"] == "tool"]
-    train_url_rule = ("registered runtime image ID" in training_system
-                      and "HTTP URL" in training_system)
-    runtime_url_rule = ("registered img_n in its url argument" in runtime_system
-                        and "HTTP URL" in runtime_system)
+    train_image_id_rule = ("image_id" in training_system and
+                           "HTTP URL" in training_system)
+    runtime_image_id_rule = ("registered img_n in its image_id argument" in runtime_system
+                             and "HTTP URL" in runtime_system)
     training_features = system_instruction_features(training_system)
     runtime_features = system_instruction_features(runtime_system)
     system_severity = ("exact_match" if training_system == runtime_system else
@@ -251,8 +261,8 @@ def prompt_alignment_record(record: dict[str, Any], dataset_path: Path,
         {"field": "image_tool_argument_schemas",
          "severity": "exact_match" if [tool["function"]["parameters"] for tool in tools]
          == [tool["function"]["parameters"] for tool in declarations] else "semantic_drift",
-         "detail": "ordered parameters, including image_search.url"},
-        {"field": "image_search_url_constraint", "severity": "exact_match" if train_url_rule == runtime_url_rule else "semantic_drift",
+         "detail": "ordered parameters, including image_search.image_id"},
+        {"field": "image_search_image_id_constraint", "severity": "exact_match" if train_image_id_rule == runtime_image_id_rule else "semantic_drift",
          "detail": "both effective systems prohibit HTTP image IDs"},
         {"field": "registered_input_images", "severity": "exact_match" if training_registration == runtime_registration else "semantic_drift",
          "detail": "registered ID, width, height lines"},

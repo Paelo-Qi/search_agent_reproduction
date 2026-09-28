@@ -91,9 +91,9 @@ def test_a_b_a_loop_is_blocked_but_different_arguments_are_allowed():
         calls["layout_parsing"] += 1
         return ToolResult("success", "<observation>layout evidence</observation>")
     model = ScriptedAgentModel([
-        'image_search({"url":"img_1"})',
+        'image_search({"image_id":"img_1"})',
         'layout_parsing({"image":"img_1"})',
-        'image_search({"url":"img_1"})',
+        'image_search({"image_id":"img_1"})',
         "final",
     ])
     trajectory = AgentRuntime(model=model, tool_registry=_registry({

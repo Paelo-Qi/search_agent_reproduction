@@ -28,10 +28,10 @@ from opensearch_vl_repro.sft_preflight import (  # noqa: E402
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main")
+    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main_imageid_v3")
     parser.add_argument("--eval", type=Path, default=ROOT / "data/eval/combined_eval_300.parquet")
-    parser.add_argument("--config", type=Path, default=ROOT / "configs/sft_main.yaml")
-    parser.add_argument("--report-dir", type=Path, default=ROOT / "reports/sft_preflight")
+    parser.add_argument("--config", type=Path, default=ROOT / "configs/sft_main_imageid_v3.yaml")
+    parser.add_argument("--report-dir", type=Path, default=ROOT / "reports/sft_preflight_imageid_v3")
     args = parser.parse_args()
     manifest = load_sft_manifest(args.data_dir / "manifest.json")
     require_data_quality_exclusions(manifest)

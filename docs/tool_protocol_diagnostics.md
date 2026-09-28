@@ -1,5 +1,9 @@
 # Corrected SFT tool-protocol diagnostics
 
+> Current `image_search.image_id` Dev50 commands are in
+> [image_search_imageid_v3.md](image_search_imageid_v3.md). The `url`-protocol
+> commands and metrics below are historical v2 experiment provenance only.
+
 This is a protocol-regression workflow, not a new QA benchmark or a change to
 SFT/Eval-300. Do not tune on Eval-300 or Dev30; the earlier 20 Eval-300 examples
 are historical bug evidence only. All scripts fail closed unless the corrected

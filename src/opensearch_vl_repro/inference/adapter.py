@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from opensearch_vl_repro.sft_tool_audit import sha256_file
+from opensearch_vl_repro.data import SFT_INPUT_MESSAGE_VERSION
+from opensearch_vl_repro.agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
 
 
 def adapter_identity(path: str | Path, *, base_model: str,
@@ -22,8 +24,10 @@ def adapter_identity(path: str | Path, *, base_model: str,
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if (metadata.get("checkpoint_complete") is not True or
             metadata.get("model") != base_model or
-            metadata.get("model_revision") != base_revision):
-        raise ValueError("adapter checkpoint base model/revision does not match inference config")
+            metadata.get("model_revision") != base_revision or
+            metadata.get("sft_input_message_version") != SFT_INPUT_MESSAGE_VERSION or
+            metadata.get("runtime_tool_protocol_version") != RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION):
+        raise ValueError("adapter checkpoint base model/revision or runtime protocol mismatch")
     if config.get("base_model_name_or_path") != base_model:
         raise ValueError("PEFT adapter_config base_model_name_or_path does not match")
     weights = sorted(adapter.glob("*.safetensors"))
@@ -44,4 +48,5 @@ def adapter_identity(path: str | Path, *, base_model: str,
         "training_cumulative_stage": metadata.get("stage"),
         "source_checkpoint_lineage": metadata.get("lineage"),
         "checkpoint_metadata_fingerprint": sha256_file(metadata_path),
+        "runtime_tool_protocol_version": RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION,
     }

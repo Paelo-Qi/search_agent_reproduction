@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import zipfile
 from collections import Counter
 from contextlib import ExitStack
@@ -14,16 +15,16 @@ from typing import Any, Callable, Iterable
 from PIL import Image
 
 from .agent.reliability import image_sha256
+from .agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
 from .data import validate_raw_sample
 from .eval_subset import canonical_json_sha256
 from .evaluation.eval300 import FROZEN_EVAL300_SHA256, build_eval300_plan
 from .inference.eval_reader import read_eval_samples_by_ids
 from .sft_image_grounding import audit_raw_image_contract
-from .sft_main_data import (_zip_member, load_data_quality_exclusions,
+from .sft_main_data import (_zip_member, load_data_quality_exclusions, load_sft_manifest,
                             require_data_quality_exclusions)
 from .sft_preflight import normalized_question, sample_questions
-from .sft_protocol_diagnostics import (CORRECTED_POOL_MANIFEST_SHA256,
-                                       parsed_calls, protocol_tags)
+from .sft_protocol_diagnostics import parsed_calls, protocol_tags
 from .sft_tool_audit import (DATASET_ID, DATASET_REVISION, SOURCE_FILES,
                              iter_json_array, sha256_file)
 
@@ -35,6 +36,12 @@ CATEGORY_TARGETS = {
     "layout_parsing": 8, "crop": 7, "other_image_tool": 5,
     "no_tool": 6, "non_image_search_visual": 3, "multi_tool": 4,
 }
+
+
+def require_unchanged_dev_ids(ids: list[str], historical_ids: list[str]) -> None:
+    """The v3 contract changes tools, never the frozen ordered Dev50 membership."""
+    if len(ids) != DEV_SIZE or ids != historical_ids:
+        raise ValueError("v3 Dev50 ordered IDs differ from historical Dev50")
 
 
 def _rank(seed: int, identity: str) -> str:
@@ -172,9 +179,9 @@ def build_dev_manifest(raw_dir: Path, pool_manifest_path: Path, eval_path: Path,
                        *, image_hasher: Callable[[dict[str, Any]], list[str]] | None = None,
                        seed: int = DEV_SEED) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     pool_sha = sha256_file(pool_manifest_path)
-    if pool_sha != CORRECTED_POOL_MANIFEST_SHA256:
-        raise ValueError(f"corrected SFT manifest SHA256 mismatch: {pool_sha}")
-    pool = json.loads(pool_manifest_path.read_text(encoding="utf-8"))
+    pool = load_sft_manifest(pool_manifest_path)
+    if pool.get("runtime_tool_protocol_version") != RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION:
+        raise ValueError("Dev50 requires a v3 image_id SFT pool")
     require_data_quality_exclusions(pool)
     if (pool.get("dataset_id") != DATASET_ID or pool.get("dataset_revision") != DATASET_REVISION):
         raise ValueError("SFT pool does not use the pinned source revision")
@@ -209,7 +216,8 @@ def build_dev_manifest(raw_dir: Path, pool_manifest_path: Path, eval_path: Path,
     membership = {row["sample_id"] for row in pool["membership"]}
     if set(ids) & (membership | set(frozen)):
         raise AssertionError("dev set overlaps formal SFT membership or frozen exclusions")
-    manifest = {"version": 1, "purpose": "tool-protocol-regression-not-final-QA",
+    manifest = {"version": 2, "purpose": "tool-protocol-regression-not-final-QA",
+                "runtime_tool_protocol_version": RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION,
                 "dataset_id": DATASET_ID, "dataset_revision": DATASET_REVISION,
                 "seed": seed, "count": len(ids), "corrected_pool_manifest_sha256": pool_sha,
                 "eval300_dataset_sha256": eval_plan.dataset_sha256,
@@ -224,13 +232,21 @@ def build_dev_manifest(raw_dir: Path, pool_manifest_path: Path, eval_path: Path,
     return ids, manifest
 
 
-def validate_dev_manifest(ids: list[str], manifest: dict[str, Any]) -> None:
-    if (manifest.get("dataset_id") != DATASET_ID
+def validate_dev_manifest(ids: list[str], manifest: dict[str, Any], *,
+                          pool_manifest_path: Path | None = None) -> None:
+    if (manifest.get("version") != 2
+            or manifest.get("runtime_tool_protocol_version") != RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
+            or manifest.get("dataset_id") != DATASET_ID
             or manifest.get("dataset_revision") != DATASET_REVISION
-            or manifest.get("corrected_pool_manifest_sha256") != CORRECTED_POOL_MANIFEST_SHA256
+            or not isinstance(manifest.get("corrected_pool_manifest_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", manifest["corrected_pool_manifest_sha256"]) is None
             or manifest.get("eval300_dataset_sha256") != FROZEN_EVAL300_SHA256
             or manifest.get("dev30_subset_of_eval300") is not True):
         raise ValueError("tool-protocol dev manifest pinned provenance mismatch")
+    if pool_manifest_path is not None:
+        if sha256_file(pool_manifest_path) != manifest["corrected_pool_manifest_sha256"]:
+            raise ValueError("Dev50 belongs to a different v3 SFT pool manifest")
+        load_sft_manifest(pool_manifest_path)
     if (len(ids) != manifest.get("count") or len(ids) != len(set(ids))
             or ids != [row["sample_id"] for row in manifest.get("samples", [])]
             or manifest.get("ids_sha256") != canonical_json_sha256(ids)

@@ -146,11 +146,11 @@ def test_image_cache_key_hashes_pixels_not_local_id_or_path(tmp_path):
     b_images.register_derived_image(Image.new("RGB", (1, 1)), parent_id="img_1")
     b_images.register_derived_image(bmp, parent_id="img_2")
     b = ToolContext(b_images, sample_id="B")
-    key_a, safe_a = cache_identity("image_search", {"url": "img_1"}, a,
+    key_a, safe_a = cache_identity("image_search", {"image_id": "img_1"}, a,
                                    behavior_version="image-v1")
-    key_b, safe_b = cache_identity("image_search", {"url": "img_3"}, b,
+    key_b, safe_b = cache_identity("image_search", {"image_id": "img_3"}, b,
                                    behavior_version="image-v1")
-    key_c, _ = cache_identity("image_search", {"url": "img_1"},
+    key_c, _ = cache_identity("image_search", {"image_id": "img_1"},
                               _context(Image.new("RGB", (9, 7), "blue")),
                               behavior_version="image-v1")
     assert key_a == key_b and safe_a == safe_b

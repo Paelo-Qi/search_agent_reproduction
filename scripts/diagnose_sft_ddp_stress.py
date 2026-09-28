@@ -34,8 +34,8 @@ from opensearch_vl_repro.sft_long_training import activate_sft_training_mode  # 
 from opensearch_vl_repro.sft_train_plan import load_main_config  # noqa: E402
 
 
-DEFAULT_CONFIG = ROOT / "configs/sft_main.yaml"
-DEFAULT_DATA = ROOT / "data/sft_main/main_a_1k.json"
+DEFAULT_CONFIG = ROOT / "configs/sft_main_imageid_v3.yaml"
+DEFAULT_DATA = ROOT / "data/sft_main_imageid_v3/main_a_1k.json"
 
 
 def optimizer_spec(model: Any, config: dict[str, Any]) -> tuple[list[Any], dict[str, float]]:

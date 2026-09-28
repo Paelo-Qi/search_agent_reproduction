@@ -7,6 +7,7 @@ from collections import Counter
 from typing import Any
 
 from .agent.runtime import IMAGE_REFERENCE_ARGUMENTS
+from .agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
 from .agent.tool_contracts import TOOL_DECLARATIONS_BY_NAME
 from .agent.tool_parser import ToolCallParser
 from .data import IMAGE_MARKER
@@ -61,12 +62,21 @@ def audit_raw_image_contract(sample: dict[str, Any], *, sample_id: str | None = 
             parsed = parser.parse(value)
             ungrounded_tool_refs: set[str] = set()
             for call in parsed.tool_calls:
-                argument = IMAGE_REFERENCE_ARGUMENTS.get(call.name)
+                argument = ("url" if call.name == "image_search" and
+                            sample.get("_runtime_tool_protocol_version") !=
+                            RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION else
+                            IMAGE_REFERENCE_ARGUMENTS.get(call.name))
                 if argument is None:
                     continue
                 reference = call.arguments.get(argument)
                 if call.name == "image_search":
                     calls["image_search_total"] += 1
+                    if (sample.get("_runtime_tool_protocol_version") ==
+                            RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION and "url" in call.arguments):
+                        calls["image_search_legacy_url"] += 1
+                        errors.append({"kind": "legacy_image_search_url_argument",
+                                       "turn_index": turn_index, "tool": call.name,
+                                       "argument": call.arguments.get("url")})
                     if isinstance(reference, str) and _RUNTIME_ID.fullmatch(reference):
                         calls["image_search_img_n"] += 1
                     else:

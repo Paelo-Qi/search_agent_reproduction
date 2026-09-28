@@ -79,13 +79,16 @@ def test_processor_length_uses_untruncated_multimodal_template(monkeypatch):
 
 
 def test_formal_record_canonicalization_preserves_source_metadata():
-    raw = {"tools": "[]", "_source_tools": "original declarations", "_sample_id": "fvqa:1"}
+    raw = {"tools": "[]", "_source_tools": "original declarations", "_sample_id": "fvqa:1",
+           "conversations": [{"from": "human", "value": "<image>Question?"},
+                             {"from": "gpt", "value": 'image_search({"url":"img_1"})'}]}
     original = copy.deepcopy(raw)
     prepared = diagnostic.training_record(raw)
     assert raw == original
     assert prepared is not raw
     assert prepared["_source_tools"] == "original declarations"
     assert len(prepared["tools"]) > 0
+    assert prepared["conversations"][1]["value"] == 'image_search({"image_id":"img_1"})'
 
 
 def test_backward_switch_and_pinned_attention_configuration():

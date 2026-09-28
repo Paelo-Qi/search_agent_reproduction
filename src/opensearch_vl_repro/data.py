@@ -7,24 +7,28 @@ from typing import Any, Iterable, Sequence
 
 from PIL import Image
 
+from .agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
+
 
 ROLE_MAP = {"human": "user", "gpt": "assistant", "observation": "tool"}
 IMAGE_MARKER = "<image>"
 SFT_MASK_VERSION = "structured-message-prefix-v1"
-SFT_INPUT_MESSAGE_VERSION = "runtime-image-id-grounding-v2"
+
+
+SFT_INPUT_MESSAGE_VERSION = RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
 LEGACY_IMAGE_SEARCH_URL_LINE = (
     '* *Params*: `{"url": "image_url"}` '
     '(url can be an image reference like "img_1" or a direct URL)'
 )
-RUNTIME_IMAGE_SEARCH_URL_LINE = (
-    '* *Params*: `{"url": "img_1"}` '
-    '(url must be a registered runtime image ID)'
+RUNTIME_IMAGE_SEARCH_ID_LINE = (
+    '* *Params*: `{"image_id": "img_1"}` '
+    '(image_id must be a currently registered runtime image ID)'
 )
 SFT_RUNTIME_IMAGE_RULES = (
     "Use image tools only with registered runtime image IDs such as img_1, img_2, "
-    "and later IDs listed in observations. For image_search, pass a registered "
-    "img_n in its url argument. Never use a dataset filename, filesystem path, "
-    "or HTTP URL as an image ID."
+    "and later IDs listed in observations. image_search uses the image_id argument; "
+    "pass a currently registered img_n such as img_1. Never pass an HTTP URL, "
+    "filename, or filesystem path as an image ID."
 )
 
 
@@ -33,7 +37,7 @@ def canonicalize_sft_source_system(system: str) -> str:
     if system.count(LEGACY_IMAGE_SEARCH_URL_LINE) > 1:
         raise ValueError("duplicate legacy image_search URL instruction")
     effective = system.replace(LEGACY_IMAGE_SEARCH_URL_LINE,
-                               RUNTIME_IMAGE_SEARCH_URL_LINE, 1)
+                               RUNTIME_IMAGE_SEARCH_ID_LINE, 1)
     if "direct URL" in effective:
         raise ValueError("unrecognized direct-URL instruction in SFT source system")
     return effective

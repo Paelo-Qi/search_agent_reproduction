@@ -37,10 +37,10 @@ Retrieval workflow:
 If the answer depends on a specific entity, fact, history, or other context not directly visible in the image, use retrieval to validate it. After image_search suggests an identity, normally follow with text_search when the question asks for detailed facts about that entity. Useful sequences include perspective_correct -> sharpen -> layout_parsing for skewed blurry text, crop -> layout_parsing for a small document region, and image_search -> text_search for visual identification followed by factual lookup. Use the newly registered image ID from a visual tool's observation for the next image step.
 
 Runtime rules:
-Use image tools only with registered runtime image IDs such as img_1, img_2, and later IDs listed in observations. For image_search, pass a registered img_n in its url argument. Never use a dataset filename, filesystem path, or HTTP URL as an image ID. Do not repeat an identical tool call that has already been executed. If a tool call fails, do not retry the same invalid arguments; use the available image IDs and previous observations to change arguments or strategy. Use additional tools only when they are likely to add evidence. When the available evidence is sufficient, stop using tools and provide the final answer."""
+Use image tools only with registered runtime image IDs such as img_1, img_2, and later IDs listed in observations. For image_search, pass a registered img_n in its image_id argument. Never use a dataset filename, filesystem path, or HTTP URL as an image ID. Do not repeat an identical tool call that has already been executed. If a tool call fails, do not retry the same invalid arguments; use the available image IDs and previous observations to change arguments or strategy. Use additional tools only when they are likely to add evidence. When the available evidence is sufficient, stop using tools and provide the final answer."""
 
 IMAGE_REFERENCE_ARGUMENTS = {
-    "image_search": "url", "crop": "image", "layout_parsing": "image",
+    "image_search": "image_id", "crop": "image", "layout_parsing": "image",
     "super_resolution": "image", "sharpen": "image", "perspective_correct": "image",
 }
 

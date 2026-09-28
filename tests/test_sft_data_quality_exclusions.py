@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import runpy
 import subprocess
 import sys
@@ -131,20 +132,25 @@ def test_selected_exclusions_refill_same_source_without_target_rewrite(tmp_path,
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(records), encoding="utf-8")
 
-    legacy = prepare_sft_pool(raw, tmp_path / "legacy")
+    # v3 intentionally refuses to materialize the bad legacy selection.
+    with pytest.raises(ValueError, match="registered img_n target"):
+        prepare_sft_pool(raw, tmp_path / "legacy")
     corrected_dir = tmp_path / "corrected"
     corrected = prepare_sft_pool(raw, corrected_dir, exclusions=exclusions)
     again = prepare_sft_pool(raw, tmp_path / "again", exclusions=exclusions)
-    old_ids = {row["sample_id"] for row in legacy["membership"]}
+    old_ids = {f"{source}:{index}" for by_source in plan.values()
+               for source, indices in by_source.items() for index in indices}
     new_ids = {row["sample_id"] for row in corrected["membership"]}
     assert old_ids == set(exclusions)
     assert new_ids.isdisjoint(exclusions)
     assert corrected["membership"] == again["membership"]
     assert corrected["shards"] == again["shards"]
-    assert corrected["pool_source_counts"] == legacy["pool_source_counts"]
+    assert corrected["pool_source_counts"] == {source: len(indices)
+           for source, indices in selected.items()}
     assert {name: row["count"] for name, row in corrected["shards"].items()} == sizes
     assert {name: row["source_counts"] for name, row in corrected["shards"].items()} == {
-        name: legacy["shards"][name]["source_counts"] for name in sizes}
+        name: {source: len(indices) for source, indices in plan[name].items()
+               if indices} for name in sizes}
     replacement_rows = {row["excluded_sample_id"]: row for row in corrected["replacements"]}
     assert set(replacement_rows) == set(exclusions)
     assert all(row["replacement_source"] == sample_id.split(":")[0]
@@ -159,7 +165,11 @@ def test_selected_exclusions_refill_same_source_without_target_rewrite(tmp_path,
         for record in records:
             source = record["_source"]
             index = record["_source_index"]
-            assert record["conversations"] == source_records[source][index]["conversations"]
+            expected = copy.deepcopy(source_records[source][index]["conversations"])
+            for turn in expected:
+                if turn["from"] == "gpt":
+                    turn["value"] = turn["value"].replace('"url":', '"image_id":')
+            assert record["conversations"] == expected
             for relative in record["images"]:
                 image = corrected_dir / relative
                 image.parent.mkdir(parents=True, exist_ok=True)

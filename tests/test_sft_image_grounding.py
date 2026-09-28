@@ -7,7 +7,7 @@ from PIL import Image
 
 from opensearch_vl_repro.agent.runtime import AGENT_SYSTEM_GUIDANCE
 from opensearch_vl_repro.data import (LEGACY_IMAGE_SEARCH_URL_LINE,
-                                      RUNTIME_IMAGE_SEARCH_URL_LINE,
+                                      RUNTIME_IMAGE_SEARCH_ID_LINE,
                                       SFT_RUNTIME_IMAGE_RULES, build_messages,
                                       canonicalize_sft_source_system, render_prompt,
                                       validate_raw_sample)
@@ -48,13 +48,14 @@ def _sample(tmp_path, initial=1, derived=0):
 
 
 def test_first_turn_image_id_is_grounded_in_final_context_without_target_or_tool_change(tmp_path):
-    assert SFT_RUNTIME_IMAGE_RULES in AGENT_SYSTEM_GUIDANCE
+    assert "image_id argument" in SFT_RUNTIME_IMAGE_RULES
+    assert "image_id argument" in AGENT_SYSTEM_GUIDANCE
     sample = _sample(tmp_path)
     original = copy.deepcopy(sample)
     messages, images, tools = build_messages(sample, tmp_path / "main_a_1k.json")
     prefix = render_prompt(_Template(), messages[:2], tools)
     assert "Registered input images:\n- img_1: width=11, height=7" in prefix
-    assert "Never use a dataset filename, filesystem path, or HTTP URL as an image ID." in prefix
+    assert "Never pass an HTTP URL, filename, or filesystem path as an image ID." in prefix
     assert prefix.index("- img_1:") < len(prefix)
     assert messages[2]["content"] == original["conversations"][1]["value"]
     assert tools == original["tools"] and sample == original
@@ -70,7 +71,7 @@ def test_legacy_system_is_preserved_but_runtime_id_rule_is_last(tmp_path):
     messages, _, _ = build_messages(sample, tmp_path / "shard.json")
     system = messages[0]["content"]
     assert system.startswith(sample["system"].replace(
-        LEGACY_IMAGE_SEARCH_URL_LINE, RUNTIME_IMAGE_SEARCH_URL_LINE))
+        LEGACY_IMAGE_SEARCH_URL_LINE, RUNTIME_IMAGE_SEARCH_ID_LINE))
     assert LEGACY_IMAGE_SEARCH_URL_LINE not in system
     assert 'url can be an image reference like "img_1" or a direct URL' not in system
     assert "direct URL" not in system
@@ -81,7 +82,7 @@ def test_legacy_system_is_preserved_but_runtime_id_rule_is_last(tmp_path):
 def test_only_known_conflicting_source_line_is_canonicalized():
     source = f"Keep this text.\n{LEGACY_IMAGE_SEARCH_URL_LINE}\nKeep this too."
     assert canonicalize_sft_source_system(source) == source.replace(
-        LEGACY_IMAGE_SEARCH_URL_LINE, RUNTIME_IMAGE_SEARCH_URL_LINE)
+        LEGACY_IMAGE_SEARCH_URL_LINE, RUNTIME_IMAGE_SEARCH_ID_LINE)
     with pytest.raises(ValueError, match="unrecognized direct-URL"):
         canonicalize_sft_source_system("image_search.url accepts a direct URL")
 

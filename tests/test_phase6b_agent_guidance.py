@@ -32,7 +32,7 @@ def test_model_receives_visual_investigation_policy_and_registered_ids():
     assert "After image_search suggests an identity, normally follow with text_search" in guidance
     assert "Registered input images:\n- img_1" in guidance
     assert "registered runtime image IDs" in guidance
-    assert "image_search, pass a registered img_n in its url argument" in guidance
+    assert "image_search, pass a registered img_n in its image_id argument" in guidance
     for restriction in ("dataset filename", "filesystem path", "HTTP URL",
                         "Do not repeat an identical tool call", "same invalid arguments",
                         "previous observations", "stop using tools and provide the final answer"):
@@ -43,7 +43,7 @@ def test_model_receives_visual_investigation_policy_and_registered_ids():
 def test_tool_descriptions_add_triggers_without_changing_argument_contracts():
     expected = {
         "text_search": ({"q": "string", "hl": "string", "top_k": "number"}, ("q",)),
-        "image_search": ({"url": "string"}, ("url",)),
+        "image_search": ({"image_id": "string"}, ("image_id",)),
         "crop": ({"image": "string", "x": "number", "y": "number",
                   "width": "number", "height": "number"},
                  ("image", "x", "y", "width", "height")),

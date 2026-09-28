@@ -10,10 +10,14 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
-from .agent.tool_contracts import TOOL_DECLARATIONS
+from .agent.tool_contracts import (RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION,
+                                   TOOL_DECLARATIONS)
 from .data import SFT_INPUT_MESSAGE_VERSION, validate_raw_sample
 from .evaluation.run_manifest import tool_contract_fingerprint
 from .sft_preflight import normalized_question, sample_questions
+from .sft_protocol_v3 import (ASSISTANT_CALL_TRANSFORM_VERSION,
+                              canonicalize_source_assistant_text,
+                              effective_image_search_call_counts)
 from .sft_tool_audit import DATASET_ID, DATASET_REVISION, SOURCE_FILES, iter_json_array, sha256_file
 
 
@@ -26,7 +30,7 @@ SHARD_SIZES = {"main_a_1k": 1000, "main_b_2k": 2000, "extra_1k": 1000,
 POOL_SIZE = sum(SHARD_SIZES.values())
 DEFAULT_SEED = 20260506
 SELECTION_VERSION = "sha256-rank-exclusions-v2"
-TOOL_TRANSFORM_VERSION = "runtime-chat-template-v1"
+TOOL_TRANSFORM_VERSION = "runtime-chat-template-v2-image-id"
 FROZEN_DATA_QUALITY_EXCLUSIONS = Path(__file__).resolve().parents[2] / "configs/sft_data_exclusions.json"
 
 
@@ -62,6 +66,27 @@ def canonicalize_tool_declarations(raw: dict[str, Any]) -> dict[str, Any]:
     record = dict(raw)
     record["_source_tools"] = raw.get("tools")
     record["tools"] = runtime_tools()
+    return record
+
+
+def canonicalize_sft_training_record(raw: dict[str, Any]) -> dict[str, Any]:
+    """Copy source data, transform only parsed assistant image_search keys."""
+    version = raw.get("_runtime_tool_protocol_version")
+    if version is not None:
+        if version != RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION or raw.get("tools") != runtime_tools():
+            raise ValueError("prepared SFT record has an incompatible runtime tool protocol")
+        counts = effective_image_search_call_counts(raw)
+        if any(counts[key] for key in ("image_search_legacy_url", "image_search_http_target",
+                                       "image_search_non_img_n", "image_search_extra_arguments")):
+            raise ValueError("prepared SFT record has invalid image_search arguments")
+        return {**raw, "conversations": [dict(turn) for turn in raw["conversations"]]}
+    record = canonicalize_tool_declarations(raw)
+    record["conversations"] = [
+        {**turn, "value": canonicalize_source_assistant_text(turn["value"])}
+        if turn["from"] == "gpt" else dict(turn)
+        for turn in raw["conversations"]
+    ]
+    record["_runtime_tool_protocol_version"] = RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
     return record
 
 
@@ -214,6 +239,12 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
                      eval_path: str | Path | None = None,
                      exclusions: Mapping[str, str] | None = None) -> dict[str, Any]:
     raw_dir, output_dir = Path(raw_dir).resolve(), Path(output_dir).resolve()
+    existing_manifest = output_dir / "manifest.json"
+    if existing_manifest.is_file():
+        existing = json.loads(existing_manifest.read_text(encoding="utf-8"))
+        if (existing.get("version") != 3 or existing.get("runtime_tool_protocol_version")
+                != RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION):
+            raise FileExistsError(f"refusing to overwrite a historical SFT pool: {output_dir}")
     if download_images and not extract_images:
         raise ValueError("--download-images requires --extract-images")
     eval_questions, eval_sha = eval_question_set(eval_path) if eval_path is not None else (set(), None)
@@ -273,7 +304,10 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
             if shard is None:
                 continue
             validate_raw_sample(raw)
-            record = canonicalize_tool_declarations(raw)
+            try:
+                record = canonicalize_sft_training_record(raw)
+            except ValueError as exc:
+                raise ValueError(f"{stable_sample_id(source, index)}: {exc}") from exc
             original_images = list(raw["images"])
             record.update({
                 "_sample_id": stable_sample_id(source, index), "_source": source,
@@ -283,8 +317,15 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
                 "images": [_image_path(source, image) for image in original_images],
             })
             records[shard].append(record)
-    output_dir.mkdir(parents=True, exist_ok=True)
     all_records = [record for shard in SHARD_SIZES for record in records[shard]]
+    image_call_counts = Counter()
+    for record in all_records:
+        image_call_counts.update(effective_image_search_call_counts(record))
+    if any(image_call_counts[key] for key in (
+            "image_search_legacy_url", "image_search_http_target",
+            "image_search_non_img_n", "image_search_extra_arguments")):
+        raise ValueError("effective SFT image_search targets violate runtime image_id protocol")
+    output_dir.mkdir(parents=True, exist_ok=True)
     if extract_images:
         materialize_images(all_records, raw_dir, output_dir,
                            download_missing=download_images)
@@ -315,9 +356,12 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
     images_ready = all((output_dir / image).is_file()
                        for record in all_records for image in record["images"])
     manifest = {
-        "version": 2, "selection_algorithm": SELECTION_VERSION,
+        "version": 3, "selection_algorithm": SELECTION_VERSION,
         "sft_input_message_version": SFT_INPUT_MESSAGE_VERSION,
         "tool_declaration_transform_version": TOOL_TRANSFORM_VERSION,
+        "assistant_call_transform_version": ASSISTANT_CALL_TRANSFORM_VERSION,
+        "runtime_tool_protocol_version": RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION,
+        "effective_image_search_counts": dict(sorted(image_call_counts.items())),
         "source_tool_declaration_fingerprint": _fingerprint(sorted(
             [[row["_sample_id"], row["_source_tools"]] for row in all_records])),
         "effective_runtime_tool_contract_fingerprint": tool_contract_fingerprint(),
@@ -343,11 +387,13 @@ def prepare_sft_pool(raw_dir: str | Path, output_dir: str | Path,
 def load_sft_manifest(path: str | Path) -> dict[str, Any]:
     path = Path(path).resolve()
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    if manifest.get("version") != 2 or manifest.get("selection_algorithm") != SELECTION_VERSION:
+    if manifest.get("version") != 3 or manifest.get("selection_algorithm") != SELECTION_VERSION:
         raise ValueError("SFT selection algorithm/version mismatch")
     if manifest.get("sft_input_message_version") != SFT_INPUT_MESSAGE_VERSION:
         raise ValueError("SFT input/message format version mismatch; regenerate the pool")
     if (manifest.get("tool_declaration_transform_version") != TOOL_TRANSFORM_VERSION
+            or manifest.get("assistant_call_transform_version") != ASSISTANT_CALL_TRANSFORM_VERSION
+            or manifest.get("runtime_tool_protocol_version") != RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
             or manifest.get("canonicalization_applied") is not True
             or manifest.get("effective_runtime_tool_contract_fingerprint") != tool_contract_fingerprint()):
         raise ValueError("SFT runtime tool contract fingerprint/transform mismatch")
@@ -371,6 +417,7 @@ def load_sft_manifest(path: str | Path) -> dict[str, Any]:
     if dict(Counter(row["source"] for row in manifest["membership"])) != manifest["pool_source_counts"]:
         raise ValueError("SFT pool source counts do not match membership")
     source_tools = []
+    image_call_counts = Counter()
     for shard, expected in SHARD_SIZES.items():
         entry = manifest["shards"][shard]
         file = path.parent / entry["path"]
@@ -385,6 +432,9 @@ def load_sft_manifest(path: str | Path) -> dict[str, Any]:
         for row in iter_json_array(file):
             if row.get("tools") != runtime_tools():
                 raise ValueError(f"SFT effective runtime tools mismatch: {shard}")
+            if row.get("_runtime_tool_protocol_version") != RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION:
+                raise ValueError(f"SFT record runtime protocol mismatch: {shard}")
+            image_call_counts.update(effective_image_search_call_counts(row))
             source_tools.append([row["_sample_id"], row.get("_source_tools")])
             actual_rows.append((row["_sample_id"], row["_source"], row["_source_index"],
                                 row["_raw_sha256"]))
@@ -392,4 +442,10 @@ def load_sft_manifest(path: str | Path) -> dict[str, Any]:
             raise ValueError(f"SFT shard records do not match membership: {shard}")
     if _fingerprint(sorted(source_tools)) != manifest.get("source_tool_declaration_fingerprint"):
         raise ValueError("SFT source tool declaration fingerprint mismatch")
+    if (dict(sorted(image_call_counts.items())) != manifest.get("effective_image_search_counts")
+            or image_call_counts["image_search_legacy_url"]
+            or image_call_counts["image_search_http_target"]
+            or image_call_counts["image_search_non_img_n"]
+            or image_call_counts["image_search_extra_arguments"]):
+        raise ValueError("SFT shard image_search protocol audit mismatch")
     return manifest

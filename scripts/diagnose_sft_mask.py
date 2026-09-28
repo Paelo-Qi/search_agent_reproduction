@@ -29,8 +29,8 @@ from opensearch_vl_repro.sft_preflight import token_audit  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sample-id", default="livevqa:5212")
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main")
-    parser.add_argument("--config", type=Path, default=ROOT / "configs/sft_main.yaml")
+    parser.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main_imageid_v3")
+    parser.add_argument("--config", type=Path, default=ROOT / "configs/sft_main_imageid_v3.yaml")
     args = parser.parse_args()
     manifest = load_sft_manifest(args.data_dir / "manifest.json")
     member = next((row for row in manifest["membership"]

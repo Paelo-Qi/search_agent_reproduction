@@ -71,6 +71,11 @@ def protocol_metrics(ids: list[str], manifest: dict[str, Any],
                     totals["provider_not_called_due_to_bad_image_id"] += 1
             argument_name = IMAGE_REFERENCE_ARGUMENTS.get(name)
             reference = arguments.get(argument_name) if argument_name and isinstance(arguments, dict) else None
+            if name == "image_search" and isinstance(arguments, dict):
+                if "url" in arguments:
+                    totals["image_search_legacy_url_argument_count"] += 1
+                if "image_id" in arguments:
+                    totals["image_search_image_id_argument_count"] += 1
             valid = None
             if argument_name:
                 totals["image_tool_argument_count"] += 1
@@ -79,6 +84,8 @@ def protocol_metrics(ids: list[str], manifest: dict[str, Any],
                     totals["registered_image_id_count"] += 1
                 if isinstance(reference, str) and HTTP_URL.search(reference):
                     totals["http_image_argument_hallucination_count"] += 1
+                    if name == "image_search":
+                        totals["image_search_http_image_id_hallucination_count"] += 1
                 if name in ("image_search", "layout_parsing", "crop"):
                     totals[f"{name}_argument_count"] += 1
                     if valid:
@@ -110,6 +117,8 @@ def protocol_metrics(ids: list[str], manifest: dict[str, Any],
     metrics = {key: totals[key] for key in (
         "total_tool_calls", "image_tool_argument_count", "registered_image_id_count",
         "http_image_argument_hallucination_count", "unknown_image_id_count",
+        "image_search_http_image_id_hallucination_count",
+        "image_search_legacy_url_argument_count", "image_search_image_id_argument_count",
         "provider_not_called_due_to_bad_image_id", "duplicate_tool_call_count",
         "no_tool_behavior_count", "tool_selection_labeled_count",
         "tool_selection_agreement_count")}

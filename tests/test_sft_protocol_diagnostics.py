@@ -7,6 +7,7 @@ import zipfile
 from PIL import Image
 
 from opensearch_vl_repro.sft_main_data import runtime_tools
+from opensearch_vl_repro.agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
 from opensearch_vl_repro.evaluation.eval300 import FROZEN_EVAL300_SHA256
 from opensearch_vl_repro.sft_protocol_diagnostics import CORRECTED_POOL_MANIFEST_SHA256
 from opensearch_vl_repro import sft_protocol_diagnostics as diagnostics
@@ -18,7 +19,9 @@ from opensearch_vl_repro.tool_protocol_dev import (candidate_metadata,
 from opensearch_vl_repro.eval_subset import canonical_json_sha256
 
 
-PINNED = {"dataset_id": DATASET_ID, "dataset_revision": DATASET_REVISION,
+PINNED = {"version": 2,
+          "runtime_tool_protocol_version": RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION,
+          "dataset_id": DATASET_ID, "dataset_revision": DATASET_REVISION,
           "corrected_pool_manifest_sha256": CORRECTED_POOL_MANIFEST_SHA256,
           "eval300_dataset_sha256": FROZEN_EVAL300_SHA256,
           "dev30_subset_of_eval300": True}

@@ -38,8 +38,8 @@ def test_tool_declarations_match_the_sft_audit() -> None:
     assert "python_interpreter" not in TOOL_DECLARATIONS_BY_NAME
     assert TOOL_DECLARATIONS_BY_NAME["image_search"].parameters == {
         "type": "object",
-        "properties": {"url": {"type": "string"}},
-        "required": ["url"],
+        "properties": {"image_id": {"type": "string"}},
+        "required": ["image_id"],
         "additionalProperties": False,
     }
     assert set(TOOL_DECLARATIONS_BY_NAME["crop"].parameters["required"]) == {
@@ -75,7 +75,7 @@ def test_tool_schema_variants_and_validation() -> None:
         text_search.validate_arguments({"q": "entity", "top_k": True})
     with pytest.raises(ValueError, match="unexpected arguments"):
         TOOL_DECLARATIONS_BY_NAME["image_search"].validate_arguments(
-            {"image": "img_1", "url": "img_1"}
+            {"image": "img_1", "image_id": "img_1"}
         )
 
 
@@ -105,11 +105,11 @@ def test_image_registry_monotonic_lookup_duplicate_and_isolation(tmp_path: Path)
 def test_tool_call_parser_variants_and_failure_categories() -> None:
     parser = ToolCallParser(EXPECTED_TOOLS)
     xml = parser.parse(
-        '<tool_call>{"name":"image_search","arguments":{"url":"img_1"}}</tool_call>'
+        '<tool_call>{"name":"image_search","arguments":{"image_id":"img_1"}}</tool_call>'
     )
     assert xml.kind == "valid_tool_call"
     assert xml.tool_calls[0].name == "image_search"
-    assert xml.tool_calls[0].arguments == {"url": "img_1"}
+    assert xml.tool_calls[0].arguments == {"image_id": "img_1"}
 
     function_style = parser.parse('text_search({"q":"entity","top_k":5})')
     assert function_style.kind == "valid_tool_call"
@@ -136,7 +136,7 @@ def test_all_mock_tools_execute_through_registry_with_plain_text_observations() 
     context = ToolContext(images, sample_id="fixture", benchmark="synthetic")
     arguments = {
         "text_search": {"q": "entity", "hl": "en", "top_k": 5},
-        "image_search": {"url": "img_1"},
+        "image_search": {"image_id": "img_1"},
         "crop": {"image": "img_1", "x": 0, "y": 0, "width": 4, "height": 4},
         "layout_parsing": {"image": "img_1"},
         "super_resolution": {"image": "img_1", "scale": 2},
@@ -161,7 +161,7 @@ def test_all_mock_tools_execute_through_registry_with_plain_text_observations() 
 def test_mock_agent_loop_runs_model_tool_observation_and_final_answer() -> None:
     model = ScriptedAgentModel(
         [
-            'image_search({"url":"img_1"})',
+            'image_search({"image_id":"img_1"})',
             '<tool_call>{"name":"text_search","arguments":'
             '{"q":"example entity","hl":"en","top_k":5}}</tool_call>',
             "Final answer from the scripted model.",
@@ -228,7 +228,7 @@ def test_agent_runtime_converts_backend_exception_to_observation() -> None:
     )
     model = ScriptedAgentModel(
         [
-            '<tool_call>{"name":"image_search","arguments":{"url":"img_1"}}</tool_call>',
+            '<tool_call>{"name":"image_search","arguments":{"image_id":"img_1"}}</tool_call>',
             "Recovered final answer.",
         ]
     )

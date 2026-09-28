@@ -25,7 +25,7 @@ def _text_search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
 
 
 def _image_search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
-    reference = arguments["url"]
+    reference = arguments["image_id"]
     if reference.startswith("img_"):
         _require_image(context, reference)
     return ToolResult(

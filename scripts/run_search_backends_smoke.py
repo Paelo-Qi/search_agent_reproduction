@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         arguments = {
             "web_search": {"q": "OpenAI official website", "hl": "en"},
             "text_search": {"q": "Qwen3-VL model architecture", "hl": "en", "top_k": 5},
-            "image_search": {"url": "img_1"},
+            "image_search": {"image_id": "img_1"},
         }[args.tool]
         result = registry.execute(args.tool, arguments, ToolContext(images))
         report.update(status=result.status, error_type=result.error_type,

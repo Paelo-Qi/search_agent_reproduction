@@ -18,8 +18,8 @@ from opensearch_vl_repro.sft_tool_audit import write_json_atomic, write_text_ato
 
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main")
-    cli.add_argument("--report-dir", type=Path, default=ROOT / "reports/sft_diagnostics")
+    cli.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main_imageid_v3")
+    cli.add_argument("--report-dir", type=Path, default=ROOT / "reports/sft_diagnostics_imageid_v3")
     args = cli.parse_args()
     _, shards = load_corrected_shards(args.data_dir, ("main_a_1k", "main_b_2k"))
     report = {"complete": True, "shards": tool_distribution(shards)}

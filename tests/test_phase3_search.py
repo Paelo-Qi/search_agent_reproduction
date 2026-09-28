@@ -367,7 +367,7 @@ def test_image_tool_exposes_upload_metadata(config, keys):
     session = Session(posts=[Response({"image_id": "metadata-id"})],
                       gets=[Response({"visual_matches": []})])
     lens = SerpApiLensBackend(config.serpapi, session=session)
-    result = SearchTools(config, lens=lens).image_search({"url": "img_1"}, _context())
+    result = SearchTools(config, lens=lens).image_search({"image_id": "img_1"}, _context())
     assert result.status == "success"
     assert result.metadata["original_width"] == 40
     assert result.metadata["uploaded_width"] == 40
@@ -390,7 +390,7 @@ def test_serpapi_json_error_retries_then_image_search_succeeds(config, keys, err
         config.serpapi, session=session,
         retry=RetryPolicy(max_attempts=3, backoff_seconds=(0,), sleeper=lambda _: None),
     )
-    result = SearchTools(config, lens=backend).image_search({"url": "img_1"}, _context())
+    result = SearchTools(config, lens=backend).image_search({"image_id": "img_1"}, _context())
     assert result.status == "success"
     assert result.metadata["attempt_count"] == backend.last_attempt_count == 2
     method = "post" if error_stage == "upload" else "get"
@@ -406,7 +406,7 @@ def test_serpapi_json_error_exhausts_retry_budget(config, keys):
         config.serpapi, session=session,
         retry=RetryPolicy(max_attempts=3, backoff_seconds=(0,), sleeper=lambda _: None),
     )
-    result = SearchTools(config, lens=backend).image_search({"url": "img_1"}, _context())
+    result = SearchTools(config, lens=backend).image_search({"image_id": "img_1"}, _context())
     assert result.status == "error"
     assert result.error_type == "provider_error"
     assert result.metadata["attempt_count"] == backend.last_attempt_count == 3
@@ -420,7 +420,7 @@ def test_serpapi_auth_http_error_does_not_retry(config, keys, status):
         config.serpapi, session=session,
         retry=RetryPolicy(max_attempts=3, backoff_seconds=(0,), sleeper=lambda _: None),
     )
-    result = SearchTools(config, lens=backend).image_search({"url": "img_1"}, _context())
+    result = SearchTools(config, lens=backend).image_search({"image_id": "img_1"}, _context())
     assert result.status == "error"
     assert result.error_type == "authentication_error"
     assert result.metadata["attempt_count"] == 1
@@ -434,7 +434,7 @@ def test_serpapi_missing_key_does_not_retry(config, monkeypatch):
         config.serpapi, session=session,
         retry=RetryPolicy(max_attempts=3, backoff_seconds=(0,), sleeper=lambda _: None),
     )
-    result = SearchTools(config, lens=backend).image_search({"url": "img_1"}, _context())
+    result = SearchTools(config, lens=backend).image_search({"image_id": "img_1"}, _context())
     assert result.status == "error"
     assert result.error_type == "configuration_error"
     assert result.metadata["attempt_count"] == 1
@@ -473,9 +473,9 @@ def test_image_tool_img_reference_unknown_and_zero_results(config, keys):
     lens = Lens()
     tool = SearchTools(config, lens=lens)
     context = _context()
-    assert tool.image_search({"url": "img_99"}, context).error_type == "invalid_argument"
+    assert tool.image_search({"image_id": "img_99"}, context).error_type == "invalid_argument"
     assert not lens.calls
-    result = tool.image_search({"url": "img_1"}, context)
+    result = tool.image_search({"image_id": "img_1"}, context)
     assert result.status == "success"
     assert result.metadata["result_count"] == 0
     assert result.derived_images == ()
@@ -492,7 +492,7 @@ def test_image_tool_accepts_registered_local_path(config, keys, tmp_path):
         def search(self, image, *, limit):
             assert image.size == (12, 9)
             return LensSearchResponse("provider-id", (), {})
-    result = SearchTools(config, lens=Lens()).image_search({"url": "img_1"}, ToolContext(images))
+    result = SearchTools(config, lens=Lens()).image_search({"image_id": "img_1"}, ToolContext(images))
     assert result.status == "success"
 
 
@@ -504,7 +504,7 @@ def test_credential_redaction_in_observation_metadata_and_report(config, keys, t
         def search(self, image, *, limit):
             return LensSearchResponse(
                 "serpapi-secret", (ImageSearchResult("serpapi-secret", "S", "https://x.test"),), {})
-    image = SearchTools(config, lens=Lens()).image_search({"url": "img_1"}, _context())
+    image = SearchTools(config, lens=Lens()).image_search({"image_id": "img_1"}, _context())
     assert "serpapi-secret" not in image.observation + json.dumps(image.metadata)
     path = ROOT / "scripts" / "run_search_backends_smoke.py"
     spec = importlib.util.spec_from_file_location("search_smoke_test_module", path)

@@ -14,19 +14,30 @@ sys.path.insert(0, str(ROOT / "src"))
 from opensearch_vl_repro.sft_tool_audit import write_json_atomic, write_text_atomic  # noqa: E402
 from opensearch_vl_repro.tool_protocol_dev import validate_dev_manifest  # noqa: E402
 from opensearch_vl_repro.tool_protocol_metrics import protocol_metrics  # noqa: E402
+from opensearch_vl_repro.evaluation.run_manifest import tool_contract_fingerprint  # noqa: E402
+from opensearch_vl_repro.sft_tool_audit import sha256_file  # noqa: E402
 
 
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("--dev-dir", type=Path, default=ROOT / "data/eval/tool_protocol_dev50")
+    cli.add_argument("--dev-dir", type=Path, default=ROOT / "data/eval/tool_protocol_dev50_imageid_v3")
     cli.add_argument("--trajectories", type=Path, required=True,
                      help="Agent BatchRunner trajectories.jsonl for exactly this dev set")
-    cli.add_argument("--report-dir", type=Path, default=ROOT / "reports/sft_diagnostics")
+    cli.add_argument("--report-dir", type=Path, default=ROOT / "reports/tool_protocol_imageid_v3")
     cli.add_argument("--allow-partial", action="store_true")
     args = cli.parse_args()
     ids = json.loads((args.dev_dir / "ids.json").read_text(encoding="utf-8"))
     manifest = json.loads((args.dev_dir / "tool_protocol_dev50_manifest.json").read_text(encoding="utf-8"))
     validate_dev_manifest(ids, manifest)
+    run_manifest_path = args.trajectories.parent / "run_manifest.json"
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    if (run_manifest.get("tool_contract_fingerprint") != tool_contract_fingerprint()
+            or run_manifest.get("sample_selection", {}).get(
+                "runtime_tool_protocol_version") != manifest["runtime_tool_protocol_version"]
+            or run_manifest.get("sample_selection", {}).get("ids_sha256") != manifest["ids_sha256"]
+            or run_manifest.get("dataset_identity", {}).get("sha256") != sha256_file(
+                args.dev_dir / "tool_protocol_dev50_manifest.json")):
+        raise ValueError("trajectory run manifest is not bound to the v3 Dev50 contract")
     rows = [json.loads(line) for line in args.trajectories.read_text(encoding="utf-8").splitlines()
             if line.strip()]
     report = protocol_metrics(ids, manifest, rows)

@@ -26,6 +26,7 @@ from .sft_train_plan import load_main_config
 
 REPAIR_KIND = "targeted_repair_ablation"
 PARENT_STAGE = "main_b_2k"
+LEGACY_REPAIR_PARENT_PROTOCOL_VERSION = "runtime-image-id-grounding-v2"
 
 
 def load_repair_config(path: Path, *, max_steps: int | None = None) -> dict[str, Any]:
@@ -74,7 +75,7 @@ def validate_parent_metadata(metadata: dict[str, Any], *, model: dict[str, Any],
             or metadata.get("model") != model["name_or_path"]
             or metadata.get("model_revision") != model["revision"]
             or metadata.get("pool_manifest_sha256") != CORRECTED_POOL_MANIFEST_SHA256
-            or metadata.get("sft_input_message_version") != SFT_INPUT_MESSAGE_VERSION):
+            or metadata.get("sft_input_message_version") != LEGACY_REPAIR_PARENT_PROTOCOL_VERSION):
         raise ValueError("repair parent is not the complete corrected formal checkpoint-3k")
 
 
@@ -201,6 +202,8 @@ def _save_repair_checkpoint(path: Path, *, model: Any, processor: Any,
 
 
 def run_repair(config_path: Path, *, max_steps: int | None = None) -> None:
+    if SFT_INPUT_MESSAGE_VERSION != LEGACY_REPAIR_PARENT_PROTOCOL_VERSION:
+        raise RuntimeError("legacy v2 targeted repair cannot train under the v3 image_id runtime")
     import numpy as np
     import torch
     import torch.distributed as dist

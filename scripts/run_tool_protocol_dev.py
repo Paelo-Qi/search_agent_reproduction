@@ -19,15 +19,16 @@ from opensearch_vl_repro.evaluation import BatchRunner, BatchSample, build_run_m
 from opensearch_vl_repro.inference import (QwenAgentModel, load_inference_bundle,  # noqa: E402
                                            load_inference_config)
 from opensearch_vl_repro.tool_protocol_dev import (load_dev_source_samples,  # noqa: E402
+                                                   require_unchanged_dev_ids,
                                                    validate_dev_manifest)
-from opensearch_vl_repro.sft_protocol_diagnostics import CORRECTED_POOL_MANIFEST_SHA256  # noqa: E402
-from opensearch_vl_repro.sft_tool_audit import sha256_file  # noqa: E402
 
 
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--run-id", required=True)
-    cli.add_argument("--dev-dir", type=Path, default=ROOT / "data/eval/tool_protocol_dev50")
+    cli.add_argument("--dev-dir", type=Path, default=ROOT / "data/eval/tool_protocol_dev50_imageid_v3")
+    cli.add_argument("--pool-manifest", type=Path, default=ROOT / "data/sft_main_imageid_v3/manifest.json")
+    cli.add_argument("--expected-ids", type=Path, default=ROOT / "data/eval/tool_protocol_dev50/ids.json")
     cli.add_argument("--raw-dir", type=Path, default=ROOT / "data/raw")
     cli.add_argument("--config", type=Path, default=ROOT / "configs/eval_4b.yaml")
     cli.add_argument("--search-config", type=Path, default=ROOT / "configs/search_backends.example.yaml")
@@ -44,11 +45,9 @@ def main() -> int:
     ids = json.loads((args.dev_dir / "ids.json").read_text(encoding="utf-8"))
     manifest_path = args.dev_dir / "tool_protocol_dev50_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    validate_dev_manifest(ids, manifest)
-    pool_path = ROOT / "data/sft_main/manifest.json"
-    if sha256_file(pool_path) != CORRECTED_POOL_MANIFEST_SHA256:
-        raise ValueError("run requires the pinned corrected SFT 8k manifest")
-    pool = json.loads(pool_path.read_text(encoding="utf-8"))
+    validate_dev_manifest(ids, manifest, pool_manifest_path=args.pool_manifest)
+    require_unchanged_dev_ids(ids, json.loads(args.expected_ids.read_text(encoding="utf-8")))
+    pool = json.loads(args.pool_manifest.read_text(encoding="utf-8"))
     if manifest["source_file_sha256"] != {
             source: row["sha256"] for source, row in pool["source_files"].items()}:
         raise ValueError("dev source hashes differ from corrected SFT pool provenance")
@@ -60,7 +59,8 @@ def main() -> int:
         model_revision=config.revision, inference_config_path=args.config,
         dataset_path=manifest_path, eval_manifest_path=None, start=None, limit=None,
         sample_selection={"selection_mode": "tool_protocol_dev50",
-                          "ids_sha256": manifest["ids_sha256"], "sample_count": len(ids)},
+                          "ids_sha256": manifest["ids_sha256"], "sample_count": len(ids),
+                          "runtime_tool_protocol_version": manifest["runtime_tool_protocol_version"]},
         max_agent_turns=config.max_agent_turns,
         search_config_path=args.search_config, layout_config_path=args.layout_config,
         adapter_path=config.adapter_path)

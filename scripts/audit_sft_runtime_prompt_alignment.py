@@ -22,9 +22,9 @@ from opensearch_vl_repro.sft_tool_audit import write_json_atomic, write_text_ato
 
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main")
-    cli.add_argument("--config", type=Path, default=ROOT / "configs/sft_main.yaml")
-    cli.add_argument("--report-dir", type=Path, default=ROOT / "reports/sft_diagnostics")
+    cli.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main_imageid_v3")
+    cli.add_argument("--config", type=Path, default=ROOT / "configs/sft_main_imageid_v3.yaml")
+    cli.add_argument("--report-dir", type=Path, default=ROOT / "reports/sft_diagnostics_imageid_v3")
     cli.add_argument("--search-config", type=Path, default=ROOT / "configs/search_backends.example.yaml")
     cli.add_argument("--layout-config", type=Path, default=ROOT / "configs/layout_parsing.example.yaml")
     cli.add_argument("--per-shard", type=int, default=15)

@@ -36,7 +36,7 @@ class FakeSearchTools:
         )
 
     def image_search(self, arguments, context):
-        assert arguments == {"url": "img_1"}
+        assert arguments == {"image_id": "img_1"}
         assert isinstance(context.image_registry.get("img_1"), Image.Image)
         return ToolResult(
             status="success",
@@ -51,7 +51,7 @@ class FakeSearchTools:
 
 @pytest.mark.parametrize("tool,first_output", [
     ("text_search", 'text_search({"q":"Qwen3-VL technical report","hl":"en","top_k":3})'),
-    ("image_search", 'image_search({"url":"img_1"})'),
+    ("image_search", 'image_search({"image_id":"img_1"})'),
 ])
 def test_offline_agent_tool_observation_reenters_next_model_turn(tool, first_output):
     module = _script()
@@ -110,7 +110,7 @@ class FakeMemory:
 
 @pytest.mark.parametrize("tool,first_output", [
     ("text_search", 'text_search({"q":"Qwen3-VL technical report","hl":"en","top_k":3})'),
-    ("image_search", 'image_search({"url":"img_1"})'),
+    ("image_search", 'image_search({"image_id":"img_1"})'),
 ])
 def test_phase3_cli_report_requires_real_tool_evidence_without_cuda(
     tool, first_output, tmp_path, monkeypatch,

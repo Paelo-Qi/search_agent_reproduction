@@ -34,7 +34,7 @@ def first_direct_image_search(records: list[dict]) -> tuple[int, dict]:
         turns = record["conversations"]
         if len(turns) < 2 or turns[0]["from"] != "human" or turns[1]["from"] != "gpt":
             continue
-        if any(call.name == "image_search" and call.arguments.get("url") == "img_1"
+        if any(call.name == "image_search" and call.arguments.get("image_id") == "img_1"
                for call in parser.parse(turns[1]["value"]).tool_calls):
             return index, record
     raise ValueError("main_a_1k contains no first-turn image_search(img_1) sample")
@@ -87,8 +87,8 @@ def legacy_messages(sample: dict, current: list[dict]) -> list[dict]:
 
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main")
-    cli.add_argument("--config", type=Path, default=ROOT / "configs/sft_main.yaml")
+    cli.add_argument("--data-dir", type=Path, default=ROOT / "data/sft_main_imageid_v3")
+    cli.add_argument("--config", type=Path, default=ROOT / "configs/sft_main_imageid_v3.yaml")
     cli.add_argument("--output", type=Path, help="Optional JSON report path (shards are never written)")
     cli.add_argument("--previous-manifest", type=Path,
                      help="Legacy manifest to verify unchanged selection and shard partition")

@@ -145,6 +145,8 @@ def validate_resume_metadata(plan: StagePlan, metadata: dict[str, Any], *,
         raise ValueError("checkpoint dataset manifest mismatch")
     if metadata.get("sft_input_message_version") != SFT_INPUT_MESSAGE_VERSION:
         raise ValueError("checkpoint SFT input/message format version mismatch")
+    if metadata.get("runtime_tool_protocol_version") != SFT_INPUT_MESSAGE_VERSION:
+        raise ValueError("checkpoint runtime tool protocol version mismatch")
     if (metadata.get("world_size"), metadata.get("micro_batch"),
             metadata.get("gradient_accumulation")) != (
             plan.world_size, plan.micro_batch, plan.gradient_accumulation):

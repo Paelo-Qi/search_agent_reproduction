@@ -9,7 +9,7 @@ PaddleOCR AI Studio layout adapter, and three independent search adapters:
 | --- | --- |
 | `web_search` | Serper Google Search → normalized title, URL, snippet |
 | `text_search` | Serper top-k URLs → Jina Reader `r.jina.ai` per URL → bounded passages |
-| `image_search` | `url: "img_n"` → local PIL/path → SerpApi Image API multipart upload → temporary `image_id` → Google Lens visual matches |
+| `image_search` | `image_id: "img_n"` → local PIL/path → SerpApi Image API multipart upload → temporary provider `image_id` → Google Lens visual matches |
 
 There is **no LLM summarization** and no call to `s.jina.ai`. Search results
 are normalized into plain-text observations; raw provider JSON is not passed to
@@ -94,7 +94,7 @@ CUDA_VISIBLE_DEVICES=0 python scripts/run_4b_agent_smoke.py \
 The first prompt asks Qwen to emit `text_search` with a fixed query; Serper
 returns URLs, Jina Reader returns at least one passage, and that observation
 must appear in the next Qwen `generate()` input before a nonempty final answer.
-The second prompt asks for `image_search({"url":"img_1"})`; the registered
+The second prompt asks for `image_search({"image_id":"img_1"})`; the registered
 image is uploaded to SerpApi, searched by Google Lens, and its observation
 must likewise enter the next Qwen turn. Zero Lens matches remain valid if
 the upload and Lens request succeed.

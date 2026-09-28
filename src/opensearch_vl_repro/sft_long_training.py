@@ -22,7 +22,7 @@ from .data import SFT_INPUT_MESSAGE_VERSION, SFT_MASK_VERSION, OpenSearchVLColla
 from .model import (add_lora, freeze_vision_components, load_base_model,
                     load_processor, move_batch, parameter_audit, select_probe_parameter)
 from .reporting import environment_report, write_json
-from .sft_main_data import (SHARD_SIZES, canonicalize_tool_declarations,
+from .sft_main_data import (SHARD_SIZES, canonicalize_sft_training_record,
                             load_sft_manifest, require_data_quality_exclusions)
 from .sft_tool_audit import sha256_file
 from .sft_train_plan import (STAGE_NAMES, STAGE_ORDER, StagePlan, cosine_factor,
@@ -107,6 +107,7 @@ def checkpoint_metadata(plan: StagePlan, state: dict[str, Any], *, config: dict[
         "lineage": list(plan.lineage if complete_stage else plan.lineage[:-1]),
         "stage_complete": complete_stage, "pool_manifest_sha256": pool_sha256,
         "sft_input_message_version": SFT_INPUT_MESSAGE_VERSION,
+        "runtime_tool_protocol_version": SFT_INPUT_MESSAGE_VERSION,
         "shard_sha256": shard_sha256, "shard_samples": plan.shard_samples,
         "world_size": plan.world_size, "micro_batch": plan.micro_batch,
         "gradient_accumulation": plan.gradient_accumulation,
@@ -225,9 +226,9 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
         records = load_json_records(data_path)
         if len(records) != plan.shard_samples:
             raise ValueError("4B smoke dataset must contain exactly 100 official trajectories")
-        # The independent 4B smoke file remains raw; only its in-memory
-        # training-effective declarations are aligned with the fixed runtime.
-        records = [canonicalize_tool_declarations(record) for record in records]
+        # The independent 4B smoke file remains raw; its in-memory calls and
+        # declarations must use the same v3 model-facing contract.
+        records = [canonicalize_sft_training_record(record) for record in records]
         pool_sha = shard_sha = sha256_file(data_path)
     else:
         pool_dir = (PROJECT_ROOT / config["data"]["pool_dir"]).resolve()
@@ -243,7 +244,8 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
         records = load_json_records(data_path)
         if len(records) != plan.shard_samples:
             raise ValueError("SFT shard count changed")
-        preflight_path = PROJECT_ROOT / "reports/sft_preflight/summary.json"
+        preflight_path = PROJECT_ROOT / config["project"].get(
+            "preflight_dir", "reports/sft_preflight") / "summary.json"
         if not preflight_path.is_file():
             raise RuntimeError("full SFT preflight audit must run before formal training")
         preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
@@ -254,6 +256,9 @@ def run_sft_stage(config_path: str | Path, *, stage: str,
                 or not isinstance(preflight.get("checks"), dict)
                 or set(preflight["checks"]) != {
                     "effective_tool_contract", "actual_tool_calls", "leakage_complete",
+                    "image_search_image_id_targets", "no_legacy_image_search_url",
+                    "no_http_image_search_target", "all_image_search_targets_img_n",
+                    "no_extra_image_search_arguments",
                     "zero_question_overlap", "zero_image_overlap", "sequence_complete",
                     "supervised_targets", "assistant_spans_intact", "tool_calls_intact",
                     "image_id_grounding"}

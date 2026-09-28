@@ -1,5 +1,10 @@
 # SFT-0: fixed data, resumable 4B LoRA, and adapter evaluation
 
+> Current `image_search.image_id` protocol v3 regeneration and verification:
+> [image_search_imageid_v3.md](image_search_imageid_v3.md). The v2 commands
+> and observations below are retained as historical provenance, not as the
+> current v3 training recipe.
+
 The 4B smoke A/B runs and the original formal SFT-3k training have completed.
 That original checkpoint-3k is **legacy pre-image-ID-grounding** and must not
 be used as the corrected SFT Eval-300 adapter. The paper's full-parameter, large-scale SFT is intentionally replaced by a small
@@ -68,7 +73,8 @@ Each selected identity is `source:original_index`, with a raw-record SHA256.
 The manifest records source-file SHA256s, each shard's exact source counts and
 output SHA256, sample membership/source/original index/raw SHA256, exclusion
 IDs/reasons, replacement IDs/sources, ranking version, and a disjointness
-assertion. Manifest schema is now **version 2**; old version-1 pools cannot be
+assertion. The historical corrected-v2 manifest schema was **version 2**;
+the new image_id protocol uses **version 3**, and v2 pools cannot be
 used for formal training. All four shard JSONs are physical and disjoint;
 `main_3k`, cumulative 4k, and cumulative 8k are lineage names, not separately
 sampled files. Main 3k is the primary result; 4k is the most likely optional
@@ -165,6 +171,10 @@ On AutoDL, run the full pinned-source audit **before** backing up the old pool,
 so its source hashes can be checked against the legacy manifest. The
 `--verify-frozen` gate requires the committed exclusions to match the complete
 source audit exactly. Then regenerate and run the full multimodal preflight:
+
+The following is the archived corrected-v2 workflow only. **Do not rerun it
+for v3**; use the separate v3 paths and commands linked at the top of this
+document so no historical pool/report is moved or overwritten.
 
 ```bash
 python scripts/audit_sft_source_image_contract.py \

@@ -175,9 +175,10 @@ class SearchTools:
 
     def image_search(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         try:
-            reference = arguments["url"]
-            if re.fullmatch(r"img_[1-9][0-9]*", reference) is None or not context.image_registry.exists(reference):
-                raise SearchBackendError("invalid_argument", "url must reference a registered img_n")
+            reference = arguments.get("image_id")
+            if (not isinstance(reference, str) or re.fullmatch(r"img_[1-9][0-9]*", reference) is None
+                    or not context.image_registry.exists(reference)):
+                raise SearchBackendError("invalid_argument", "image_id must reference a registered img_n")
             value = context.image_registry.get(reference)
             if isinstance(value, Image.Image):
                 image = value

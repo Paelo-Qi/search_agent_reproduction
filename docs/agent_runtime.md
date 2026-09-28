@@ -9,7 +9,9 @@ CPU smoke, and provider configuration.
 
 The model is pinned to `Qwen/Qwen3-VL-4B-Instruct` revision
 `ebb281ec70b05090aa6165b016eac8ec08e71b17`. The eight declarations mirror the
-local SearchVL-SFT audit, including the observed `image_search.url` argument.
+local SearchVL-SFT audit, except that model-facing `image_search` now uses
+`image_id` (registered `img_n`) instead of the pinned source's legacy `url`.
+See [protocol v3](image_search_imageid_v3.md).
 
 ## CPU-only protocol smoke
 

@@ -243,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 question = (
                     "Synthetic Phase 3 image-search integration smoke only; this is not a benchmark result. "
-                    'First call image_search exactly once with {"url":"img_1"}. '
+                    'First call image_search exactly once with {"image_id":"img_1"}. '
                     "After receiving the image-search observation, do not call another tool. "
                     "Give a short final answer based on the returned observation."
                 )
@@ -263,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.synthetic_tool_prompt:
             question = (
                 "Synthetic tool-call protocol smoke only; this is not a benchmark result. "
-                "First call image_search with the exact argument {\"url\": \"img_1\"}. "
+                "First call image_search with the exact argument {\"image_id\": \"img_1\"}. "
                 "After receiving its observation, provide a short final answer.\n\n"
                 f"Original sample question: {sample.question}"
             )

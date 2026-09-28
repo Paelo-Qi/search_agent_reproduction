@@ -20,7 +20,7 @@ from opensearch_vl_repro.sft_tool_audit import sha256_file  # noqa: E402
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-dir", type=Path, default=ROOT / "data/raw")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "data/sft_main")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "data/sft_main_imageid_v3")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--eval", type=Path, default=ROOT / "data/eval/combined_eval_300.parquet")
     parser.add_argument("--exclusions", type=Path, required=True,
@@ -31,6 +31,8 @@ def main() -> None:
     parser.add_argument("--download-images", action="store_true",
                         help="Opt in to downloading pinned official image ZIPs")
     args = parser.parse_args()
+    if args.output_dir.resolve() == (ROOT / "data/sft_main").resolve():
+        raise ValueError("v3 SFT pool must not overwrite the historical data/sft_main directory")
     exclusions = load_data_quality_exclusions(args.exclusions)
     if exclusions != load_data_quality_exclusions():
         raise ValueError("--exclusions must match configs/sft_data_exclusions.json")

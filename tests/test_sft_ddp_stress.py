@@ -19,7 +19,9 @@ SPEC.loader.exec_module(stress)
 
 
 def test_ddp_scan_reuses_untruncated_longest_selection_without_mutating_source(monkeypatch):
-    records = [{"_source_index": index, "tools": "[]", "_sample_id": f"sample:{index}"}
+    records = [{"_source_index": index, "tools": "[]", "_sample_id": f"sample:{index}",
+                "conversations": [{"from": "human", "value": "<image>Question?"},
+                                  {"from": "gpt", "value": 'image_search({"url":"img_1"})'}]}
                for index in range(4)]
     original = copy.deepcopy(records)
     lengths = [12, 17, 30977, 41]

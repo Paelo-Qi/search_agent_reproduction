@@ -16,7 +16,7 @@ from opensearch_vl_repro.sft_train_plan import STAGE_ORDER  # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=ROOT / "configs/sft_main.yaml")
+    parser.add_argument("--config", type=Path, default=ROOT / "configs/sft_main_imageid_v3.yaml")
     parser.add_argument("--stage", required=True, choices=(*STAGE_ORDER, "smoke"))
     parser.add_argument("--resume-from", type=Path)
     parser.add_argument("--micro-batch", type=int)

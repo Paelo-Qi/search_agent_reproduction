@@ -27,7 +27,7 @@ from opensearch_vl_repro.model import (  # noqa: E402
     move_batch, parameter_audit,
 )
 from opensearch_vl_repro.sft_main_data import (  # noqa: E402
-    SHARD_SIZES, canonicalize_tool_declarations,
+    SHARD_SIZES, canonicalize_sft_training_record,
 )
 from opensearch_vl_repro.sft_long_training import activate_sft_training_mode  # noqa: E402
 from opensearch_vl_repro.sft_train_plan import load_main_config  # noqa: E402
@@ -63,7 +63,7 @@ def validate_dataset(config: dict[str, Any], data_path: str | Path,
 
 def training_record(raw: dict[str, Any]) -> dict[str, Any]:
     """Use the runtime tool schema without mutating a raw or prepared record."""
-    record = canonicalize_tool_declarations(raw)
+    record = canonicalize_sft_training_record(raw)
     if "_source_tools" in raw:
         record["_source_tools"] = raw["_source_tools"]
     return record

@@ -391,8 +391,11 @@ The corrected pool must be regenerated and pass the image-grounding and full
 preflight gates before retraining from pinned Base. Formal 4B SFT uses
 FlashAttention-2 with fixed micro-batch 1/accumulation 4; the independent
 two-GPU DDP/AdamW longest-sample test is diagnostic, not formal training.
-See [the SFT-0 runbook](docs/sft_main_training.md) for exact commands,
-artifacts, scheduler phases, and human review points.
+See [the SFT-0 runbook](docs/sft_main_training.md) for historical commands,
+artifacts, scheduler phases, and human review points. Use [the current
+image_search image_id v3 protocol runbook](docs/image_search_imageid_v3.md)
+for isolated regeneration, audit, and Dev50 commands. The pinned source still
+uses legacy `url`; inference and new training targets accept only `image_id`.
 
 Do not treat `reports/phase0_dev_status.json` as the formal Phase 0 gate.
 Phase 4 includes reliability and batch-execution infrastructure. A local/mock

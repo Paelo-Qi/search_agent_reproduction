@@ -15,6 +15,7 @@ from .agent.question_normalization import normalize_model_question
 from .agent.reliability import image_sha256
 from .agent.tool_contracts import TOOL_DECLARATIONS, TOOL_DECLARATIONS_BY_NAME
 from .agent.tool_parser import ToolCallParser
+from .sft_protocol_v3 import effective_image_search_call_counts
 from .data import (SFT_INPUT_MESSAGE_VERSION, SFT_MASK_VERSION, RoleTokenSpan, build_messages, message_role_spans, parse_tools,
                    render_prompt)
 from .sft_image_grounding import audit_sample_image_grounding, summarize_image_grounding
@@ -154,7 +155,9 @@ def tool_contract_audit(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     calls = Counter()
     raw_mismatches, effective_mismatches, call_mismatches = [], [], []
     declared = Counter()
+    image_search_counts = Counter()
     for record in records:
+        image_search_counts.update(effective_image_search_call_counts(record))
         identity = {"training_sample_id": record["_sample_id"], "source": record["_source"]}
         raw_mismatches.extend(_declaration_mismatches(
             record.get("_source_tools", record.get("tools")), identity))
@@ -184,6 +187,7 @@ def tool_contract_audit(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
                                        "detail": str(exc), "arguments": call.arguments})
     mismatches = effective_mismatches + call_mismatches
     return {"passed": not mismatches, "tool_call_counts": dict(sorted(calls.items())),
+            "effective_image_search_counts": dict(sorted(image_search_counts.items())),
             "declared_tool_counts": dict(sorted(declared.items())),
             "raw_declaration_drift_count": len(raw_mismatches),
             "effective_declaration_drift_count": len(effective_mismatches),
@@ -319,9 +323,15 @@ def sequence_audit(records_by_shard: dict[str, list[dict[str, Any]]],
 def formal_preflight_checks(tool: dict[str, Any], leakage: dict[str, Any],
                             sequence: dict[str, Any] | None) -> dict[str, bool]:
     full = sequence.get("full_8k", {}) if sequence else {}
+    image_calls = tool.get("effective_image_search_counts", {})
     return {
         "effective_tool_contract": tool.get("effective_declaration_drift_count") == 0,
         "actual_tool_calls": tool.get("actual_call_drift_count") == 0,
+        "image_search_image_id_targets": image_calls.get("image_search_image_id", 0) > 0,
+        "no_legacy_image_search_url": image_calls.get("image_search_legacy_url") == 0,
+        "no_http_image_search_target": image_calls.get("image_search_http_target") == 0,
+        "all_image_search_targets_img_n": image_calls.get("image_search_non_img_n") == 0,
+        "no_extra_image_search_arguments": image_calls.get("image_search_extra_arguments") == 0,
         "leakage_complete": leakage.get("complete") is True,
         "zero_question_overlap": leakage.get("question_overlap_count") == 0,
         "zero_image_overlap": leakage.get("image_overlap_count") == 0,
