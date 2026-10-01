@@ -14,6 +14,10 @@ from opensearch_vl_repro.eval_subset import canonical_json_sha256
 from opensearch_vl_repro.sft_preflight import normalized_question
 
 
+RL_DATA_SCHEMA_VERSION = 2
+RL_SELECTION_VERSION = "sha256-rank-eval-backfill-v1"
+
+
 @dataclass(frozen=True)
 class RLPrompt:
     sample_id: str
@@ -132,7 +136,7 @@ def _hash_manifest(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != RL_DATA_SCHEMA_VERSION:
         raise ValueError("invalid RL manifest schema")
     expected = manifest.get("manifest_sha256")
     if not isinstance(expected, str) or expected != canonical_json_sha256(
@@ -150,6 +154,20 @@ def load_overlap_manifest(path: str | Path, *, kind: str,
         hashes = value[name]
         if hashes != sorted(set(hashes)) or any(not isinstance(item, str) or len(item) != 64 for item in hashes):
             raise ValueError(f"invalid {kind} {name}")
+    if kind == "sft":
+        from opensearch_vl_repro.sft_main_data import SHARD_SIZES
+
+        shards, files = value.get("sft_shards"), value.get("sft_shard_files")
+        if (not isinstance(shards, list) or not shards or len(shards) != len(set(shards))
+                or any(name not in SHARD_SIZES for name in shards)
+                or shards != [name for name in SHARD_SIZES if name in shards]
+                or not isinstance(files, list) or any(not isinstance(item, dict) for item in files)
+                or [item.get("name") for item in files] != shards
+                or any(not isinstance(item.get("path"), str) or not isinstance(item.get("sha256"), str)
+                       or len(item["sha256"]) != 64 or not isinstance(item.get("count"), int)
+                       for item in files)
+                or value.get("audited_sample_count") != sum(item["count"] for item in files)):
+            raise ValueError("SFT overlap shard scope/provenance is invalid")
     if value.get("image_audit_complete") is not True and not (kind == "sft" and allow_incomplete_sft):
         raise ValueError(f"{kind} image overlap manifest is incomplete")
     return value
@@ -157,15 +175,24 @@ def load_overlap_manifest(path: str | Path, *, kind: str,
 
 def make_overlap_manifest(*, kind: str, question_hashes: set[str],
                           image_hashes: set[str], source_sha256: str,
-                          image_audit_complete: bool, missing_image_count: int = 0) -> dict[str, Any]:
+                          image_audit_complete: bool, missing_image_count: int = 0,
+                          sft_shards: list[str] | None = None,
+                          sft_shard_files: list[dict[str, Any]] | None = None,
+                          audited_sample_count: int | None = None) -> dict[str, Any]:
     if kind not in {"eval", "sft"} or len(source_sha256) != 64 or missing_image_count < 0:
         raise ValueError("invalid overlap manifest provenance")
-    return _hash_manifest({"schema_version": 1, "kind": kind,
-                           "source_sha256": source_sha256,
-                           "image_audit_complete": image_audit_complete,
-                           "missing_image_count": missing_image_count,
-                           "question_hashes": sorted(question_hashes),
-                           "image_hashes": sorted(image_hashes)})
+    payload = {"schema_version": RL_DATA_SCHEMA_VERSION, "kind": kind,
+               "source_sha256": source_sha256,
+               "image_audit_complete": image_audit_complete,
+               "missing_image_count": missing_image_count,
+               "question_hashes": sorted(question_hashes),
+               "image_hashes": sorted(image_hashes)}
+    if kind == "sft":
+        if sft_shards is None or sft_shard_files is None or audited_sample_count is None:
+            raise ValueError("SFT overlap requires explicit shard scope and provenance")
+        payload.update(sft_shards=list(sft_shards), sft_shard_files=list(sft_shard_files),
+                       audited_sample_count=audited_sample_count)
+    return _hash_manifest(payload)
 
 
 def prepare_formal_dataset(*, source_parquet: str | Path, source_root: str | Path,
@@ -230,10 +257,11 @@ def prepare_formal_dataset(*, source_parquet: str | Path, source_root: str | Pat
     counts = {"eval_excluded_question_count": sum(item["question_overlap"] for item in exclusions),
               "eval_excluded_image_count": sum(item["image_overlap"] for item in exclusions),
               "sft_question_overlap_count": len(sft_q_hits), "sft_image_overlap_count": len(sft_i_hits)}
-    common = {"schema_version": 1, "dataset_id": dataset_id, "dataset_revision": dataset_revision,
-              "source_parquet": str(source_path), "source_root": str(root),
+    common = {"schema_version": RL_DATA_SCHEMA_VERSION,
+              "dataset_id": dataset_id, "dataset_revision": dataset_revision,
               "source_parquet_sha256": sha256_file(source_path), "source_rows": len(rows),
-              "selection_seed": seed, "smoke_count": smoke_count, "main_count": main_count,
+              "selection_version": RL_SELECTION_VERSION, "selection_seed": seed,
+              "smoke_count": smoke_count, "main_count": main_count,
               "shard_size": shard_size, "eval_overlap_manifest_sha256": eval_manifest["manifest_sha256"],
               "sft_overlap_manifest_sha256": sft_manifest["manifest_sha256"],
               "sft_image_audit_complete": sft_manifest["image_audit_complete"], **counts}
@@ -253,7 +281,7 @@ def prepare_formal_dataset(*, source_parquet: str | Path, source_root: str | Pat
                                    | {"shard_order": [item["name"] for item in shard_manifests],
                                       "shard_manifest_sha256": [item["manifest_sha256"] for item in shard_manifests]})
     smoke = selected[:smoke_count]
-    audit = _hash_manifest({"schema_version": 1, "excluded": exclusions,
+    audit = _hash_manifest({"schema_version": RL_DATA_SCHEMA_VERSION, "excluded": exclusions,
                             "sft_question_overlap_ids": sft_q_hits, "sft_image_overlap_ids": sft_i_hits,
                             "eval_final_question_overlap_count": 0, "eval_final_image_overlap_count": 0,
                             "sft_image_audit_complete": sft_manifest["image_audit_complete"], **counts})
@@ -286,7 +314,8 @@ def write_dataset_artifacts(artifacts: dict[str, Any], output_dir: str | Path) -
     write("overlap_audit.json", artifacts["overlap_audit"])
 
 
-def preflight_dataset(output_dir: str | Path, *, eval_overlap_manifest: str | Path,
+def preflight_dataset(output_dir: str | Path, *, source_parquet: str | Path,
+                      source_root: str | Path, eval_overlap_manifest: str | Path,
                       sft_overlap_manifest: str | Path,
                       allow_incomplete_sft: bool = False) -> dict[str, Any]:
     from opensearch_vl_repro.eval_subset import sha256_file
@@ -297,6 +326,10 @@ def preflight_dataset(output_dir: str | Path, *, eval_overlap_manifest: str | Pa
         raise ValueError("RL output must have exactly one main manifest")
     main_manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
     validate_manifest(main_manifest)
+    if main_manifest.get("selection_version") != RL_SELECTION_VERSION:
+        raise ValueError("RL selection version mismatch")
+    if "source_root" in main_manifest or "source_parquet" in main_manifest:
+        raise ValueError("absolute source locator must not appear in deterministic manifest")
     main_count, smoke_count, shard_size = (main_manifest[key] for key in ("main_count", "smoke_count", "shard_size"))
     def read(relative: str) -> Any:
         return json.loads((output / relative).read_text(encoding="utf-8"))
@@ -314,11 +347,12 @@ def preflight_dataset(output_dir: str | Path, *, eval_overlap_manifest: str | Pa
             or smoke_manifest.get("samples_sha256") != canonical_json_sha256(smoke)):
         raise ValueError("RL smoke/main count, prefix or checksum mismatch")
     common_keys = ("dataset_id", "dataset_revision", "source_parquet_sha256",
+                   "selection_version",
                    "selection_seed", "smoke_count", "main_count", "shard_size")
     if any(smoke_manifest.get(key) != main_manifest.get(key) for key in common_keys):
         raise ValueError("RL smoke/main provenance differs")
-    root = Path(main_manifest["source_root"]).resolve()
-    source_path = Path(main_manifest["source_parquet"])
+    root = Path(source_root).resolve()
+    source_path = Path(source_parquet).resolve()
     revision_file = root / "source_revision.txt"
     if revision_file.is_file() and revision_file.read_text(encoding="utf-8").splitlines() != [
             main_manifest["dataset_id"], main_manifest["dataset_revision"]]:
@@ -401,6 +435,8 @@ def preflight_dataset(output_dir: str | Path, *, eval_overlap_manifest: str | Pa
             "source_rows": len(source_rows), "dataset_id": main_manifest["dataset_id"],
             "dataset_revision": main_manifest["dataset_revision"],
             "selection_seed": main_manifest["selection_seed"],
+            "selection_version": main_manifest["selection_version"],
+            "sft_shards": sft_manifest["sft_shards"],
             "main_manifest_sha256": main_manifest["manifest_sha256"],
             "sft_image_audit_complete": sft_manifest["image_audit_complete"],
             "eval_final_question_overlap_count": 0, "eval_final_image_overlap_count": 0}

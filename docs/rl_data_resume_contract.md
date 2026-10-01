@@ -22,12 +22,22 @@ candidates. SFT question/image overlaps are recorded but **not excluded**.
 Fail closed if there are too few eligible rows. `smoke = main[:smoke_count]`;
 `main` is split in order into equal physical shards. The first main shard is
 the pilot; there is no separate pilot100 selection. Every dataset/shard has a
-deterministic manifest with source SHA, ordered membership and content hashes;
-timestamps are deliberately excluded from hashed content. `overlap_audit.json`
+deterministic schema-v2 manifest with source SHA, `selection_version` =
+`sha256-rank-eval-backfill-v1`, ordered membership and content hashes. Runtime
+absolute source paths and timestamps are excluded from hashed content, so
+identical source bytes and selection inputs produce the same fingerprint on
+different machines. Preflight receives the local source parquet/root as CLI
+arguments and verifies the bytes, rows and images. `overlap_audit.json`
 records excluded Eval IDs and selected SFT overlaps.
 
 Overlap manifests are independent hash lists generated from frozen Eval-300
-parquet and SFT shards/images by `scripts/build_rl_overlap_manifest.py`.
+parquet and explicitly selected SFT shards/images by
+`scripts/build_rl_overlap_manifest.py`. The SFT manifest hashes the ordered
+shard names, per-shard paths/checksums/counts and total audited count. For the
+current checkpoint-3k adapter, audit only `main_a_1k main_b_2k`; do not include
+unused `extra_1k` or `reserve_4k`. Full preflight compares this scope against
+the actual adapter checkpoint lineage and fails closed on a mismatch. Data-only
+fixture preflight does not assert adapter lineage.
 For formal runs, the SFT image audit must be complete. The development-only
 `--allow-missing-images` / `--allow-incomplete-sft-audit` flags leave the
 incompleteness explicit and cannot pass formal preflight. Generated artifacts
@@ -43,7 +53,8 @@ python scripts/build_rl_overlap_manifest.py --kind eval \
   --eval-parquet data/eval/combined_eval_300_v2.parquet \
   --output data/rl_overlap/eval_v2.json
 python scripts/build_rl_overlap_manifest.py --kind sft \
-  --sft-dir "$SFT_DIR" --output data/rl_overlap/sft_v3.json
+  --sft-dir "$SFT_DIR" --sft-shards main_a_1k main_b_2k \
+  --output data/rl_overlap/sft_v3.json
 python scripts/prepare_rl_data.py \
   --source-parquet "$RL_SOURCE_ROOT/rl_data.parquet" \
   --source-root "$RL_SOURCE_ROOT" \
@@ -54,6 +65,8 @@ python scripts/prepare_rl_data.py \
   --eval-overlap-manifest data/rl_overlap/eval_v2.json \
   --sft-overlap-manifest data/rl_overlap/sft_v3.json
 python scripts/preflight_rl.py --config configs/rl_main.yaml \
+  --source-parquet "$RL_SOURCE_ROOT/rl_data.parquet" \
+  --source-root "$RL_SOURCE_ROOT" \
   --eval-overlap-manifest data/rl_overlap/eval_v2.json \
   --sft-overlap-manifest data/rl_overlap/sft_v3.json
 ```
@@ -80,7 +93,7 @@ old trajectories 0/1 are discarded for training; resume re-runs the **entire**
 group. `group_ready_for_update` encodes this constraint. It does not save a
 trainer checkpoint or implement resume I/O.
 
-Quota/auth/persistent-rate-limit/provider/network/judge/exhausted-malformed
+Quota/auth/provider-misconfiguration/persistent-rate-limit/provider/network/judge/exhausted-malformed
 response failures are **recoverable run interrupts**, not low model rewards.
 Future trainer must stop new group scheduling; mark the active group incomplete;
 exclude it from reward/advantage/update; flush caches; atomically save run

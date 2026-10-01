@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from opensearch_vl_repro.agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
+from .data import RL_SELECTION_VERSION
 
 from .reward import unit_reward
 
@@ -43,9 +44,12 @@ def load_rl_config(path: str | Path) -> dict[str, Any]:
     if data.get("manifest") is not None:
         required = ("output_dir", "smoke_path", "main_path", "shard_dir", "manifest",
                     "source_root", "dataset_id", "dataset_revision", "source_rows", "seed",
+                    "selection_version",
                     "smoke_count", "main_count", "shard_size")
         if any(key not in data for key in required):
             raise ValueError("RL data config is incomplete")
+        if data["selection_version"] != RL_SELECTION_VERSION:
+            raise ValueError("RL selection version differs from current code")
         if (not isinstance(data["seed"], int) or data["source_rows"] < 1
                 or not 0 < data["smoke_count"] <= data["main_count"]
                 or data["shard_size"] < 1 or data["main_count"] % data["shard_size"]):

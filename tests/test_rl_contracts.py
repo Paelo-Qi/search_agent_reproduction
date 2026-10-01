@@ -46,6 +46,8 @@ def test_progress_roundtrip_and_validation():
 
 def test_provider_interrupt_is_distinct_from_model_error():
     assert interrupt_reason_for("quota_error") == "quota_exhausted"
+    assert interrupt_reason_for("authentication_error") == "auth_failed"
+    assert interrupt_reason_for("configuration_error") == "provider_misconfigured"
     assert interrupt_reason_for("provider_error", judge=True) == "judge_unavailable"
     assert interrupt_reason_for("invalid_response") == "malformed_provider_response"
     with pytest.raises(ValueError):

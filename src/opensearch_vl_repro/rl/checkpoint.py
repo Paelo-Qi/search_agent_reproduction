@@ -51,6 +51,13 @@ class RLLineage:
             raise ValueError("invalid RL adapter fingerprint")
 
 
+def validate_sft_overlap_scope(lineage: RLLineage, sft_shards: list[str]) -> None:
+    """The overlap audit must cover exactly the shards seen by this adapter."""
+    lineage.validate()
+    if sft_shards != list(lineage.sft_lineage):
+        raise ValueError("SFT overlap shard scope differs from RL initialization adapter lineage")
+
+
 def build_rl_run_manifest(lineage: RLLineage, *, config: dict[str, Any],
                           data_manifest_sha256: str | None) -> dict[str, Any]:
     lineage.validate()

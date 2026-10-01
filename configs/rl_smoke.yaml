@@ -26,6 +26,7 @@ data:
   dataset_revision: 8ef567289043eef004b13da83b0e7bb7f5ae2daa
   source_rows: 7992
   seed: 20260506
+  selection_version: sha256-rank-eval-backfill-v1
   smoke_count: 20
   main_count: 400
   shard_size: 100

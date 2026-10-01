@@ -4,7 +4,7 @@ import pytest
 
 from opensearch_vl_repro.agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
 from opensearch_vl_repro.data import SFT_INPUT_MESSAGE_VERSION
-from opensearch_vl_repro.rl.checkpoint import RLLineage, build_rl_lineage
+from opensearch_vl_repro.rl.checkpoint import RLLineage, build_rl_lineage, validate_sft_overlap_scope
 from opensearch_vl_repro.sft_tool_audit import sha256_file
 
 
@@ -42,6 +42,13 @@ def test_valid_lineage_round_trip(checkpoint):
     assert value.sft_stage == "main_b_2k"
     assert RLLineage.from_dict(value.to_dict()) == value
     assert value.rl_adapter_fingerprint is None
+    validate_sft_overlap_scope(value, ["main_a_1k", "main_b_2k"])
+
+
+def test_overlap_scope_must_match_adapter_lineage(checkpoint):
+    value = build(checkpoint)
+    with pytest.raises(ValueError, match="overlap shard scope"):
+        validate_sft_overlap_scope(value, ["main_a_1k", "main_b_2k", "extra_1k"])
 
 
 @pytest.mark.parametrize("field,value", [("name_or_path", "wrong"), ("revision", "wrong")])

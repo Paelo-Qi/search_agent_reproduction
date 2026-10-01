@@ -11,7 +11,7 @@ RUN_STATUSES = frozenset({"running", "interrupted", "completed", "failed"})
 INTERRUPT_REASONS = frozenset({
     "quota_exhausted", "auth_failed", "rate_limit_persistent", "provider_unavailable",
     "network_unavailable", "judge_unavailable", "malformed_provider_response",
-    "manual_interrupt",
+    "manual_interrupt", "provider_misconfigured",
 })
 
 PROVIDER_ERROR_INTERRUPTS = {
@@ -22,7 +22,7 @@ PROVIDER_ERROR_INTERRUPTS = {
     "network_error": "network_unavailable",
     "timeout": "network_unavailable",
     "invalid_response": "malformed_provider_response",
-    "configuration_error": "auth_failed",
+    "configuration_error": "provider_misconfigured",
 }
 
 
