@@ -11,11 +11,18 @@ from opensearch_vl_repro.eval_subset import canonical_json_sha256, sha256_file
 
 
 FROZEN_EVAL300_SHA256 = "f9d0ca74f98d3f73cd6ad1f60b7f2294c5e5d59d4956b60ad95084dc8ee36cf4"
+FROZEN_EVAL300_V2_SHA256 = "b42bcf96c93437adc607c2e5427e1bf7da24912eca373e5c31d58b4acea8a961"
 EVAL300_SELECTION_VERSION = 1
 BENCHMARK_ORDER = ("simplevqa", "mmsearch", "vdr_bench")
 EXPECTED_BENCHMARK_COUNTS = {name: 100 for name in BENCHMARK_ORDER}
 FIRST_BATCH_COUNTS = {"simplevqa": 67, "mmsearch": 67, "vdr_bench": 66}
 SECOND_BATCH_COUNTS = {"simplevqa": 33, "mmsearch": 33, "vdr_bench": 34}
+
+
+def expected_eval300_sha256_for_config(config_path: str | Path) -> str:
+    """Bind the audited v2 formal config to v2; retain v1 for existing configs."""
+    return (FROZEN_EVAL300_V2_SHA256 if Path(config_path).name == "eval_base_300_v2.yaml"
+            else FROZEN_EVAL300_SHA256)
 
 
 @dataclass(frozen=True)
@@ -56,14 +63,18 @@ def _interleave(groups: Mapping[str, list[str]], counts: Mapping[str, int],
 def build_eval300_plan(
     dataset_path: str | Path,
     *,
-    expected_sha256: str = FROZEN_EVAL300_SHA256,
+    expected_sha256: str | None = None,
 ) -> Eval300Plan:
-    """Validate the frozen universe and order it as balanced 200 + remaining 100."""
+    """Validate frozen v1/v2 and order the same balanced 200 + remaining 100."""
     import pyarrow.parquet as pq
 
     path = Path(dataset_path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"frozen Eval-300 parquet is missing: {path}")
+    if expected_sha256 is None:
+        expected_sha256 = (FROZEN_EVAL300_V2_SHA256
+                           if path.name == "combined_eval_300_v2.parquet"
+                           else FROZEN_EVAL300_SHA256)
     actual_sha256 = sha256_file(path)
     if actual_sha256 != expected_sha256:
         raise ValueError(

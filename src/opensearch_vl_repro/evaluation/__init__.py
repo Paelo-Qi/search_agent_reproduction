@@ -7,7 +7,8 @@ from .run_manifest import (
 from .dev30 import load_selection_manifest, prepare_dev30
 from .eval300 import (
     BENCHMARK_ORDER, FIRST_BATCH_COUNTS, FROZEN_EVAL300_SHA256,
-    SECOND_BATCH_COUNTS, Eval300Plan, build_eval300_plan,
+    FROZEN_EVAL300_V2_SHA256, SECOND_BATCH_COUNTS, Eval300Plan, build_eval300_plan,
+    expected_eval300_sha256_for_config,
 )
 from .judge import (
     JUDGE_PROMPT_VERSION, DeepSeekJudge, JudgeConfig, JudgeResult, JudgeSample,
@@ -21,7 +22,8 @@ __all__ = [
     "build_run_manifest", "create_run_manifest",
     "load_selection_manifest", "prepare_dev30",
     "BENCHMARK_ORDER", "FIRST_BATCH_COUNTS", "FROZEN_EVAL300_SHA256",
-    "SECOND_BATCH_COUNTS", "Eval300Plan", "build_eval300_plan",
+    "FROZEN_EVAL300_V2_SHA256", "SECOND_BATCH_COUNTS", "Eval300Plan", "build_eval300_plan",
+    "expected_eval300_sha256_for_config",
     "JUDGE_PROMPT_VERSION", "DeepSeekJudge", "JudgeConfig", "JudgeResult",
     "JudgeSample", "JudgeRunner", "build_judge_manifest", "build_judge_messages",
     "load_judge_config", "load_judge_samples", "parse_judge_response",

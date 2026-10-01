@@ -17,7 +17,9 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from opensearch_vl_repro.agent.layout_parsing import load_layout_api_config  # noqa: E402
 from opensearch_vl_repro.agent.search_providers import load_search_config  # noqa: E402
-from opensearch_vl_repro.evaluation import build_eval300_plan, load_judge_config  # noqa: E402
+from opensearch_vl_repro.evaluation import (build_eval300_plan,  # noqa: E402
+                                             expected_eval300_sha256_for_config,
+                                             load_judge_config)
 from opensearch_vl_repro.inference import load_inference_config  # noqa: E402
 
 
@@ -37,7 +39,10 @@ def build_preflight_report(
     search = load_search_config(search_config_path)
     layout = load_layout_api_config(layout_config_path)
     judge = load_judge_config(judge_config_path)
-    plan = build_eval300_plan(config.data_path)
+    plan = build_eval300_plan(
+        config.data_path,
+        expected_sha256=expected_eval300_sha256_for_config(config_path),
+    )
 
     expected_model = {
         "model_name_or_path": "Qwen/Qwen3-VL-4B-Instruct",
@@ -90,7 +95,9 @@ def build_preflight_report(
         "model_loaded": False,
         "dataset_path": str(config.data_path),
         "dataset_sha256": plan.dataset_sha256,
-        "run_id": "base-eval300-v3",
+        "run_id": ("base-eval300-audited-v2"
+                   if Path(config_path).name == "eval_base_300_v2.yaml"
+                   else "base-eval300-v3"),
         "selection_identity": plan.selection_identity(),
         "counts": {
             "full": _counts(plan.entries),

@@ -18,6 +18,7 @@ from opensearch_vl_repro.agent.phase3_registry import create_phase3_tool_registr
 from opensearch_vl_repro.agent.runtime import AgentRuntime  # noqa: E402
 from opensearch_vl_repro.evaluation import (  # noqa: E402
     BatchRunner, BatchSample, build_eval300_plan, build_run_manifest,
+    expected_eval300_sha256_for_config,
     load_selection_manifest,
 )
 from opensearch_vl_repro.inference import (  # noqa: E402
@@ -79,7 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         config = replace(config, adapter_path=args.adapter.expanduser().resolve())
     entries = selection_manifest = None
     if args.eval300:
-        plan = build_eval300_plan(config.data_path)
+        plan = build_eval300_plan(
+            config.data_path,
+            expected_sha256=expected_eval300_sha256_for_config(args.config),
+        )
         entries = list(plan.entries)
         selection_identity = plan.selection_identity()
     elif args.selection_manifest is not None:
