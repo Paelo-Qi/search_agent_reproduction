@@ -1,0 +1,201 @@
+{
+  "manifest_version": 2,
+  "id_checksum_algorithm": "sha256-canonical-json-v1",
+  "checksum_migration": {
+    "from_manifest_version": 1,
+    "from_algorithm": "sha256-raw-file-bytes",
+    "to_manifest_version": 2,
+    "to_algorithm": "sha256-canonical-json-v1",
+    "ids_unchanged": true,
+    "migrated_at_utc": "2026-09-21T17:34:46.753186+00:00"
+  },
+  "dataset": "Osilly/Vision-DeepResearch-Eval",
+  "dataset_revision": "deeaf45779a3bbd407d8f0ccb9b4831fc78e81c9",
+  "seed": 20260506,
+  "samples_per_benchmark": 100,
+  "sampling_strategy": "fixed_random_sampling_without_stratification",
+  "script_version": 2,
+  "script_git_commit": "9a107c0e89b02045a2ddbcbbf9ec3d5ec18f30b6",
+  "implementation_sha256": "c13abe2a61b962c94dde27e5fe612f99f2b1c0b21c22ac7a9e2c32d7e1d80ae0",
+  "generated_at_utc": "2026-09-20T14:31:27.748542+00:00",
+  "benchmarks": {
+    "simplevqa": {
+      "source_file": "simplevqa_300.parquet",
+      "source_count": 300,
+      "source_schema": [
+        {
+          "name": "id",
+          "type": "int64",
+          "nullable": true
+        },
+        {
+          "name": "question",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "answer",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "images",
+          "type": "list<element: string>",
+          "nullable": true
+        },
+        {
+          "name": "image_caption",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "image_packed",
+          "type": "large_string",
+          "nullable": true
+        }
+      ],
+      "source_sha256": "81c41317ba367ac3c911c1f8bb854b835ebdc33ccbcbbd1d850adb656d9142ce",
+      "selected_count": 100,
+      "output_file": "simplevqa_100.parquet",
+      "output_sha256": "9a73313156061329c0d90c1ca6465805d1c9cc18ffc5a0d893f630b33e4f12a8",
+      "ids_file": "simplevqa_100_ids.json",
+      "ids_sha256": "e3877a4741748068e1609e0a5bb2097a783768eac7fddac2fd87f34bd0425614",
+      "image_decode_successes": 100,
+      "image_decode_failures": 0
+    },
+    "mmsearch": {
+      "source_file": "mmsearch_vision_171.parquet",
+      "source_count": 171,
+      "source_schema": [
+        {
+          "name": "id",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "question",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "answer",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "images",
+          "type": "list<element: string>",
+          "nullable": true
+        },
+        {
+          "name": "image_caption",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "image_packed",
+          "type": "large_string",
+          "nullable": true
+        }
+      ],
+      "source_sha256": "a8af824bec4c2f33b743fcbf4b4dc38fec5721be58f6bdcad25da9f8b89c9501",
+      "selected_count": 100,
+      "output_file": "mmsearch_100.parquet",
+      "output_sha256": "919d4d3f5299d9e11d5e0a2069f4ca1cc8184f15326b07ca6b37d39ff23ac9e8",
+      "ids_file": "mmsearch_100_ids.json",
+      "ids_sha256": "07eebdb726a162fdd7ac77d213a7aca2c76b4de02f26efad12e132b443d5d36a",
+      "image_decode_successes": 100,
+      "image_decode_failures": 0
+    },
+    "vdr_bench": {
+      "source_file": "testmini500_v1.parquet",
+      "source_count": 500,
+      "source_schema": [
+        {
+          "name": "id",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "question",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "question_original",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "answer",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "images",
+          "type": "list<element: string>",
+          "nullable": true
+        },
+        {
+          "name": "image_caption",
+          "type": "large_string",
+          "nullable": true
+        },
+        {
+          "name": "image_packed",
+          "type": "large_string",
+          "nullable": true
+        }
+      ],
+      "source_sha256": "66ee12683eda451aa6f293297e36c83b5941aa40ad857504b8432684dbd1895e",
+      "selected_count": 100,
+      "output_file": "vdr_bench_100.parquet",
+      "output_sha256": "8190d466708589ad0970291013fa33759d35bfc716e020cadf917748d5d1f522",
+      "ids_file": "vdr_bench_100_ids.json",
+      "ids_sha256": "218af21f0a1b6810ee41eec7b5dc004eabf202992e14fb2a6ec69b74692ae942",
+      "image_decode_successes": 100,
+      "image_decode_failures": 0
+    }
+  },
+  "combined": {
+    "output_file": "combined_eval_300_v2.parquet",
+    "selected_count": 300,
+    "output_sha256": "b42bcf96c93437adc607c2e5427e1bf7da24912eca373e5c31d58b4acea8a961",
+    "sort_order": [
+      "benchmark",
+      "id"
+    ],
+    "columns": [
+      "id",
+      "benchmark",
+      "question",
+      "answer",
+      "images",
+      "image_caption",
+      "image_packed"
+    ],
+    "omitted_non_common_fields": {
+      "simplevqa": [],
+      "mmsearch": [],
+      "vdr_bench": [
+        "question_original"
+      ]
+    }
+  },
+  "audited_rebuild": {
+    "version": "eval300_blind_audit_rebuilt_v1",
+    "output_dataset_version": "audited_eval300_v2",
+    "parent_eval300_v1_sha256": "f9d0ca74f98d3f73cd6ad1f60b7f2294c5e5d59d4956b60ad95084dc8ee36cf4",
+    "parent_manifest_sha256": "3c49e4efbca0b42d1a1313b11a4f37c503c31daaed171faf2e27e0f8b5691061",
+    "audited_json_sha256": "a11f64d49689e1145baf2581b09a33f2543cde97980a7c9407e19b03b5cd1430",
+    "sample_count": 300,
+    "benchmark_counts": {
+      "simplevqa": 100,
+      "mmsearch": 100,
+      "vdr_bench": 100
+    },
+    "question_changed_count": 49,
+    "reference_changed_count": 66,
+    "transformation": "replace_question_and_reference_answer_only; preserve_v1_id_benchmark_image_packed_and_other_columns"
+  }
+}

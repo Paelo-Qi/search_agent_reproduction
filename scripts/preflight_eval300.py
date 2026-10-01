@@ -20,6 +20,7 @@ from opensearch_vl_repro.agent.search_providers import load_search_config  # noq
 from opensearch_vl_repro.evaluation import (build_eval300_plan,  # noqa: E402
                                              expected_eval300_sha256_for_config,
                                              load_judge_config)
+from opensearch_vl_repro.evaluation.run_manifest import frozen_dataset_identity  # noqa: E402
 from opensearch_vl_repro.inference import load_inference_config  # noqa: E402
 
 
@@ -43,6 +44,7 @@ def build_preflight_report(
         config.data_path,
         expected_sha256=expected_eval300_sha256_for_config(config_path),
     )
+    dataset_identity = frozen_dataset_identity(config.data_path, config.eval_manifest_path)
 
     expected_model = {
         "model_name_or_path": "Qwen/Qwen3-VL-4B-Instruct",
@@ -74,6 +76,8 @@ def build_preflight_report(
     static_checks = {
         "dataset_exists": config.data_path.is_file(),
         "dataset_sha256_matches": True,
+        "dataset_manifest_sha256_matches": (dataset_identity["frozen_manifest_identity"][
+            "combined_output_sha256"] == plan.dataset_sha256),
         "sample_count_is_300": len(plan.entries) == 300,
         "benchmark_counts_are_100_each": _counts(plan.entries) == {
             "mmsearch": 100, "simplevqa": 100, "vdr_bench": 100,
@@ -95,6 +99,8 @@ def build_preflight_report(
         "model_loaded": False,
         "dataset_path": str(config.data_path),
         "dataset_sha256": plan.dataset_sha256,
+        "eval_manifest_path": str(config.eval_manifest_path),
+        "frozen_manifest_identity": dataset_identity["frozen_manifest_identity"],
         "run_id": ("base-eval300-audited-v2"
                    if Path(config_path).name == "eval_base_300_v2.yaml"
                    else "base-eval300-v3"),

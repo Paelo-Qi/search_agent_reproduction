@@ -117,10 +117,14 @@ def frozen_dataset_identity(dataset_path: str | Path,
     resolved = Path(dataset_path).expanduser().resolve()
     actual_sha256 = sha256_file(resolved)
     identity: dict[str, Any] = {"sha256": actual_sha256}
-    if eval_manifest_path is not None and Path(eval_manifest_path).is_file():
+    if eval_manifest_path is not None:
         manifest_path = Path(eval_manifest_path).expanduser().resolve()
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"frozen evaluation manifest is missing: {manifest_path}")
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-        combined = raw.get("combined", {}) if isinstance(raw, dict) else {}
+        if not isinstance(raw, dict) or not isinstance(raw.get("combined"), dict):
+            raise ValueError("frozen evaluation manifest has no combined dataset identity")
+        combined = raw["combined"]
         frozen = {
             "manifest_version": raw.get("manifest_version"),
             "dataset": raw.get("dataset"),
@@ -129,10 +133,15 @@ def frozen_dataset_identity(dataset_path: str | Path,
             "combined_output_sha256": combined.get("output_sha256"),
         }
         expected_sha256 = frozen["combined_output_sha256"]
-        if expected_sha256 and expected_sha256 != actual_sha256:
+        if expected_sha256 != actual_sha256:
             raise ValueError(
                 "evaluation dataset checksum does not match its frozen manifest"
             )
+        if frozen["combined_output_file"] != resolved.name:
+            raise ValueError("evaluation dataset filename does not match its frozen manifest")
+        if isinstance(raw.get("audited_rebuild"), dict):
+            frozen["audited_rebuild"] = raw["audited_rebuild"]
+            frozen["manifest_file_sha256"] = sha256_file(manifest_path)
         identity.update(
             frozen_manifest_identity=frozen,
             frozen_manifest_fingerprint=_sha256_json(frozen),

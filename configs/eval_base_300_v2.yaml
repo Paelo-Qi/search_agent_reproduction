@@ -19,3 +19,4 @@ runtime:
 
 data:
   path: data/eval/combined_eval_300_v2.parquet
+  manifest: data/eval/manifest_v2.json

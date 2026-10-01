@@ -19,6 +19,14 @@ non-text columns are identical. V1 remains unchanged and retains its original
 SHA256. The parquet files are ignored by Git, so copy the **exact** v2 artifact
 to the evaluation host and verify its SHA256 there; reserializing with another
 PyArrow version can change the file hash even when cell values are identical.
+`configs/eval_base_300_v2.yaml` explicitly binds this parquet to the tracked
+`data/eval/manifest_v2.json`. That manifest copies v1's dataset-selection
+provenance and records the parent v1 hash, audited source hash, changed-text
+counts, and v2 hash. The old v1 config remains byte-for-byte unchanged and
+continues to use `data/eval/manifest.json`. Both the offline preflight and
+Agent run validate the selected parquet against its own frozen manifest;
+crossing v1/v2 manifests fails before model loading. Transfer the ignored v2
+parquet to the evaluation host alongside the tracked v2 manifest.
 
 The formal Base and SFT-3k v2 Agent runs use separate run IDs. Use the same
 command with the same run ID to resume after an interruption; optional

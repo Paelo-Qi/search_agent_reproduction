@@ -24,6 +24,7 @@ class InferenceConfig:
     max_agent_turns: int
     data_path: Path
     adapter_path: Path | None = None
+    eval_manifest_path: Path | None = None
 
     def generation_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -71,6 +72,15 @@ def load_inference_config(path: str | Path) -> InferenceConfig:
     data_path = Path(str(data["path"]))
     if not data_path.is_absolute():
         data_path = (project_root / data_path).resolve()
+    manifest_value = data.get("manifest")
+    if manifest_value is not None and (not isinstance(manifest_value, str)
+                                       or not manifest_value.strip()):
+        raise ValueError("data.manifest must be a nonempty path when specified")
+    eval_manifest_path = (Path(manifest_value) if manifest_value is not None
+                          else data_path.parent / "manifest.json")
+    if not eval_manifest_path.is_absolute():
+        eval_manifest_path = project_root / eval_manifest_path
+    eval_manifest_path = eval_manifest_path.resolve()
     adapter = raw.get("adapter")
     adapter_path = None
     if adapter is not None:
@@ -96,6 +106,7 @@ def load_inference_config(path: str | Path) -> InferenceConfig:
         max_agent_turns=int(runtime["max_agent_turns"]),
         data_path=data_path,
         adapter_path=adapter_path,
+        eval_manifest_path=eval_manifest_path,
     )
     if not config.model_name_or_path or not config.revision:
         raise ValueError("model name and pinned revision must not be empty")
