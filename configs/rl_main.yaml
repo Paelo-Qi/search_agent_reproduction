@@ -1,0 +1,19 @@
+algorithm:
+  advantage_estimator: rloo
+  fatal_consecutive_errors: 3
+reward:
+  accuracy_weight: 0.8
+  query_weight: 0.2
+  format_multiplicative: true
+rollout_n: 4  # logical group size; not a GPU micro-batch
+model:
+  continue_from_sft_adapter: true
+  sft_config: configs/sft_main_imageid_v3.yaml
+  sft_adapter: outputs/sft_main_imageid_v3/checkpoint-3k/adapter
+  sft_stage: main_b_2k
+agent:
+  max_agent_turns: 16
+tool:
+  runtime_protocol: current
+data:
+  manifest: null
