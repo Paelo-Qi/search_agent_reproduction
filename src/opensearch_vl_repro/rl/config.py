@@ -39,4 +39,19 @@ def load_rl_config(path: str | Path) -> dict[str, Any]:
     config["tool"]["resolved_runtime_protocol"] = RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
     if any(key in config for key in ("fsdp", "vllm", "distributed", "train_prompt_batch_size", "ppo_mini_batch_size")):
         raise ValueError("untested physical/distributed settings are forbidden in RL-0")
+    data = config.get("data", {})
+    if data.get("manifest") is not None:
+        required = ("output_dir", "smoke_path", "main_path", "shard_dir", "manifest",
+                    "source_root", "dataset_id", "dataset_revision", "source_rows", "seed",
+                    "smoke_count", "main_count", "shard_size")
+        if any(key not in data for key in required):
+            raise ValueError("RL data config is incomplete")
+        if (not isinstance(data["seed"], int) or data["source_rows"] < 1
+                or not 0 < data["smoke_count"] <= data["main_count"]
+                or data["shard_size"] < 1 or data["main_count"] % data["shard_size"]):
+            raise ValueError("RL data counts/seed are invalid")
+        required_dirs = ("tool_cache_dir", "rollout_cache_dir", "reward_cache_dir",
+                         "run_state_dir", "checkpoint_dir")
+        if any(not config.get("paths", {}).get(key) for key in required_dirs):
+            raise ValueError("RL output path contract is incomplete")
     return config

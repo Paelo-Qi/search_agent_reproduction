@@ -16,4 +16,22 @@ agent:
 tool:
   runtime_protocol: current
 data:
-  manifest: null
+  output_dir: data/rl
+  smoke_path: data/rl/smoke20.json
+  main_path: data/rl/main400.json
+  shard_dir: data/rl/main400_shards
+  manifest: data/rl/main400_manifest.json
+  source_root: null  # supply at preparation/runtime; never embed machine path here
+  dataset_id: OpenSearch-VL/Search-VL-RL-8K
+  dataset_revision: 8ef567289043eef004b13da83b0e7bb7f5ae2daa
+  source_rows: 7992
+  seed: 20260506
+  smoke_count: 20
+  main_count: 400
+  shard_size: 100
+paths:
+  tool_cache_dir: outputs/rl_main/tool_cache
+  rollout_cache_dir: outputs/rl_main/rollout_cache
+  reward_cache_dir: outputs/rl_main/reward_cache
+  run_state_dir: outputs/rl_main/run_state
+  checkpoint_dir: outputs/rl_main/checkpoints
