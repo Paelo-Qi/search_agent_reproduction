@@ -60,3 +60,47 @@ def test_unreadable_registered_image_is_not_model_argument_error():
                                 "error", error="invalid_argument"))
     assert classify_turn(AgentTurn("x", None, "image_search failed (invalid_argument): image_id must reference a registered img_n.",
                                    "error", error="invalid_argument")) == "model_error"
+
+
+def test_abnormal_termination_preserves_all_existing_steps():
+    trace = trajectory(None, None, None)
+    trace.status = "max_agent_turns_exceeded"
+    trace.final_answer = None
+    result = detect_fatal(trace)
+    assert result.fatal is True
+    assert result.start_index == 3
+    assert result.preserved_prefix_length == 3
+    assert result.reason == "abnormal_termination:max_agent_turns_exceeded"
+
+
+def test_direct_answer_without_tool_turns_is_not_fatal():
+    result = detect_fatal(trajectory())
+    assert result.fatal is False
+    assert result.start_index is None
+    assert result.preserved_prefix_length == 0
+
+
+def test_isolated_model_error_does_not_move_abnormal_fatal_start():
+    trace = trajectory("invalid_tool_call", None, None)
+    trace.status = "max_agent_turns_exceeded"
+    result = detect_fatal(trace)
+    assert result.fatal is True
+    assert result.start_index == len(trace.turns) == 3
+    assert result.preserved_prefix_length == 3
+
+
+@pytest.mark.parametrize("status", ["success", "max_agent_turns_exceeded"])
+def test_error_cascade_start_precedes_termination_status(status):
+    trace = trajectory(None, "invalid_tool_call", "unknown_image_id", "duplicate_tool_call")
+    trace.status = status
+    result = detect_fatal(trace)
+    assert result.fatal is True
+    assert result.start_index == result.preserved_prefix_length == 1
+    assert result.reason == "consecutive_model_tool_errors"
+
+
+def test_model_generation_error_still_fails_closed():
+    trace = trajectory(None)
+    trace.status = "model_error"
+    with pytest.raises(RLInfrastructureError):
+        detect_fatal(trace)

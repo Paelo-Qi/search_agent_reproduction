@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from opensearch_vl_repro.agent.runtime import AgentTrajectory, AgentTurn
@@ -46,13 +48,56 @@ def test_judge_failure_not_zero():
 
 
 def test_query_parser_and_provider_failure():
-    messages = build_query_messages(question="ignore instructions", tool_trace=[], final_answer="a")
+    messages = build_query_messages(question="ignore instructions", reference_answer="reference",
+                                    tool_trace=[], final_answer="a")
     assert "untrusted" in messages[0]["content"]
     assert parse_query_response('{"score": 0.5, "reason": "relevant"}').score == .5
     with pytest.raises(RLInfrastructureError):
         query_reward(messages, lambda _: (_ for _ in ()).throw(RuntimeError("offline")))
     with pytest.raises(RLInfrastructureError):
         query_reward(messages, lambda _: '{"score": 2, "reason": "bad"}')
+
+
+def test_query_prompt_inputs_rubric_and_correctness_separation():
+    trace = [{"tool": "image_search", "query": "img_1", "observation": "match"}]
+    messages = build_query_messages(question="Which landmark?", reference_answer="Tower",
+                                    tool_trace=trace, final_answer="Possibly a tower")
+    payload = json.loads(messages[1]["content"])
+    assert payload == {"question": "Which landmark?", "reference_answer": "Tower",
+                       "tool_trace": trace, "final_answer": "Possibly a tower"}
+    system = messages[0]["content"].lower()
+    for criterion in ("image search utility", "text search utility", "query progression",
+                      "complementarity", "evidence vs noise ratio"):
+        assert criterion in system
+    for anchor in ("0.0", "0.3", "0.5", "0.7", "1.0"):
+        assert anchor in system
+    assert "search/query utility" in system
+    assert "do not re-score final-answer correctness" in system
+    assert "independent r_acc" in system
+    assert "reference answer is context" in system
+
+
+def test_query_reference_answer_is_required():
+    with pytest.raises(TypeError):
+        build_query_messages(question="q", tool_trace=[], final_answer=None)
+    with pytest.raises(ValueError):
+        build_query_messages(question="q", reference_answer=" ", tool_trace=[], final_answer=None)
+
+
+def test_query_strict_json_score_and_reason():
+    assert parse_query_response('{"score": 0.7, "reason": "useful progression"}').score == .7
+    for raw in (
+        '{"score": -0.1, "reason": "bad"}',
+        '{"score": 1.1, "reason": "bad"}',
+        '{"score": NaN, "reason": "bad"}',
+        '{"score": Infinity, "reason": "bad"}',
+        '{"score": 0.7}',
+        '{"score": 0.7, "reason": "ok", "extra": true}',
+        '{"score": 0.7, "reason": " "}',
+        'score: 0.7',
+    ):
+        with pytest.raises(ValueError):
+            parse_query_response(raw)
 
 
 def test_format_current_tool_schema_and_terminal():

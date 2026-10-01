@@ -70,4 +70,11 @@ def detect_fatal(trajectory: AgentTrajectory, *, threshold: int = 3) -> FatalInf
         if consecutive == threshold:
             start = index - threshold + 1
             return FatalInfo(True, start, "consecutive_model_tool_errors", start, threshold)
-    return FatalInfo(False, None, None, len(trajectory.turns), threshold)
+    if trajectory.status == "success":
+        return FatalInfo(False, None, None, len(trajectory.turns), threshold)
+    if trajectory.status == "max_agent_turns_exceeded":
+        # Every existing step is a usable prefix; the missing terminal answer
+        # still marks the trajectory fatal for later advantage clamping.
+        end = len(trajectory.turns)
+        return FatalInfo(True, end, "abnormal_termination:max_agent_turns_exceeded", end, threshold)
+    raise RLInfrastructureError(f"unclassified rollout termination: {trajectory.status!r}")
