@@ -125,7 +125,10 @@ def select_probe_image(records: list[dict[str, Any]], index: int, root: Path) ->
 
 class VLLMStaticBackend:
     """Synchronous local vLLM compatibility bridge; does not own a turn loop."""
-    def __init__(self, *, checkpoint: Path, sft_config: dict[str, Any], gate: dict[str, Any], seed: int):
+    capture_tokens = False  # Preserve default for existing injected Gate B backends.
+
+    def __init__(self, *, checkpoint: Path, sft_config: dict[str, Any], gate: dict[str, Any], seed: int,
+                 capture_tokens: bool = False):
         from vllm import LLM, SamplingParams
         from opensearch_vl_repro.model import load_processor
         import torch
@@ -133,6 +136,8 @@ class VLLMStaticBackend:
         config["model"]["name_or_path"] = str(checkpoint)
         self.processor = load_processor(config, local_files_only=True)
         self.receipts: list[dict[str, Any]] = []
+        self.capture_tokens = capture_tokens
+        self.training_inputs: list[dict[str, Any]] = []
         self.settings = gate["vllm"]
         self.max_images = gate["agent"]["max_turns"] + 1
         if torch.cuda.device_count() < self.settings["tensor_parallel_size"]:
@@ -144,13 +149,19 @@ class VLLMStaticBackend:
                        gpu_memory_utilization=self.settings["gpu_memory_utilization"],
                        limit_mm_per_prompt={"image": self.max_images},
                        mm_processor_kwargs={"max_pixels": sft_config["model"]["image_max_pixels"]},
-                       distributed_executor_backend="mp", enforce_eager=True, trust_remote_code=False, seed=seed)
+                       distributed_executor_backend="mp", enforce_eager=True, trust_remote_code=False, seed=seed,
+                       **({"logprobs_mode": "processed_logprobs"} if capture_tokens else {}))
+        if capture_tokens and self.llm.llm_engine.vllm_config.model_config.logprobs_mode != "processed_logprobs":
+            raise RuntimeError("Gate C requires temperature-processed actual vLLM logprobs")
         self.sampling = SamplingParams(temperature=0.0, max_tokens=self.settings["max_new_tokens"])
 
     def generate(self, *, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         prompt, images, batch = prepare_qwen_vl_processor_inputs(
             self.processor, messages, tools, max_images=self.max_images)
         length = int(batch["input_ids"].shape[-1])
+        if self.capture_tokens:
+            # Preserve actual processor vision tensors, never re-tokenize a response.
+            self.training_inputs.append({key: value.detach().cpu() for key, value in batch.items()})
         del batch
         if length + self.settings["max_new_tokens"] > self.settings["max_model_len"]:
             raise RuntimeError("real multimodal probe does not fit Gate max_model_len; no truncation allowed")
@@ -168,8 +179,15 @@ class VLLMStaticBackend:
             raise RuntimeError("empty vLLM model output")
         receipt["succeeded"] = True
         receipt["completion_token_count"] = len(result.token_ids)
-        return {"text": result.text, "prompt_ids": list(output[0].prompt_token_ids),
-                "completion_ids": list(result.token_ids), "finish_reason": result.finish_reason}
+        value = {"text": result.text, "prompt_ids": list(output[0].prompt_token_ids),
+                 "completion_ids": list(result.token_ids), "finish_reason": result.finish_reason}
+        if self.capture_tokens:
+            from opensearch_vl_repro.rl.training_batch import sampled_logprobs
+            value["logprobs"] = sampled_logprobs(result.token_ids, result.logprobs)
+            value["logprobs_mode"] = "processed_logprobs"
+            if self.training_inputs[-1]["input_ids"][0].tolist() != value["prompt_ids"]:
+                raise RuntimeError("vLLM/HF multimodal prompt IDs differ; refusing RL update")
+        return value
 
     def close(self) -> None:
         if self.llm is not None:

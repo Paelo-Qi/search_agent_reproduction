@@ -44,17 +44,19 @@ class CollectiveStages:
     There is deliberately no barrier in the failure cleanup path.
     """
 
-    def __init__(self, torch: Any, report: Path, identity: dict[str, Any], device: int):
+    def __init__(self, torch: Any, report: Path, identity: dict[str, Any], device: int,
+                 required_checks: tuple[str, ...] = REQUIRED_CHECKS, label: str = "Gate A2.2"):
         self.torch, self.dist, self.report = torch, torch.distributed, report
         self.rank, self.world, self.device = self.dist.get_rank(), self.dist.get_world_size(), device
         self.identity = identity
+        self.required_checks, self.label = required_checks, label
         self.log: list[dict[str, Any]] = []
 
     def run(self, stage: str, operation: Any) -> Any:
         if self.rank == 0:
             atomic_json(self.report, {"passed": False, "stage": stage, "identity": self.identity,
                                       "world_size": self.world, "fsdp_mode": "fsdp2",
-                                      "checks": dict.fromkeys(REQUIRED_CHECKS, False),
+                                      "checks": dict.fromkeys(self.required_checks, False),
                                       "completed_stages": self.log})
         error, result = None, None
         try:
@@ -75,9 +77,9 @@ class CollectiveStages:
             if self.rank == 0:
                 atomic_json(self.report, {"passed": False, "stage": stage, "identity": self.identity,
                                           "world_size": self.world, "fsdp_mode": "fsdp2",
-                                          "checks": dict.fromkeys(REQUIRED_CHECKS, False),
+                                          "checks": dict.fromkeys(self.required_checks, False),
                                           "errors": failures, "completed_stages": self.log})
-            raise RuntimeError(f"Gate A2.2 failed at {stage}: {failures}")
+            raise RuntimeError(f"{self.label} failed at {stage}: {failures}")
         return result
 
 

@@ -123,7 +123,7 @@ class RLWorkflowAdapter(AgentInteraction):
 
 
 def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: Any,
-                        max_turns: int) -> tuple[Any, dict[str, Any]]:
+                        max_turns: int, capture_tokens: bool = False) -> tuple[Any, dict[str, Any]]:
     """Instantiate the verified upstream loop; only adapters/postprocess are local."""
     from rllm.agents.agent import Action, BaseAgent, Step, Trajectory
     from rllm.engine.rollout.rollout_engine import ModelOutput, RolloutEngine
@@ -134,6 +134,7 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
 
     if not inspect.iscoroutinefunction(MultiTurnWorkflow.run) or not inspect.iscoroutinefunction(RolloutEngine.get_model_response):
         raise RuntimeError("unsupported rLLM workflow/engine async API")
+    pending: dict[str, Any] = {}
 
     class ProjectAgent(BaseAgent):
         def __init__(self):
@@ -157,6 +158,19 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
                 chat_completions=messages_to_json_safe(adapter.build_next_messages()),
                 model_response=response, action=Action({"kind": parsed.kind,
                     "tool_calls": [{"name": call.name, "arguments": call.arguments} for call in parsed.tool_calls]})))
+            if capture_tokens:
+                output = pending.pop("output")
+                if output.text != response or not output.logprobs or len(output.logprobs) != len(output.completion_ids):
+                    raise RuntimeError("real rLLM Step/output token alignment failed")
+                step = self._trajectory.steps[-1]
+                step.prompt_ids = list(output.prompt_ids)
+                step.response_ids = list(output.completion_ids)
+                step.logprobs = list(output.logprobs)
+                step.model_output = output
+                step.chat_completions = pending.pop("prompt_messages")
+                step.info = {"token_count": len(step.response_ids), "parsed_kind": parsed.kind,
+                             "finish_reason": output.finish_reason, "token_origin": "vllm.RequestOutput",
+                             "logprobs_mode": pending.pop("logprobs_mode")}
             return action
 
         def update_from_env(self, observation, reward, done, info, **kwargs):
@@ -164,7 +178,7 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
                 step = self._trajectory.steps[-1]
                 step.observation = messages_to_json_safe(adapter.build_next_messages())[-1]
                 step.done = done
-                step.info = {"reward_computed": False, **info}
+                step.info = {**step.info, "reward_computed": False, **info}
 
     class ProjectEnvironment(BaseEnv):
         def reset(self, task=None):
@@ -174,7 +188,7 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
 
         def step(self, action):
             adapter.apply_tool_calls(action.action)
-            return adapter.build_next_messages(), 0.0, adapter.state().status == "success", {"reward_computed": False}
+            return adapter.build_next_messages(), 0.0, adapter.state().status in {"success", "fatal"}, {"reward_computed": False}
 
         @staticmethod
         def from_dict(info):
@@ -182,15 +196,23 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
 
     class LocalEngine(RolloutEngine):
         async def get_model_response(self, messages, **kwargs):
+            prompt_messages = messages_to_json_safe(messages) if capture_tokens else None
             try:
                 output = backend.generate(messages=messages, tools=adapter.tool_registry.declarations_for_model())
             except Exception as exc:
                 adapter.record_failure(origin="model_generation_error", message=f"{type(exc).__name__}: {exc}")
                 raise
-            return ModelOutput(text=output["text"], content=output["text"],
+            result = ModelOutput(text=output["text"], content=output["text"],
                                prompt_ids=output["prompt_ids"], completion_ids=output["completion_ids"],
                                prompt_length=len(output["prompt_ids"]), completion_length=len(output["completion_ids"]),
                                finish_reason=output["finish_reason"])
+            if capture_tokens:
+                if output["logprobs_mode"] != "processed_logprobs":
+                    raise RuntimeError("real rollout processed-logprobs contract missing")
+                result.logprobs = output["logprobs"]
+                pending.update(output=result, prompt_messages=prompt_messages,
+                               logprobs_mode=output["logprobs_mode"])
+            return result
 
     class NoRewardWorkflow(MultiTurnWorkflow):
         # Deliberately inherit run/reset/run_with_termination_handling unchanged.

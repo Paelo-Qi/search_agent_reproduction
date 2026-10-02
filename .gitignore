@@ -45,6 +45,7 @@ reports/sft_main_imageid_v3/
 reports/sft_preflight_imageid_v3/
 reports/rl_gate_a22/
 reports/rl_gate_b/
+reports/rl_gate_c/
 reports/sft_diagnostics_imageid_v3/
 reports/tool_protocol_imageid_v3/
 !reports/eval_subset_report.json

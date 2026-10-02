@@ -132,12 +132,16 @@ class DeepSeekJudge:
         self.retry = retry or RetryPolicy(max_attempts=config.max_attempts)
 
     def _request(self, sample: JudgeSample, api_key: str) -> str:
+        return self.request_messages(build_judge_messages(sample), api_key)
+
+    def request_messages(self, messages: list[dict[str, str]], api_key: str) -> str:
+        """Shared transport only; callers retain their own prompt/parser/retry."""
         url = self.config.base_url.rstrip("/") + "/chat/completions"
         try:
             response = self.session.post(
                 url,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": self.config.model, "messages": build_judge_messages(sample),
+                json={"model": self.config.model, "messages": messages,
                       "temperature": self.config.temperature, "max_tokens": self.config.max_tokens,
                       "thinking": {"type": "disabled"},
                       "response_format": {"type": "json_object"}},
