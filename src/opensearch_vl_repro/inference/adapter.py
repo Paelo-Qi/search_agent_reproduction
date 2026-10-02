@@ -12,6 +12,19 @@ from opensearch_vl_repro.data import SFT_INPUT_MESSAGE_VERSION
 from opensearch_vl_repro.agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
 
 
+def adapter_file_identity(path: str | Path) -> dict[str, Any]:
+    """Hash PEFT artifacts without claiming they are a formal SFT checkpoint."""
+    adapter = Path(path)
+    config_path = adapter / "adapter_config.json"
+    weights = sorted(adapter.glob("*.safetensors"))
+    if not config_path.is_file() or not weights:
+        raise ValueError("adapter requires adapter_config.json and safetensors weights")
+    files = {file.relative_to(adapter).as_posix(): sha256_file(file)
+             for file in [config_path, *weights]}
+    return {"file_sha256": files, "adapter_fingerprint": hashlib.sha256(
+        json.dumps(files, sort_keys=True).encode("utf-8")).hexdigest()}
+
+
 def adapter_identity(path: str | Path, *, base_model: str,
                      base_revision: str) -> dict[str, Any]:
     adapter = Path(path).expanduser().resolve()
@@ -33,13 +46,13 @@ def adapter_identity(path: str | Path, *, base_model: str,
     weights = sorted(adapter.glob("*.safetensors"))
     if not weights:
         raise ValueError("formal SFT adapter has no safetensors weights")
-    files = {file.relative_to(adapter).as_posix(): sha256_file(file)
-             for file in [config_path, *weights]}
+    artifact_identity = adapter_file_identity(adapter)
+    files = artifact_identity["file_sha256"]
     expected = metadata.get("file_sha256", {})
     for relative, checksum in files.items():
         if expected.get(f"adapter/{relative}") != checksum:
             raise ValueError(f"adapter checkpoint checksum mismatch: {relative}")
-    fingerprint = hashlib.sha256(json.dumps(files, sort_keys=True).encode("utf-8")).hexdigest()
+    fingerprint = artifact_identity["adapter_fingerprint"]
     return {
         "kind": "peft_lora_adapter", "path": str(adapter),
         "base_model": base_model, "base_revision": base_revision,
