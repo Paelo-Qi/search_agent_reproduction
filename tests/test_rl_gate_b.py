@@ -228,9 +228,13 @@ def test_vllm_bridge_receives_exact_pil_objects_including_real_crop():
     calls = []
     class Processor:
         def apply_chat_template(self, messages, **kwargs):
-            assert kwargs["tools"] == adapter.tool_registry.declarations_for_model()
+            assert isinstance(messages[0]["content"], str)
+            assert kwargs == {"tools": adapter.tool_registry.declarations_for_model(),
+                              "tokenize": False, "add_generation_prompt": True}
             return "CPU mock prompt"
         def __call__(self, **kwargs):
+            assert kwargs == {"text": ["CPU mock prompt"], "images": [[initial, derived]],
+                              "return_tensors": "pt", "truncation": False}
             assert kwargs["images"][0][0] is initial and kwargs["images"][0][1] is derived
             return {"input_ids": SimpleNamespace(shape=(1, 300))}
     def generate(prompts, **kwargs):

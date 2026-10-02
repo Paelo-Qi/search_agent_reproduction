@@ -107,6 +107,15 @@ the plain full checkpoint for a finite multimodal HF forward. That second HF
 model is also destroyed before vLLM is constructed. A tiny CPU regression
 exercises the **real** PEFT/safetensors merge/reload path without a GPU model.
 
+Fresh HF validation and the vLLM bridge share `prepare_qwen_vl_processor_inputs`:
+collect actual PIL image blocks in message/content order, render the unchanged
+messages/tools with `apply_chat_template(tokenize=False, add_generation_prompt=True)`,
+then call `processor(text=[prompt], images=[images], return_tensors="pt", truncation=False)`.
+HF then moves the inputs to CUDA and checks finite logits as before. This avoids
+the Transformers 4.57.1 multimodal `tokenize=True` traversal that treats string
+system/tool content as a list of blocks. No message schema is rewritten; zero
+images or non-PIL image blocks fail closed, without loading paths/URLs/base64.
+
 Files are built in a hidden same-parent staging directory and atomically
 renamed only after validation. Failed staging remains unpublished for
 inspection. Existing outputs are rejected, not overwritten/resumed. Source
@@ -157,8 +166,8 @@ CUDA_VISIBLE_DEVICES=0 python scripts/validate_rl_rollout_roundtrip.py \
   --base-model-path "$BASE_SNAPSHOT" \
   --actor-adapter outputs/rl_gate_a22/ws2-attempt2/adapter \
   --actor-gate-manifest outputs/rl_gate_a22/ws2-attempt2/gate_manifest.json \
-  --output-dir outputs/rl_gate_b/a22-tp1-attempt1 \
-  --report-dir reports/rl_gate_b/a22-tp1-attempt1 --local-files-only
+  --output-dir outputs/rl_gate_b/a22-tp1-attempt2 \
+  --report-dir reports/rl_gate_b/a22-tp1-attempt2 --local-files-only
 
 # Optional additional TP=2 probe; NOT required and NOT rollout_n=2.
 CUDA_VISIBLE_DEVICES=0,1 python scripts/validate_rl_rollout_roundtrip.py \
@@ -179,6 +188,8 @@ verified A2.2 run has a different name, change **both** actor paths together.
 For a rerun after failure, retain the report/staging files and use a fresh
 output/report attempt; never delete/overwrite A2.2 inputs. Omitting
 `--base-model-path` selects only an already cached pinned Hub snapshot.
+In particular, retain `a22-tp1-attempt1` as the failed fresh-HF processor audit;
+the corrected single-GPU command above uses new `a22-tp1-attempt2` paths.
 
 Default Gate parameters: BF16, TP=1, max_model_len=8192, max_new_tokens=256,
 temperature=0, max_turns=4 and memory utilization=0.6. Actual expanded

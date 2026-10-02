@@ -23,6 +23,28 @@ from opensearch_vl_repro.sft_tool_audit import sha256_file
 GATE_B_VERSION = "actor-rollout-roundtrip-b-v1"
 
 
+def prepare_qwen_vl_processor_inputs(processor: Any, messages: list[dict[str, Any]],
+                                     tools: list[dict[str, Any]], *,
+                                     max_images: int | None = None) -> tuple[str, list[Any], Any]:
+    """Shared Gate input materialization; preserve string content and PIL order.
+
+    Transformers 4.57.1's multimodal tokenize=True path assumes every message
+    content is a block list. Render our unchanged messages first, then encode
+    the rendered prompt with the actual PIL objects, as in the vLLM bridge.
+    """
+    from PIL import Image
+
+    images = [part.get("image") for message in messages if isinstance(message.get("content"), list)
+              for part in message["content"] if isinstance(part, dict) and part.get("type") == "image"]
+    if not images or any(not isinstance(image, Image.Image) for image in images):
+        raise RuntimeError("Gate processor requires at least one actual PIL multimodal image part")
+    if max_images is not None and len(images) > max_images:
+        raise RuntimeError("Gate processor image count exceeds the permitted multimodal limit")
+    prompt = processor.apply_chat_template(messages, tools=tools, tokenize=False, add_generation_prompt=True)
+    inputs = processor(text=[prompt], images=[images], return_tensors="pt", truncation=False)
+    return prompt, images, inputs
+
+
 def validate_actor_adapter(*, adapter: Path, gate_manifest: Path | None,
                            rl_config: dict[str, Any], sft_config: dict[str, Any],
                            source_sft_adapter: Path) -> dict[str, Any]:
@@ -200,8 +222,7 @@ def merge_actor_adapter(*, base_snapshot: Path, adapter: Path, actor: dict[str, 
     fresh.requires_grad_(False)
     require_plain_merged_model(fresh, PeftModel)
     fresh_processor = load_processor(fresh_config, local_files_only=True)
-    inputs = fresh_processor.apply_chat_template(validation_messages, tools=tools, tokenize=True,
-                                                 add_generation_prompt=True, return_dict=True, return_tensors="pt")
+    inputs = prepare_qwen_vl_processor_inputs(fresh_processor, validation_messages, tools)[2]
     inputs = move_batch(inputs, "cuda:0")
     stage("fresh_hf_forward")
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):

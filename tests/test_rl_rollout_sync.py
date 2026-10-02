@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from PIL import Image
 
 from opensearch_vl_repro.agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
 from opensearch_vl_repro.data import SFT_INPUT_MESSAGE_VERSION
@@ -16,7 +17,7 @@ from opensearch_vl_repro.rl.actor_gate import BASE_MODEL, BASE_REVISION, REQUIRE
 from opensearch_vl_repro.rl.checkpoint import build_rl_lineage
 from opensearch_vl_repro.rl.rollout_sync import (
     check_disk_space, merge_actor_adapter, merge_identity, require_plain_merged_model,
-    required_merge_space, validate_actor_adapter, validate_merged_files,
+    prepare_qwen_vl_processor_inputs, required_merge_space, validate_actor_adapter, validate_merged_files,
 )
 from opensearch_vl_repro.sft_tool_audit import sha256_file
 
@@ -162,6 +163,74 @@ def test_static_handoff_source_enforces_fresh_reload_and_hf_destruction():
     assert "LoRARequest" not in source and "enable_lora" not in source
 
 
+@pytest.mark.parametrize("image_count", [1, 2])
+def test_two_stage_processor_regression_preserves_system_string_and_pil_order(image_count):
+    images = [Image.new("RGB", (8 + i, 6), color) for i, color in enumerate(["blue", "red"][:image_count])]
+    messages = [{"role": "system", "content": "system string"},
+                {"role": "user", "content": [*({"type": "image", "image": image} for image in images),
+                                              {"type": "text", "text": "question"}]},
+                {"role": "tool", "content": "unchanged tool string"}]
+    before = [{**message, "content": [dict(part) for part in message["content"]]
+               if isinstance(message["content"], list) else message["content"]} for message in messages]
+    tools, calls = [{"type": "function", "function": {"name": "fixture"}}], []
+    batch = {"input_ids": SimpleNamespace(shape=(1, 8))}
+    class Processor:
+        def apply_chat_template(self, conversation, **kwargs):
+            if kwargs.get("tokenize") is True:
+                # Exact offending traversal from Transformers 4.57.1.
+                for message in conversation:
+                    [content for content in message["content"] if content["type"] in ["image", "video"]]
+            assert conversation is messages
+            assert kwargs == {"tools": tools, "tokenize": False, "add_generation_prompt": True}
+            assert kwargs["tools"] is tools and conversation[0]["content"] == "system string"
+            calls.append("render")
+            return "CPU rendered prompt"
+        def __call__(self, **kwargs):
+            assert set(kwargs) == {"text", "images", "return_tensors", "truncation"}
+            assert kwargs["text"] == ["CPU rendered prompt"]
+            assert len(kwargs["images"]) == 1
+            assert all(a is b for a, b in zip(kwargs["images"][0], images, strict=True))
+            assert kwargs["return_tensors"] == "pt" and kwargs["truncation"] is False
+            calls.append("encode")
+            return batch
+    processor = Processor()
+    with pytest.raises(TypeError, match="string indices"):
+        processor.apply_chat_template(messages, tokenize=True)
+    prompt, actual, inputs = prepare_qwen_vl_processor_inputs(processor, messages, tools)
+    assert calls == ["render", "encode"] and prompt == "CPU rendered prompt" and inputs is batch
+    assert all(a is b for a, b in zip(actual, images, strict=True))
+    assert messages == before and isinstance(messages[0]["content"], str)
+    assert messages[-1]["content"] == "unchanged tool string"
+
+
+@pytest.mark.parametrize("visual", [None, "image.png", "https://example.com/image.png", "data:image/png;base64,AAAA", b"pixels"])
+def test_processor_non_pil_images_fail_closed_before_render(visual):
+    processor = SimpleNamespace(apply_chat_template=lambda *a, **k: pytest.fail("must reject before render"))
+    messages = [{"role": "system", "content": "system string"},
+                {"role": "user", "content": [{"type": "image", "image": visual}]}]
+    with pytest.raises(RuntimeError, match="actual PIL"):
+        prepare_qwen_vl_processor_inputs(processor, messages, [])
+
+
+def test_processor_zero_images_and_image_limit_fail_closed():
+    processor = SimpleNamespace(apply_chat_template=lambda *a, **k: pytest.fail("must reject before render"))
+    with pytest.raises(RuntimeError, match="at least one"):
+        prepare_qwen_vl_processor_inputs(processor, [{"role": "system", "content": "system string"}], [])
+    images = [{"type": "image", "image": Image.new("RGB", (2, 2))} for _ in range(2)]
+    with pytest.raises(RuntimeError, match="limit"):
+        prepare_qwen_vl_processor_inputs(processor, [{"role": "user", "content": images}], [], max_images=1)
+
+
+def test_hf_and_vllm_use_the_same_processor_materialization_helper():
+    import inspect
+    from opensearch_vl_repro.rl import rollout_gate, rollout_sync
+    assert rollout_gate.prepare_qwen_vl_processor_inputs is rollout_sync.prepare_qwen_vl_processor_inputs
+    for function in (merge_actor_adapter, rollout_gate.VLLMStaticBackend.generate):
+        source = inspect.getsource(function)
+        assert "prepare_qwen_vl_processor_inputs(" in source
+        assert ".apply_chat_template(" not in source  # neither has a divergent rendering path
+
+
 def test_actual_peft_static_merge_fresh_plain_reload_on_tiny_cpu_model(tmp_path, monkeypatch):
     """Real PEFT/safetensors, tiny CPU-only fixture; no Qwen/GPU PASS claim."""
     import contextlib
@@ -183,12 +252,27 @@ def test_actual_peft_static_merge_fresh_plain_reload_on_tiny_cpu_model(tmp_path,
             directory = Path(directory)
             (directory / "config.json").write_text(json.dumps(dict(self.config)))
             save_file(self.state_dict(), directory / "model.safetensors")
+    initial = Image.new("RGB", (8, 6), "blue")
+    derived = initial.crop((2, 1, 6, 4))
+    messages = [{"role": "system", "content": "system string"},
+                {"role": "user", "content": [{"type": "image", "image": initial}, {"type": "text", "text": "question"}]},
+                {"role": "tool", "content": [{"type": "image", "image": derived}, {"type": "text", "text": "observation"}]}]
+    tools, processor_calls = [{"type": "function", "function": {"name": "crop"}}], []
     class Processor:
         tokenizer = SimpleNamespace(name_or_path="fixture", init_kwargs={})
         def save_pretrained(self, directory):
             for name in ("preprocessor_config.json", "tokenizer_config.json"):
                 (Path(directory) / name).write_text("{}")
-        def apply_chat_template(self, *a, **k):
+        def apply_chat_template(self, conversation, **kwargs):
+            assert conversation is messages and conversation[0]["content"] == "system string"
+            assert kwargs == {"tools": tools, "tokenize": False, "add_generation_prompt": True}
+            processor_calls.append("render")
+            return "CPU rendered multimodal prompt"
+        def __call__(self, **kwargs):
+            assert kwargs == {"text": ["CPU rendered multimodal prompt"], "images": [[initial, derived]],
+                              "return_tensors": "pt", "truncation": False}
+            assert kwargs["images"][0][0] is initial and kwargs["images"][0][1] is derived
+            processor_calls.append("encode")
             return {"input_ids": torch.tensor([[1, 2]])}
     base, adapter, output = tmp_path / "base", tmp_path / "adapter", tmp_path / "merged"
     base.mkdir()
@@ -220,7 +304,8 @@ def test_actual_peft_static_merge_fresh_plain_reload_on_tiny_cpu_model(tmp_path,
              "source_sft_adapter_fingerprint": "s" * 64, "source_sft_lineage": ["main_a_1k", "main_b_2k"],
              "actor_source_kind": "a22_temporary_updated_actor", "actor_gate_identity_sha256": "a" * 64}
     manifest = merge_actor_adapter(base_snapshot=base, adapter=adapter, actor=actor,
-        sft_config={"model": {}}, output=output, versions={"test": "tiny_cpu"}, validation_messages=[], tools=[])
+        sft_config={"model": {}}, output=output, versions={"test": "tiny_cpu"}, validation_messages=messages, tools=tools)
+    assert processor_calls == ["render", "encode"]
     assert all(manifest[k] is True for k in ("merge_complete", "fresh_hf_forward_finite", "no_active_peft", "merge_hf_destroyed", "reload_hf_destroyed"))
     assert len(loaded) == 2 and loaded[0] == base and loaded[1] != base
     assert output.is_dir() and not loaded[1].exists()  # atomic staging publication

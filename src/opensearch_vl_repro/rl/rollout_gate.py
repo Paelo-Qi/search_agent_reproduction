@@ -26,7 +26,9 @@ from opensearch_vl_repro.agent.tool_contracts import TOOL_DECLARATIONS, RUNTIME_
 from opensearch_vl_repro.agent.tool_registry import RegisteredTool, ToolRegistry, ToolResult
 from opensearch_vl_repro.rl.actor_gate import BASE_MODEL, BASE_REVISION, atomic_json, load_smoke_records, validate_output_paths
 from opensearch_vl_repro.rl.data import question_sha256, safe_image_relpath
-from opensearch_vl_repro.rl.rollout_sync import GATE_B_VERSION, merge_actor_adapter, validate_actor_adapter
+from opensearch_vl_repro.rl.rollout_sync import (
+    GATE_B_VERSION, merge_actor_adapter, prepare_qwen_vl_processor_inputs, validate_actor_adapter,
+)
 from opensearch_vl_repro.rl.workflow_adapter import RLWorkflowAdapter, build_rllm_workflow
 
 GATE_B_CHECKS = (
@@ -146,12 +148,8 @@ class VLLMStaticBackend:
         self.sampling = SamplingParams(temperature=0.0, max_tokens=self.settings["max_new_tokens"])
 
     def generate(self, *, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
-        images = [part["image"] for message in messages if isinstance(message.get("content"), list)
-                  for part in message["content"] if part.get("type") == "image"]
-        if not images or len(images) > self.max_images or any(not isinstance(image, Image.Image) for image in images):
-            raise RuntimeError("vLLM bridge requires actual PIL multimodal image parts")
-        prompt = self.processor.apply_chat_template(messages, tools=tools, tokenize=False, add_generation_prompt=True)
-        batch = self.processor(text=[prompt], images=[images], return_tensors="pt", truncation=False)
+        prompt, images, batch = prepare_qwen_vl_processor_inputs(
+            self.processor, messages, tools, max_images=self.max_images)
         length = int(batch["input_ids"].shape[-1])
         del batch
         if length + self.settings["max_new_tokens"] > self.settings["max_model_len"]:
