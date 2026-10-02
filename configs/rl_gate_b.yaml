@@ -1,0 +1,14 @@
+# Gate-only inference/protocol probe; these are NOT formal RL hyperparameters.
+gate_version: actor-rollout-roundtrip-b-v1
+dtype: bfloat16
+merge_method: peft.merge_and_unload
+vllm:
+  tensor_parallel_size: 1
+  max_model_len: 8192
+  max_new_tokens: 256
+  temperature: 0.0
+  gpu_memory_utilization: 0.6
+agent:
+  max_turns: 4
+probe:
+  crop_fraction: 0.5
