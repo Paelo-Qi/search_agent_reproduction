@@ -183,16 +183,19 @@ class VLLMStaticBackend:
             torch.cuda.empty_cache()
 
 
-def roundtrip_checks(trajectory: Any, receipts: list[dict[str, Any]]) -> dict[str, bool]:
+def roundtrip_checks(trajectory: Any, receipts: list[dict[str, Any]], *,
+                     expected_crop_args: dict[str, Any]) -> dict[str, bool]:
     crops = [turn for turn in trajectory.turns if turn.tool_call and turn.tool_call["name"] == "crop"
-             and turn.status == "success" and turn.tool_call["arguments"].get("image") == "img_1"]
+             and turn.status == "success"]
+    exact_crop = (len(crops) == 1 and crops[0].tool_call["arguments"].get("image") == "img_1"
+                  and crops[0].tool_call["arguments"] == expected_crop_args)
     derived = next((entry for entry in trajectory.images if entry["image_id"] == "img_2" and entry["kind"] == "derived"), None)
     received = (len(receipts) >= 2 and derived is not None and receipts[1].get("actual_pil_inputs") is True
                 and receipts[1].get("multimodal_image_count", 0) >= 2
                 and any(item.get("sha256") == derived["sha256"] and item.get("size") == derived["size"]
                         for item in receipts[1].get("images", [])[1:]))
     return {"initial_image_accepted": bool(receipts) and receipts[0].get("succeeded") is True,
-            "model_generated_crop": bool(crops), "crop_img_1_success": bool(crops),
+            "model_generated_crop": exact_crop, "crop_img_1_success": exact_crop,
             "img_2_registered": derived is not None,
             "img_2_parent_img_1": derived is not None and derived["parent_id"] == "img_1" and derived["metadata"].get("producing_tool") == "crop",
             "derived_image_sha_recorded": derived is not None and re.fullmatch(r"[0-9a-f]{64}", derived["sha256"]) is not None,
@@ -314,7 +317,7 @@ def run_rollout_gate(args: Any, root: Path) -> int:
         trajectory = adapter.finalize_episode(termination=termination)
         if termination != "env_done" and trajectory.status == "success":
             trajectory.status, trajectory.error = "workflow_error", f"rLLM termination={termination}"
-        report["checks"].update(roundtrip_checks(trajectory, backend.receipts))
+        report["checks"].update(roundtrip_checks(trajectory, backend.receipts, expected_crop_args=crop_arguments))
         report.update(rllm_episode_identity=episode.id, rllm_termination=termination,
                       derived_image_chain=trajectory.images, generation_receipts=backend.receipts,
                       second_generation_received_derived_image=report["checks"]["second_generation_received_derived_image"],
@@ -340,13 +343,17 @@ def run_rollout_gate(args: Any, root: Path) -> int:
                       peak_cuda_memory={"allocated_bytes": torch.cuda.max_memory_allocated(0),
                                         "reserved_bytes": torch.cuda.max_memory_reserved(0)},
                       runtime_image_protocol_version=RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION)
-        atomic_json(output / "gate_manifest.json", redact_secrets(report))
         atomic_json(report_path, redact_secrets(report))
+        # The authoritative PASS marker is the last persistent success artifact.
+        atomic_json(output / "gate_manifest.json", redact_secrets(report))
         print(f"Gate B PASS: {report_path}", flush=True)
         return 0
     except Exception as exc:
         report.update(passed=False, stage=stage, elapsed_seconds=time.monotonic() - started,
                       error={"type": type(exc).__name__, "message": str(exc)})
+        # Output belongs to this fresh invocation. Revoke any partially published
+        # PASS marker before failure-report I/O, which itself might also fail.
+        (output / "gate_manifest.json").unlink(missing_ok=True)
         if adapter is not None:
             report["partial_trajectory"] = adapter.finalize_episode(termination="error").to_dict()
             report["error"]["origin"] = adapter.state().error_origin or stage

@@ -14,6 +14,8 @@ import yaml
 from PIL import Image
 
 from opensearch_vl_repro.agent.reliability import image_sha256
+from opensearch_vl_repro.rl import rollout_gate
+from opensearch_vl_repro.rl.actor_gate import atomic_json
 from opensearch_vl_repro.rl.data import question_sha256
 from opensearch_vl_repro.rl.rollout_gate import (
     GATE_B_CHECKS, VLLMStaticBackend, create_gate_tool_registry, diagnostic_crop_probe,
@@ -78,14 +80,143 @@ def test_roundtrip_checks_require_real_second_image_not_text_only():
     trajectory = adapter.finalize_episode(termination="env_done")
     receipts = [{"succeeded": True}, {"succeeded": True, "actual_pil_inputs": True,
                   "multimodal_image_count": 2, "images": [{}, {"sha256": trajectory.images[1]["sha256"], "size": [4, 3]}]}]
-    assert all(roundtrip_checks(trajectory, receipts).values())
+    _, expected = diagnostic_crop_probe(Image.new("RGB", (8, 6)), .5)
+    assert all(roundtrip_checks(trajectory, receipts, expected_crop_args=expected).values())
     for changed in ({"actual_pil_inputs": False}, {"images": [{}]}, {"succeeded": False}):
-        assert not all(roundtrip_checks(trajectory, [receipts[0], {**receipts[1], **changed}]).values())
+        assert not all(roundtrip_checks(trajectory, [receipts[0], {**receipts[1], **changed}], expected_crop_args=expected).values())
     direct = RLWorkflowAdapter(create_gate_tool_registry())
     direct.initialize_episode(question="fixture", images=[Image.new("RGB", (8, 6))], sample_id="s")
     direct.handle_model_output("Direct answer")
-    checks = roundtrip_checks(direct.finalize_episode(termination="env_done"), [{"succeeded": True}])
+    checks = roundtrip_checks(direct.finalize_episode(termination="env_done"), [{"succeeded": True}], expected_crop_args=expected)
     assert checks["trajectory_success"] and not checks["model_generated_crop"]
+
+
+@pytest.mark.parametrize("changed", [{}, {"x": 3}, {"y": 2}, {"width": 3}, {"height": 2},
+                                   {"image": "img_2"}, {"extra_argument": 1}])
+def test_diagnostic_crop_arguments_must_match_exactly(changed):
+    _, expected = diagnostic_crop_probe(Image.new("RGB", (8, 6)), .5)
+    turn = SimpleNamespace(tool_call={"name": "crop", "arguments": {**expected, **changed}},
+                           status="success", metadata={})
+    trajectory = SimpleNamespace(turns=[turn], images=[], final_answer="fixture", status="success")
+    checks = roundtrip_checks(trajectory, [], expected_crop_args=expected)
+    assert checks["model_generated_crop"] is (not changed)
+    assert checks["crop_img_1_success"] is (not changed)
+
+
+@pytest.mark.parametrize("second_image", ["img_1", "img_2"])
+def test_two_successful_crops_fail_even_when_first_matches(second_image):
+    _, expected = diagnostic_crop_probe(Image.new("RGB", (8, 6)), .5)
+    turns = [SimpleNamespace(tool_call={"name": "crop", "arguments": expected}, status="success", metadata={}),
+             SimpleNamespace(tool_call={"name": "crop", "arguments": {**expected, "image": second_image, "width": 1}},
+                             status="success", metadata={})]
+    trajectory = SimpleNamespace(turns=turns, images=[], final_answer="fixture", status="success")
+    checks = roundtrip_checks(trajectory, [], expected_crop_args=expected)
+    assert checks["model_generated_crop"] is False and checks["crop_img_1_success"] is False
+
+
+@pytest.fixture
+def publication_gate(tmp_path, monkeypatch):
+    """CPU-only fake infrastructure; exercise the real runner's publication path."""
+    source = tmp_path / "source"
+    base = tmp_path / "base"
+    source.mkdir(); base.mkdir()
+    image = Image.new("RGB", (8, 6), "blue")
+    image.save(source / "probe.png")
+    row = {"source_sample_id": "rl_000002", "prompt_id": "rl_000002", "question": "fixture",
+           "question_hash": question_sha256("fixture"), "image_relpaths": ["probe.png"],
+           "image_hashes": [image_sha256(image)]}
+    args = SimpleNamespace(output_dir=tmp_path / "output", report_dir=tmp_path / "reports",
+        gate_config=ROOT / "configs/rl_gate_b.yaml", tensor_parallel_size=None,
+        actor_adapter=tmp_path / "actor/adapter", actor_gate_manifest=None,
+        source_root=source, data=tmp_path / "input/smoke20.json", config=ROOT / "configs/rl_main.yaml",
+        base_model=rollout_gate.BASE_MODEL, base_revision=rollout_gate.BASE_REVISION,
+        sample_index=0, base_model_path=base, seed=20260506)
+    versions = {"torch": "2.8.0", "transformers": "4.57.1", "peft": "0.21.1", "vllm": "0.11.0", "rllm": "0.2.1"}
+    monkeypatch.setattr(rollout_gate.importlib.metadata, "version", lambda name: versions.get(name, "fixture"))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(
+        is_available=lambda: True, is_bf16_supported=lambda: True, set_device=lambda _: None,
+        reset_peak_memory_stats=lambda _: None, is_initialized=lambda: False,
+        max_memory_allocated=lambda _: 0, max_memory_reserved=lambda _: 0)))
+    monkeypatch.setattr("opensearch_vl_repro.rl.config.load_rl_config", lambda _: {
+        "model": {"sft_config": "configs/sft_main_imageid_v3.yaml", "sft_adapter": "unused_fixture"},
+        "data": {"quality_audit_dir": "data/rl_quality_audit"}})
+    monkeypatch.setattr("opensearch_vl_repro.sft_train_plan.load_main_config", lambda *a, **k: {})
+    monkeypatch.setattr(rollout_gate, "validate_actor_adapter", lambda **k: {"actor_adapter_fingerprint": "a" * 64})
+    monkeypatch.setattr(rollout_gate, "load_smoke_records", lambda *a: ([row], {"manifest_sha256": "d" * 64}))
+    monkeypatch.setattr(rollout_gate, "merge_actor_adapter", lambda **k: {
+        "identity": {"merged_checkpoint_fingerprint": "f" * 64}, "fresh_hf_forward_finite": True,
+        "no_active_peft": True, "merge_hf_destroyed": True, "reload_hf_destroyed": True})
+    class Backend:
+        def __init__(self, **kwargs):
+            self.receipts = []
+            self.closed = False
+        def close(self):
+            self.closed = True
+    backend = Backend()
+    monkeypatch.setattr(rollout_gate, "VLLMStaticBackend", lambda **k: backend)
+    def workflow_binding(*, adapter, **kwargs):
+        class Workflow:
+            async def run_with_termination_handling(self, task, uid):
+                _, expected = diagnostic_crop_probe(task["images"][0], .5)
+                text = '<tool_call>' + json.dumps({"name": "crop", "arguments": expected}) + '</tool_call>'
+                adapter.apply_tool_calls(adapter.handle_model_output(text))
+                adapter.handle_model_output("CPU fixture final answer")
+                derived = adapter.state().context.image_registry.get("img_2")
+                backend.receipts = [{"succeeded": True}, {"succeeded": True, "actual_pil_inputs": True,
+                    "multimodal_image_count": 2, "images": [{}, {"sha256": image_sha256(derived), "size": list(derived.size)}]}]
+                return SimpleNamespace(id="cpu-fixture", termination_reason=SimpleNamespace(value="env_done"),
+                                       info={}, to_dict=lambda: {"cpu_fixture_only": True})
+        return Workflow(), {"cpu_fixture_only": True}
+    monkeypatch.setattr(rollout_gate, "build_rllm_workflow", workflow_binding)
+    return args, backend
+
+
+def test_final_report_precedes_manifest_and_manifest_is_last_pass_artifact(publication_gate, monkeypatch):
+    args, backend = publication_gate
+    writes = []
+    manifest = args.output_dir / "gate_manifest.json"
+    report = args.report_dir / "gate_b_report.json"
+    def writer(path, value):
+        if value.get("passed") is True:
+            assert backend.closed
+            assert not manifest.exists()
+            if path == manifest:
+                assert json.loads(report.read_text(encoding="utf-8"))["passed"] is True
+        atomic_json(path, value)
+        writes.append((path, value.get("passed")))
+    monkeypatch.setattr(rollout_gate, "atomic_json", writer)
+    assert run_rollout_gate(args, ROOT) == 0
+    assert writes[-2:] == [(report, True), (manifest, True)]
+    assert json.loads(manifest.read_text(encoding="utf-8"))["passed"] is True
+
+
+@pytest.mark.parametrize("failure", ["final_report", "manifest_before_commit", "manifest_after_commit", "pass_stdout"])
+def test_publication_failure_exits_with_false_report_and_no_pass_manifest(publication_gate, monkeypatch, failure):
+    args, backend = publication_gate
+    manifest = args.output_dir / "gate_manifest.json"
+    report = args.report_dir / "gate_b_report.json"
+    def writer(path, value):
+        if value.get("passed") is True:
+            assert backend.closed
+            if path == report and failure == "final_report":
+                assert not manifest.exists()
+                raise OSError("injected publication failure")
+            if path == manifest and failure.startswith("manifest_"):
+                assert json.loads(report.read_text(encoding="utf-8"))["passed"] is True
+                if failure == "manifest_after_commit":
+                    atomic_json(path, value)
+                raise OSError("injected publication failure")
+        atomic_json(path, value)
+    def printer(text, **kwargs):
+        if failure == "pass_stdout" and text.startswith("Gate B PASS"):
+            assert json.loads(manifest.read_text(encoding="utf-8"))["passed"] is True
+            raise OSError("injected publication failure")
+    monkeypatch.setattr(rollout_gate, "atomic_json", writer)
+    monkeypatch.setattr(rollout_gate, "print", printer, raising=False)
+    with pytest.raises(OSError, match="injected publication failure"):
+        run_rollout_gate(args, ROOT)
+    assert not manifest.exists()
+    assert json.loads(report.read_text(encoding="utf-8"))["passed"] is False
 
 
 def test_vllm_bridge_receives_exact_pil_objects_including_real_crop():

@@ -61,6 +61,10 @@ there is no locally copied substitute generation loop and no `AgentRuntime.run`
 call. A real-rLLM CPU lifecycle test is included and skips only when rLLM is
 not available in the local environment.
 
+Gate B does not require rLLM Step `prompt_ids`/`response_ids`/`logprobs` to be
+saved; these token-level training fields belong to Gate C and are not
+implemented in this round.
+
 `RLWorkflowAdapter` owns **one step's** initialization/messages, parsing,
 reference validation, duplicate prevention, tool execution, observation commit,
 image registration and trajectory export. It has no `run` generation loop.
@@ -190,8 +194,10 @@ every named `checks` entry is the literal boolean `true`, including:
 - Valid actor/source provenance, verified first real source image, complete
   static checkpoint and fresh finite plain HF reload, no active PEFT, both HF
   models destroyed, then fresh vLLM loaded.
-- Real rLLM workflow, first image accepted, model-generated successful crop of
-  img_1, derived img_2 registered with parent img_1 and producing_tool=crop.
+- Real rLLM workflow, first image accepted, exactly one successful model-generated
+  crop with arguments identical to the diagnostic `crop_probe_arguments` (img_1,
+  dynamic central-crop x/y/width/height), no extra successful crop, and derived
+  img_2 registered with parent img_1 and producing_tool=crop.
 - Image hash/dimensions and an actual-PIL receipt at the second vLLM call
   matching img_2, second generation successful, final answer, successful
   trajectory, no tool errors or external provider, vLLM shutdown and artifacts.
@@ -208,6 +214,10 @@ The source record still has its full multimodal membership, while the Gate
 deterministically selects only image index 0 (explicitly recorded).
 
 `outputs/rl_gate_b/<run>/gate_manifest.json` is published only for final PASS.
+After all checks and successful vLLM shutdown, the final `passed=true` report
+is written atomically first; the PASS manifest is atomically published last.
+On a caught failure, any manifest from this invocation is revoked before
+writing the `passed=false` failure report, and the invocation exits nonzero.
 The merge manifest's `merge_complete=true` is **not** a Gate PASS declaration.
 HF memory peaks are reported by torch; vLLM worker/KV memory is separate and
 this is not a comprehensive worker-memory profiler.
