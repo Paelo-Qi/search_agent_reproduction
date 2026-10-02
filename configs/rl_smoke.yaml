@@ -27,6 +27,9 @@ data:
   source_rows: 7992
   seed: 20260506
   selection_version: sha256-rank-eval-backfill-v1
+  quality_audit_dir: data/rl_quality_audit
+  quality_audit_version: rl-quality-audit-v1
+  quality_eligibility_rule: status == ok
   smoke_count: 20
   main_count: 400
   shard_size: 100

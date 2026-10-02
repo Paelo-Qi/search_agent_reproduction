@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import hashlib
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from pathlib import PurePosixPath
 import json
 
+from opensearch_vl_repro.rl.quality_audit import load_quality_audit
+
 from opensearch_vl_repro.agent.reliability import image_sha256
 from opensearch_vl_repro.eval_subset import canonical_json_sha256
 from opensearch_vl_repro.sft_preflight import normalized_question
 
 
-RL_DATA_SCHEMA_VERSION = 2
+RL_DATA_SCHEMA_VERSION = 3
+RL_OVERLAP_SCHEMA_VERSION = 2
 RL_SELECTION_VERSION = "sha256-rank-eval-backfill-v1"
 
 
@@ -135,8 +139,8 @@ def _hash_manifest(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def validate_manifest(manifest: dict[str, Any]) -> None:
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != RL_DATA_SCHEMA_VERSION:
+def validate_manifest(manifest: dict[str, Any], *, schema_version: int = RL_DATA_SCHEMA_VERSION) -> None:
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != schema_version:
         raise ValueError("invalid RL manifest schema")
     expected = manifest.get("manifest_sha256")
     if not isinstance(expected, str) or expected != canonical_json_sha256(
@@ -147,7 +151,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
 def load_overlap_manifest(path: str | Path, *, kind: str,
                           allow_incomplete_sft: bool = False) -> dict[str, Any]:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
-    validate_manifest(value)
+    validate_manifest(value, schema_version=RL_OVERLAP_SCHEMA_VERSION)
     if value.get("kind") != kind or not isinstance(value.get("question_hashes"), list) or not isinstance(value.get("image_hashes"), list):
         raise ValueError(f"invalid {kind} overlap manifest")
     for name in ("question_hashes", "image_hashes"):
@@ -181,7 +185,7 @@ def make_overlap_manifest(*, kind: str, question_hashes: set[str],
                           audited_sample_count: int | None = None) -> dict[str, Any]:
     if kind not in {"eval", "sft"} or len(source_sha256) != 64 or missing_image_count < 0:
         raise ValueError("invalid overlap manifest provenance")
-    payload = {"schema_version": RL_DATA_SCHEMA_VERSION, "kind": kind,
+    payload = {"schema_version": RL_OVERLAP_SCHEMA_VERSION, "kind": kind,
                "source_sha256": source_sha256,
                "image_audit_complete": image_audit_complete,
                "missing_image_count": missing_image_count,
@@ -200,6 +204,7 @@ def prepare_formal_dataset(*, source_parquet: str | Path, source_root: str | Pat
                            smoke_count: int, main_count: int, shard_size: int,
                            eval_overlap_manifest: str | Path,
                            sft_overlap_manifest: str | Path,
+                           quality_audit_dir: str | Path,
                            allow_incomplete_sft: bool = False) -> dict[str, Any]:
     """Build complete in-memory artifacts; caller persists only after success."""
     from opensearch_vl_repro.eval_subset import sha256_file
@@ -218,11 +223,12 @@ def prepare_formal_dataset(*, source_parquet: str | Path, source_root: str | Pat
     eval_manifest = load_overlap_manifest(eval_overlap_manifest, kind="eval")
     sft_manifest = load_overlap_manifest(sft_overlap_manifest, kind="sft",
                                          allow_incomplete_sft=allow_incomplete_sft)
+    quality = load_quality_audit(quality_audit_dir, main_count=main_count)
     eval_questions, eval_images = set(eval_manifest["question_hashes"]), set(eval_manifest["image_hashes"])
     sft_questions, sft_images = set(sft_manifest["question_hashes"]), set(sft_manifest["image_hashes"])
     ranked = sorted(range(len(rows)), key=lambda index: (
         hashlib.sha256(f"{seed}:{dataset_id}:{dataset_revision}:{source_sample_id(index)}".encode()).hexdigest(), index))
-    selected, exclusions = [], []
+    selected, exclusions, audited_candidates = [], [], []
     for index in ranked:
         row = rows[index]
         relpaths = row["images"]
@@ -240,15 +246,27 @@ def prepare_formal_dataset(*, source_parquet: str | Path, source_root: str | Pat
                                "question_overlap": question_hit, "image_overlap": image_hit})
             continue
         identity = source_sample_id(index)
-        selected.append({"source_sample_id": identity, "prompt_id": identity,
-                         "trajectory_group_id": identity, "question": row["question"],
-                         "reference_answer": row["answer"], "image_relpaths": relpaths,
-                         "source_dataset": row["dataset"], "question_hash": qhash,
-                         "image_hashes": ihashes})
-        if len(selected) == main_count:
+        candidate_rank = len(audited_candidates) + 1
+        expected = quality.rows[candidate_rank - 1]
+        if expected["candidate_rank"] != candidate_rank or expected["source_sample_id"] != identity:
+            raise ValueError(f"quality audit candidate stream mismatch at rank {candidate_rank}: {identity}")
+        audited_candidates.append({"candidate_rank": candidate_rank, "source_sample_id": identity})
+        if expected["status"] == "ok" and len(selected) < main_count:
+            selected.append({"source_sample_id": identity, "prompt_id": identity,
+                             "question": row["question"], "quality_candidate_rank": candidate_rank,
+                             "reference_answer": row["answer"], "image_relpaths": relpaths,
+                             "source_dataset": row["dataset"], "question_hash": qhash,
+                             "image_hashes": ihashes})
+        if candidate_rank == len(quality.rows):
             break
-    if len(selected) != main_count:
-        raise ValueError(f"Eval overlap backfill exhausted: selected {len(selected)}/{main_count}")
+    if len(audited_candidates) != len(quality.rows) or len(selected) != main_count:
+        raise ValueError("Eval-clean candidate stream exhausted before quality audit/main selection")
+    if audited_candidates != [{"candidate_rank": row["candidate_rank"],
+                                "source_sample_id": row["source_sample_id"]} for row in quality.rows]:
+        raise ValueError("quality audit candidate stream differs from recomputed Eval-clean stream")
+    if [{"candidate_rank": row["quality_candidate_rank"], "source_sample_id": row["source_sample_id"]}
+            for row in selected] != list(quality.selected):
+        raise ValueError("recomputed first-N quality-ok membership differs from frozen allowlist")
     sft_q_hits = [row["source_sample_id"] for row in selected if row["question_hash"] in sft_questions]
     sft_i_hits = [row["source_sample_id"] for row in selected if set(row["image_hashes"]) & sft_images]
     ids = [row["source_sample_id"] for row in selected]
@@ -264,7 +282,10 @@ def prepare_formal_dataset(*, source_parquet: str | Path, source_root: str | Pat
               "smoke_count": smoke_count, "main_count": main_count,
               "shard_size": shard_size, "eval_overlap_manifest_sha256": eval_manifest["manifest_sha256"],
               "sft_overlap_manifest_sha256": sft_manifest["manifest_sha256"],
-              "sft_image_audit_complete": sft_manifest["image_audit_complete"], **counts}
+              "sft_image_audit_complete": sft_manifest["image_audit_complete"],
+              **quality.provenance,
+              "quality_candidate_stream_sha256": canonical_json_sha256(audited_candidates),
+              "quality_selected_main_membership_sha256": canonical_json_sha256(ids), **counts}
     def dataset_manifest(records: list[dict[str, Any]], *, name: str,
                          shard_index: int | None = None) -> dict[str, Any]:
         sample_ids = [row["source_sample_id"] for row in records]
@@ -282,6 +303,8 @@ def prepare_formal_dataset(*, source_parquet: str | Path, source_root: str | Pat
                                       "shard_manifest_sha256": [item["manifest_sha256"] for item in shard_manifests]})
     smoke = selected[:smoke_count]
     audit = _hash_manifest({"schema_version": RL_DATA_SCHEMA_VERSION, "excluded": exclusions,
+                            "quality_candidate_stream_sha256": canonical_json_sha256(audited_candidates),
+                            "quality_selected_main_membership_sha256": canonical_json_sha256(ids),
                             "sft_question_overlap_ids": sft_q_hits, "sft_image_overlap_ids": sft_i_hits,
                             "eval_final_question_overlap_count": 0, "eval_final_image_overlap_count": 0,
                             "sft_image_audit_complete": sft_manifest["image_audit_complete"], **counts})
@@ -291,32 +314,58 @@ def prepare_formal_dataset(*, source_parquet: str | Path, source_root: str | Pat
             "eval_overlap_manifest": eval_manifest, "sft_overlap_manifest": sft_manifest}
 
 
-def write_dataset_artifacts(artifacts: dict[str, Any], output_dir: str | Path) -> None:
-    """Refuse overwrite; write only after the entire selection passed validation."""
+def write_dataset_artifacts(artifacts: dict[str, Any], output_dir: str | Path, *,
+                            source_parquet: str | Path, source_root: str | Path,
+                            eval_overlap_manifest: str | Path,
+                            sft_overlap_manifest: str | Path,
+                            quality_audit_dir: str | Path,
+                            allow_incomplete_sft: bool = False) -> None:
+    """Validate a sibling staging tree, then publish it with one rename."""
     output = Path(output_dir)
-    if output.exists() and any(output.iterdir()):
-        raise FileExistsError(f"RL output directory is not empty: {output}")
-    output.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        raise FileExistsError(f"refusing to overwrite RL output directory: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
     main_count = len(artifacts["main"])
     smoke_count = len(artifacts["smoke"])
-    def write(relative: str, value: Any) -> None:
-        path = output / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    write(f"main{main_count}.json", artifacts["main"])
-    write(f"main{main_count}_manifest.json", artifacts["main_manifest"])
-    write(f"smoke{smoke_count}.json", artifacts["smoke"])
-    write(f"smoke{smoke_count}_manifest.json", artifacts["smoke_manifest"])
-    for index, (shard, manifest) in enumerate(zip(artifacts["shards"], artifacts["shard_manifests"], strict=True)):
-        name = f"shard_{index:03d}"
-        write(f"main{main_count}_shards/{name}.json", shard)
-        write(f"main{main_count}_shards/{name}_manifest.json", manifest)
-    write("overlap_audit.json", artifacts["overlap_audit"])
+    with tempfile.TemporaryDirectory(prefix=f".{output.name}.staging-", dir=output.parent) as staging_name:
+        staging = Path(staging_name)
+        written = {}
+        def write(relative: str, value: Any) -> None:
+            path = staging / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            written[relative] = value
+        write(f"main{main_count}.json", artifacts["main"])
+        write(f"main{main_count}_manifest.json", artifacts["main_manifest"])
+        write(f"smoke{smoke_count}.json", artifacts["smoke"])
+        write(f"smoke{smoke_count}_manifest.json", artifacts["smoke_manifest"])
+        for index, (shard, manifest) in enumerate(zip(artifacts["shards"], artifacts["shard_manifests"], strict=True)):
+            name = f"shard_{index:03d}"
+            write(f"main{main_count}_shards/{name}.json", shard)
+            write(f"main{main_count}_shards/{name}_manifest.json", manifest)
+        write("overlap_audit.json", artifacts["overlap_audit"])
+        for relative, value in written.items():
+            if json.loads((staging / relative).read_text(encoding="utf-8")) != value:
+                raise ValueError(f"staged RL artifact differs from in-memory selection: {relative}")
+        for manifest in (artifacts["main_manifest"], artifacts["smoke_manifest"],
+                         *artifacts["shard_manifests"], artifacts["overlap_audit"]):
+            validate_manifest(manifest)
+        if (artifacts["smoke"] != artifacts["main"][:smoke_count]
+                or artifacts["main"] != [row for shard in artifacts["shards"] for row in shard]):
+            raise ValueError("staged RL smoke/shards differ from main")
+        preflight_dataset(staging, source_parquet=source_parquet, source_root=source_root,
+                          eval_overlap_manifest=eval_overlap_manifest,
+                          sft_overlap_manifest=sft_overlap_manifest,
+                          quality_audit_dir=quality_audit_dir,
+                          allow_incomplete_sft=allow_incomplete_sft)
+        if output.exists():
+            raise FileExistsError(f"refusing to overwrite RL output directory: {output}")
+        staging.replace(output)
 
 
 def preflight_dataset(output_dir: str | Path, *, source_parquet: str | Path,
                       source_root: str | Path, eval_overlap_manifest: str | Path,
-                      sft_overlap_manifest: str | Path,
+                      sft_overlap_manifest: str | Path, quality_audit_dir: str | Path,
                       allow_incomplete_sft: bool = False) -> dict[str, Any]:
     from opensearch_vl_repro.eval_subset import sha256_file
 
@@ -331,6 +380,9 @@ def preflight_dataset(output_dir: str | Path, *, source_parquet: str | Path,
     if "source_root" in main_manifest or "source_parquet" in main_manifest:
         raise ValueError("absolute source locator must not appear in deterministic manifest")
     main_count, smoke_count, shard_size = (main_manifest[key] for key in ("main_count", "smoke_count", "shard_size"))
+    quality = load_quality_audit(quality_audit_dir, main_count=main_count)
+    if any(main_manifest.get(key) != value for key, value in quality.provenance.items()):
+        raise ValueError("RL quality audit fingerprint/provenance mismatch")
     def read(relative: str) -> Any:
         return json.loads((output / relative).read_text(encoding="utf-8"))
     main, smoke = read(f"main{main_count}.json"), read(f"smoke{smoke_count}.json")
@@ -348,7 +400,9 @@ def preflight_dataset(output_dir: str | Path, *, source_parquet: str | Path,
         raise ValueError("RL smoke/main count, prefix or checksum mismatch")
     common_keys = ("dataset_id", "dataset_revision", "source_parquet_sha256",
                    "selection_version",
-                   "selection_seed", "smoke_count", "main_count", "shard_size")
+                   "selection_seed", "smoke_count", "main_count", "shard_size",
+                   "quality_candidate_stream_sha256",
+                   "quality_selected_main_membership_sha256", *quality.provenance)
     if any(smoke_manifest.get(key) != main_manifest.get(key) for key in common_keys):
         raise ValueError("RL smoke/main provenance differs")
     root = Path(source_root).resolve()
@@ -371,7 +425,7 @@ def preflight_dataset(output_dir: str | Path, *, source_parquet: str | Path,
         if index >= len(source_rows) or source_sample_id(index) != identity:
             raise ValueError("RL source ID does not map to parquet row")
         source = source_rows[index]
-        if (row["prompt_id"] != identity or row["trajectory_group_id"] != identity
+        if (row["prompt_id"] != identity or "trajectory_group_id" in row
                 or row["question"] != source["question"]
                 or row["reference_answer"] != source["answer"]
                 or row["source_dataset"] != source["dataset"]
@@ -386,6 +440,10 @@ def preflight_dataset(output_dir: str | Path, *, source_parquet: str | Path,
         ids.append(identity)
     if len(set(ids)) != main_count:
         raise ValueError("RL source IDs are duplicated")
+    if (main_manifest.get("quality_selected_main_membership_sha256") != canonical_json_sha256(ids)
+            or [{"candidate_rank": row.get("quality_candidate_rank"), "source_sample_id": row["source_sample_id"]}
+                for row in main] != list(quality.selected)):
+        raise ValueError("RL final main differs from first-N quality-ok membership")
     shard_order = main_manifest.get("shard_order")
     if shard_order != [f"shard_{index:03d}" for index in range(main_count // shard_size)]:
         raise ValueError("RL shard order is invalid")
@@ -430,12 +488,29 @@ def preflight_dataset(output_dir: str | Path, *, source_parquet: str | Path,
             or audit["eval_final_question_overlap_count"] != 0
             or audit["eval_final_image_overlap_count"] != 0):
         raise ValueError("RL overlap audit mismatch")
+    expected = prepare_formal_dataset(
+        source_parquet=source_path, source_root=root,
+        dataset_id=main_manifest["dataset_id"], dataset_revision=main_manifest["dataset_revision"],
+        seed=main_manifest["selection_seed"], smoke_count=smoke_count,
+        main_count=main_count, shard_size=shard_size,
+        eval_overlap_manifest=eval_overlap_manifest, sft_overlap_manifest=sft_overlap_manifest,
+        quality_audit_dir=quality_audit_dir, allow_incomplete_sft=allow_incomplete_sft)
+    if (main != expected["main"] or smoke != expected["smoke"]
+            or main_manifest != expected["main_manifest"]
+            or smoke_manifest != expected["smoke_manifest"]
+            or audit != expected["overlap_audit"]
+            or [read(f"main{main_count}_shards/{name}_manifest.json") for name in shard_order]
+               != expected["shard_manifests"]):
+        raise ValueError("RL published data differs from recomputed quality-filtered candidate stream")
     return {"passed": True, "main_count": main_count, "smoke_count": smoke_count,
             "shard_count": len(shard_order), "shard_size": shard_size,
             "source_rows": len(source_rows), "dataset_id": main_manifest["dataset_id"],
             "dataset_revision": main_manifest["dataset_revision"],
             "selection_seed": main_manifest["selection_seed"],
             "selection_version": main_manifest["selection_version"],
+            "quality_audit_version": quality.provenance["quality_audit_version"],
+            "quality_ok_count": quality.provenance["quality_ok_count"],
+            "audited_count": quality.provenance["audited_count"],
             "sft_shards": sft_manifest["sft_shards"],
             "main_manifest_sha256": main_manifest["manifest_sha256"],
             "sft_image_audit_complete": sft_manifest["image_audit_complete"],

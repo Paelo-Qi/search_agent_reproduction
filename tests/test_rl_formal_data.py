@@ -12,6 +12,7 @@ from opensearch_vl_repro.agent.reliability import image_sha256
 from opensearch_vl_repro.rl.data import (RL_SELECTION_VERSION, make_overlap_manifest, preflight_dataset,
     prepare_formal_dataset, question_sha256, read_source_parquet, safe_image_relpath,
     source_sample_id, write_dataset_artifacts)
+from rl_quality_helpers import make_quality_bundle
 
 
 def source_fixture(tmp_path: Path):
@@ -47,17 +48,20 @@ def plan(tmp_path):
     import hashlib
     ranked = sorted(range(len(rows)), key=lambda index: (
         hashlib.sha256(f"{seed}:{dataset_id}:{revision}:{source_sample_id(index)}".encode()).hexdigest(), index))
-    excluded_q, excluded_i, sft_q = ranked[:3]
+    excluded_q, excluded_i = ranked[:2]
     eval_path = overlap_file(tmp_path, name="eval",
         questions={question_sha256(rows[excluded_q]["question"])},
         images={image_sha256(root / rows[excluded_i]["images"][0])})
     sft_path = overlap_file(tmp_path, name="sft",
-        questions={question_sha256(rows[sft_q]["question"]),
-                   question_sha256(rows[ranked[3]]["question"])})
+        questions={question_sha256(rows[ranked[3]]["question"]),
+                   question_sha256(rows[ranked[5]]["question"])})
+    quality_dir = make_quality_bundle(tmp_path / "quality", [source_sample_id(index) for index in ranked[2:]],
+                                      ["manual_review", "ok", "exclude", "ok", "ok", "ok", "ok"],
+                                      main_count=4)
     kwargs = dict(source_parquet=parquet, source_root=root, dataset_id=dataset_id,
                   dataset_revision=revision, seed=seed, smoke_count=2,
                   main_count=4, shard_size=2, eval_overlap_manifest=eval_path,
-                  sft_overlap_manifest=sft_path)
+                  sft_overlap_manifest=sft_path, quality_audit_dir=quality_dir)
     return kwargs, rows, root, ranked, eval_path, sft_path
 
 
@@ -78,17 +82,23 @@ def test_deterministic_backfill_shards_sft_audit_and_preflight(tmp_path):
     second = prepare_formal_dataset(**kwargs)
     assert first == second
     ids = [item["source_sample_id"] for item in first["main"]]
-    assert ids == [source_sample_id(index) for index in ranked[2:6]]
+    assert ids == [source_sample_id(ranked[index]) for index in (3, 5, 6, 7)]
     assert first["smoke"] == first["main"][:2]
     assert first["main"] == [item for shard in first["shards"] for item in shard]
     assert [len(shard) for shard in first["shards"]] == [2, 2]
-    assert first["main"][0]["reference_answer"] == rows[ranked[2]]["answer"]
+    assert first["main"][0]["reference_answer"] == rows[ranked[3]]["answer"]
     assert first["main"][0]["source_dataset"] == "synthetic"
-    assert first["main"][0]["image_relpaths"] == rows[ranked[2]]["images"]
-    assert first["main"][0]["prompt_id"] == first["main"][0]["trajectory_group_id"] == ids[0]
-    assert first["main"][0]["question_hash"] == question_sha256(rows[ranked[2]]["question"])
-    assert first["main"][0]["image_hashes"] == [image_sha256(root / rows[ranked[2]]["images"][0])]
+    assert first["main"][0]["image_relpaths"] == rows[ranked[3]]["images"]
+    assert first["main"][0]["prompt_id"] == ids[0]
+    assert "trajectory_group_id" not in first["main"][0]
+    assert [row["quality_candidate_rank"] for row in first["main"]] == [2, 4, 5, 6]
+    assert first["main"][0]["question_hash"] == question_sha256(rows[ranked[3]]["question"])
+    assert first["main"][0]["image_hashes"] == [image_sha256(root / rows[ranked[3]]["images"][0])]
     assert first["main_manifest"]["selection_version"] == RL_SELECTION_VERSION
+    assert first["main_manifest"]["schema_version"] == 3
+    assert first["main_manifest"]["quality_ok_count"] == 5
+    assert first["main_manifest"]["quality_manual_review_count"] == 1
+    assert first["main_manifest"]["quality_excluded_count"] == 1
     assert all(item["selection_version"] == RL_SELECTION_VERSION
                for item in (first["smoke_manifest"], *first["shard_manifests"]))
     assert "source_root" not in first["main_manifest"]
@@ -98,18 +108,23 @@ def test_deterministic_backfill_shards_sft_audit_and_preflight(tmp_path):
     assert first["overlap_audit"]["sft_question_overlap_ids"] == ids[:2]
     assert ids[0] in first["main_manifest"]["membership"]  # SFT overlap is audit-only
     output = tmp_path / "output"
-    write_dataset_artifacts(first, output)
+    write_dataset_artifacts(first, output, **{key: kwargs[key] for key in (
+        "source_parquet", "source_root", "eval_overlap_manifest", "sft_overlap_manifest", "quality_audit_dir")})
     assert preflight_dataset(output, source_parquet=kwargs["source_parquet"], source_root=root,
                              eval_overlap_manifest=eval_path,
-                             sft_overlap_manifest=sft_path)["passed"] is True
+                             sft_overlap_manifest=sft_path,
+                             quality_audit_dir=kwargs["quality_audit_dir"])["passed"] is True
+    assert not list(tmp_path.glob(".output.staging-*"))
     with pytest.raises(FileExistsError):
-        write_dataset_artifacts(first, output)
+        write_dataset_artifacts(first, output, **{key: kwargs[key] for key in (
+            "source_parquet", "source_root", "eval_overlap_manifest", "sft_overlap_manifest", "quality_audit_dir")})
 
 
 def test_preflight_fails_on_tampered_sample_or_missing_image(tmp_path):
     kwargs, _, root, _, eval_path, sft_path = plan(tmp_path)
     output = tmp_path / "output"
-    write_dataset_artifacts(prepare_formal_dataset(**kwargs), output)
+    write_dataset_artifacts(prepare_formal_dataset(**kwargs), output, **{key: kwargs[key] for key in (
+        "source_parquet", "source_root", "eval_overlap_manifest", "sft_overlap_manifest", "quality_audit_dir")})
     main_file = output / "main4.json"
     original = main_file.read_text(encoding="utf-8")
     records = json.loads(main_file.read_text(encoding="utf-8"))
@@ -118,13 +133,28 @@ def test_preflight_fails_on_tampered_sample_or_missing_image(tmp_path):
     with pytest.raises(ValueError):
         preflight_dataset(output, source_parquet=kwargs["source_parquet"], source_root=root,
                           eval_overlap_manifest=eval_path,
-                          sft_overlap_manifest=sft_path)
+                          sft_overlap_manifest=sft_path, quality_audit_dir=kwargs["quality_audit_dir"])
     main_file.write_text(original, encoding="utf-8")
     (root / records[0]["image_relpaths"][0]).unlink()
     with pytest.raises(FileNotFoundError):
         preflight_dataset(output, source_parquet=kwargs["source_parquet"], source_root=root,
                           eval_overlap_manifest=eval_path,
-                          sft_overlap_manifest=sft_path)
+                          sft_overlap_manifest=sft_path, quality_audit_dir=kwargs["quality_audit_dir"])
+
+
+def test_old_data_schema_fails_closed(tmp_path):
+    kwargs, _, root, _, eval_path, sft_path = plan(tmp_path)
+    output = tmp_path / "old-schema"
+    write_dataset_artifacts(prepare_formal_dataset(**kwargs), output, **{key: kwargs[key] for key in (
+        "source_parquet", "source_root", "eval_overlap_manifest", "sft_overlap_manifest", "quality_audit_dir")})
+    path = output / "main4_manifest.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["schema_version"] = 2
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="schema"):
+        preflight_dataset(output, source_parquet=kwargs["source_parquet"], source_root=root,
+            eval_overlap_manifest=eval_path, sft_overlap_manifest=sft_path,
+            quality_audit_dir=kwargs["quality_audit_dir"])
 
 
 def test_incomplete_sft_audit_is_dev_only(tmp_path):
@@ -150,10 +180,12 @@ def test_manifest_fingerprint_is_independent_of_runtime_source_path(tmp_path):
     assert [m["manifest_sha256"] for m in first["shard_manifests"]] == [
         m["manifest_sha256"] for m in second["shard_manifests"]]
     output = tmp_path / "portable-output"
-    write_dataset_artifacts(first, output)
+    write_dataset_artifacts(first, output, **{key: kwargs[key] for key in (
+        "source_parquet", "source_root", "eval_overlap_manifest", "sft_overlap_manifest", "quality_audit_dir")})
     assert preflight_dataset(output, source_parquet=copied_root / "rl.parquet",
                              source_root=copied_root, eval_overlap_manifest=eval_path,
-                             sft_overlap_manifest=sft_path)["passed"] is True
+                             sft_overlap_manifest=sft_path,
+                             quality_audit_dir=kwargs["quality_audit_dir"])["passed"] is True
 
 
 def test_selection_version_changes_fingerprint_and_old_version_fails_preflight(tmp_path, monkeypatch):
@@ -164,12 +196,14 @@ def test_selection_version_changes_fingerprint_and_old_version_fails_preflight(t
     monkeypatch.setattr(data_module, "RL_SELECTION_VERSION", "new-selection-v2")
     changed = prepare_formal_dataset(**kwargs)
     assert changed["main_manifest"]["manifest_sha256"] != original["main_manifest"]["manifest_sha256"]
-    monkeypatch.setattr(data_module, "RL_SELECTION_VERSION", RL_SELECTION_VERSION)
     output = tmp_path / "old-version-output"
-    write_dataset_artifacts(changed, output)
+    write_dataset_artifacts(changed, output, **{key: kwargs[key] for key in (
+        "source_parquet", "source_root", "eval_overlap_manifest", "sft_overlap_manifest", "quality_audit_dir")})
+    monkeypatch.setattr(data_module, "RL_SELECTION_VERSION", RL_SELECTION_VERSION)
     with pytest.raises(ValueError, match="selection version"):
         preflight_dataset(output, source_parquet=kwargs["source_parquet"], source_root=root,
-                          eval_overlap_manifest=eval_path, sft_overlap_manifest=sft_path)
+                          eval_overlap_manifest=eval_path, sft_overlap_manifest=sft_path,
+                          quality_audit_dir=kwargs["quality_audit_dir"])
 
 
 def test_formal_preflight_requires_overlap_scope_equal_adapter_lineage(tmp_path, monkeypatch):
@@ -179,12 +213,14 @@ def test_formal_preflight_requires_overlap_scope_equal_adapter_lineage(tmp_path,
     config = {"data": {"manifest": "main4_manifest.json", "output_dir": "unused",
                        "dataset_id": kwargs["dataset_id"], "dataset_revision": kwargs["dataset_revision"],
                        "seed": kwargs["seed"], "selection_version": RL_SELECTION_VERSION,
-                       "main_count": 4, "smoke_count": 2, "shard_size": 2, "source_rows": 9},
+                       "main_count": 4, "smoke_count": 2, "shard_size": 2, "source_rows": 9,
+                       "quality_audit_dir": "unused"},
               "model": {"sft_config": "unused", "sft_adapter": "unused"},
               "tool": {"resolved_runtime_protocol": "test"}}
     data = prepare_formal_dataset(**kwargs)
     output = tmp_path / "formal-output"
-    write_dataset_artifacts(data, output)
+    write_dataset_artifacts(data, output, **{key: kwargs[key] for key in (
+        "source_parquet", "source_root", "eval_overlap_manifest", "sft_overlap_manifest", "quality_audit_dir")})
     monkeypatch.setattr(script, "load_rl_config", lambda _: config)
     monkeypatch.setattr(script, "load_main_config", lambda *args, **kwargs: {})
     lineage = SimpleNamespace(sft_lineage=("main_a_1k", "main_b_2k"), validate=lambda: None,
@@ -192,7 +228,9 @@ def test_formal_preflight_requires_overlap_scope_equal_adapter_lineage(tmp_path,
     monkeypatch.setattr(script, "build_rl_lineage", lambda **kwargs: lineage)
     monkeypatch.setattr(script, "build_rl_run_manifest", lambda *args, **kwargs: {})
     args = dict(data_dir=output, source_parquet=kwargs["source_parquet"], source_root=root,
-                eval_overlap_manifest=eval_path, sft_overlap_manifest=sft_path)
+                eval_overlap_manifest=eval_path, sft_overlap_manifest=sft_path,
+                quality_audit_dir=kwargs["quality_audit_dir"])
+    assert script.preflight(tmp_path / "config.yaml", quality_only=True, **args)["scope"] == "quality_only"
     assert script.preflight(tmp_path / "config.yaml", **args)["passed"] is True
     lineage.sft_lineage = ("main_a_1k", "main_b_2k", "extra_1k")
     with pytest.raises(ValueError, match="overlap shard scope"):

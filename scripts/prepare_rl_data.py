@@ -21,6 +21,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--eval-overlap-manifest", type=Path)
     parser.add_argument("--sft-overlap-manifest", type=Path)
+    parser.add_argument("--quality-audit-dir", type=Path)
     parser.add_argument("--smoke-count", type=int, default=20)
     parser.add_argument("--main-count", type=int, default=400)
     parser.add_argument("--main-shard-size", type=int, default=100)
@@ -37,8 +38,9 @@ def main() -> int:
     if args.source_parquet is not None:
         try:
             if any(value is None for value in (args.source_root, args.output_dir,
-                                               args.eval_overlap_manifest, args.sft_overlap_manifest)):
-                raise ValueError("formal parquet mode requires source-root, output-dir and both overlap manifests")
+                                               args.eval_overlap_manifest, args.sft_overlap_manifest,
+                                               args.quality_audit_dir)):
+                raise ValueError("formal parquet mode requires source-root, output-dir, overlap manifests and quality audit directory")
             artifacts = prepare_formal_dataset(
                 source_parquet=args.source_parquet, source_root=args.source_root,
                 dataset_id=args.dataset_id, dataset_revision=args.dataset_revision,
@@ -46,10 +48,16 @@ def main() -> int:
                 shard_size=args.main_shard_size,
                 eval_overlap_manifest=args.eval_overlap_manifest,
                 sft_overlap_manifest=args.sft_overlap_manifest,
+                quality_audit_dir=args.quality_audit_dir,
                 allow_incomplete_sft=args.allow_incomplete_sft_audit)
             if args.expected_source_rows is not None and artifacts["main_manifest"]["source_rows"] != args.expected_source_rows:
                 raise ValueError("RL source row count does not match --expected-source-rows")
-            write_dataset_artifacts(artifacts, args.output_dir)
+            write_dataset_artifacts(artifacts, args.output_dir,
+                source_parquet=args.source_parquet, source_root=args.source_root,
+                eval_overlap_manifest=args.eval_overlap_manifest,
+                sft_overlap_manifest=args.sft_overlap_manifest,
+                quality_audit_dir=args.quality_audit_dir,
+                allow_incomplete_sft=args.allow_incomplete_sft_audit)
         except (ValueError, TypeError, KeyError, FileNotFoundError, OSError) as exc:
             print(json.dumps({"passed": False, "error": str(exc)}, ensure_ascii=False))
             return 1

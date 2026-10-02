@@ -28,6 +28,7 @@ data/sft_main_imageid_v3/*
 !data/sft_main_imageid_v3/manifest.json
 data/rl/
 data/rl_overlap/
+data/rl_quality_audit/
 data/rl_fixture_dev/
 data/eval/source/
 data/eval/*.parquet
