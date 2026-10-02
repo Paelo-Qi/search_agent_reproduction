@@ -88,7 +88,8 @@ collect: original checkpoint-3k -> safe static merge -> fresh HF reload
          -> validate entire group -> atomic directory publication
 update:  torchrun 2 -> original checkpoint-3k -> real verl FSDP2 actor
          -> official RLOO -> fatal clamp -> actual token DataProto
-         -> update_policy once -> native checkpoint + PEFT export
+         -> both-rank pre-update policy alignment -> update_policy once
+         -> native checkpoint + PEFT export
          -> destroy actor -> fresh FSDP2 actor + native reload -> finite forward
 finalize: verify immutable run/group/mask/checkpoint/rank evidence
           -> final report PASS -> gate_manifest PASS LAST
@@ -108,6 +109,12 @@ one optimizer step. `seq-mean-token-mean` means each generation row receives
 equal weight. This transparent step-view conversion is NOT a production
 multi-prompt sampler or a claim of trajectory-length-normalized formal training.
 That design/performance work remains outside this gate.
+
+**Post-Gate-C smoke design review item:** before formal smoke20, review whether
+multi-turn trajectory weighting should be trajectory-normalized or
+token-normalized. Gate C's unchanged per-generation-row representation proves
+only the real multimodal PPO update chain; this task does not implement either
+weighting redesign.
 
 ## Actual token and vision evidence
 
@@ -170,6 +177,9 @@ closed and requires a NEW Gate C run-id from original checkpoint-3k. No guessed
 checkpoint continuation/double optimizer step. If update_verified exists,
 repeating update skips the step and proceeds to finalize, which rechecks hashes.
 Collection provider interruptions do NOT create the update_started marker.
+The marker means entry into the actor update PHASE, not proof that AdamW stepped.
+An alignment failure reports optimizer_step_count=0 but retains the same
+new-run-id recovery rule; it is not automatically resumed at the optimizer.
 
 Stage reports are persisted at initialization, rollout collecting, rewarding,
 group rewarded/publication, training-batch-ready, actor updating/saving/reloading,
@@ -228,6 +238,51 @@ the gate FAILS. No dummy advantages, altered rewards or hidden extra attempts.
 Use a new explicit run-id/sample-index for another real gate attempt; record it
 as such, never cherry-pick silently within a completed group.
 
+## Pre-update policy handoff alignment
+
+v4.5.1 audits the handoff from checkpoint-3k PEFT -> static merge -> vLLM
+processed old_log_probs to checkpoint-3k PEFT -> FSDP2 actor current logprobs.
+Incorrect merge/reload, image binding, M-RoPE or sampling semantics must fail
+BEFORE a policy update, not merely produce finite PPO loss.
+
+After building the real multimodal DataProto and taking the pre-update LoRA
+snapshot, BOTH ranks call the pinned verl 0.6.1 actor's
+`compute_log_prob(data, calculate_entropy=False)`. The exact same DataProto
+object then goes to `update_policy`; no response-text tokenization or rebuilt
+batch is allowed. The audit is no-grad, changes no optimizer state/parameters,
+and never overwrites the actual vLLM sampled old_log_probs.
+
+Pinned `compute_log_prob` internally calls actor_module.eval(): LoRA dropout
+0.05 is disabled only by inference mode, not by a changed dropout setting.
+Pinned `update_policy` restores train mode. DataProto temperature must equal
+both 0.7 and the frozen rollout temperature. With top_p=1 and top_k=-1,
+processed vLLM logprobs and actor temperature-scaled logits describe an
+untruncated distribution. Future top_p<1 or finite top_k requires a new
+old-logprob semantics audit; it is NOT handled by this gate.
+
+Comparison selects ONLY response_mask==1. Padding and post-fatal mask-zero
+tokens are ignored even if their stored values are nonfinite. Shape mismatch,
+nonbinary/empty/inconsistent masks, masked NaN/Inf logprobs or ratios fail closed.
+Report mean/max absolute and mean signed difference, and
+`ratio=exp(current-old)` mean/min/max without clamping. Require zero fraction
+outside [1-.2, 1+.28] = [0.8, 1.28] AND strictly max_abs_logprob_diff < 0.1.
+The Gate-only bound permits small BF16/kernel/merge drift, not bitwise equality;
+0.1 itself fails. No GPU evidence justifies loosening that bound.
+
+`outputs/rl_gate_c/<run>/pre_update_policy_alignment.json` records source-policy
+fingerprint, context/group identity, bounds, all metrics and both ranks' separate
+checks/stats. Means are averaged across duplicate group views, not extra
+rollouts. Rank0 cannot override a failed rank1. `update_verified.json` binds its
+SHA256 and per-rank evidence; CPU finalize rechecks hash, numeric checks,
+rank evidence, token counts and group/source-policy lineage. Final Gate report
+includes the complete pre_update_policy_alignment summary.
+
+Numerical failure persists a failed alignment artifact and false final report
+at stage `pre_update_policy_alignment`, with optimizer_step_count=0 and the
+specific failed checks. A compute/publication exception also stops there before
+the optimizer. No PASS manifest is published. Use a NEW run-id after correction.
+Post-update reload requires a finite forward, NOT same-policy ratios near 1.
+
 ## Actual update and save/reload proof
 
 Reuse A2.2 construct_actor/activate training/FSDP2 wrapping/LoRA-only AdamW and
@@ -241,6 +296,11 @@ all frozen gradients None, exactly the expected LoRA optimizer parameters,
 and exactly ONE call. Snapshot all local trainable shards before/after; require
 finite changed tensors on every rank. Require a changed post-export fingerprint.
 Both ranks report checks/metrics/gradient audit, optimizer count and peak memory.
+Every UPDATE_CHECKS flag starts false and is set from its own completed evidence;
+there is no blanket true assignment. Preserve ALL metrics actually returned by
+verl. Pinned vanilla loss returns actor/pg_clipfrac, actor/ppo_kl and
+actor/pg_clipfrac_lower in addition to actor/pg_loss and actor/grad_norm from
+update_policy. No synthetic ratio/PPO metric keys are manufactured.
 
 Reuse native FSDPCheckpointManager (model/optimizer/extra) with scheduler=None
 and official full-state gather for PEFT export. Destroy original actor and
@@ -276,7 +336,7 @@ python -m pytest tests/test_rl_gate_c.py::test_real_installed_rllm_tokens_surviv
   -o addopts= -q -rs -p no:cacheprovider
 
 # Use the identical COMMON args in all three stages; do not hand-edit artifacts.
-COMMON=(--run-id gate-c-attempt1 --config configs/rl_main.yaml \
+COMMON=(--run-id gate-c-v451-attempt1 --config configs/rl_main.yaml \
   --gate-config configs/rl_gate_c.yaml --data data/rl/smoke20.json --sample-index 0 \
   --source-root "$RL_SOURCE_ROOT" --base-model-path "$QWEN_BASE_SNAPSHOT" \
   --gate-b-manifest outputs/rl_gate_b/a22-tp1-attempt2/gate_manifest.json \
@@ -306,6 +366,7 @@ Successful artifacts:
 outputs/rl_gate_c/<run>/run_manifest.json
 outputs/rl_gate_c/<run>/group/group.json + real multimodal tensor files
 outputs/rl_gate_c/<run>/training_masks.json
+outputs/rl_gate_c/<run>/pre_update_policy_alignment.json
 outputs/rl_gate_c/<run>/updated_actor/distributed/{model,optim,extra_state}_*.pt
 outputs/rl_gate_c/<run>/updated_actor/adapter/*
 outputs/rl_gate_c/<run>/updated_actor/gate_only_metadata.json
@@ -319,6 +380,7 @@ All COLLECT_CHECKS and UPDATE_CHECKS plus artifact verification and Gate-only
 restriction must be literal true. Finalizer binds group/context, n=2, both rank
 identities, all group/vision/mask/checkpoint hashes, pre/post policy, real loss,
 one-step counts, gradients, frozen audit and fresh reload proof.
+Both pre-update rank alignments and the alignment artifact SHA256 must pass.
 Final PASS report is written first; authoritative gate_manifest is the LAST
 durable PASS artifact. Publication failure revokes any unsafe PASS marker before
 writing false failure reports. Collection or update alone can NEVER publish PASS.
@@ -335,6 +397,7 @@ These must be resolved with REAL Gate evidence, not relaxed checks.
 PYTHONPATH=src python -m pytest tests/test_rl_group.py tests/test_rl_reward.py \
   tests/test_rl_fatal.py tests/test_rl_rloo.py tests/test_rl_training_batch.py \
   tests/test_rl_gate_c.py tests/test_rl_reward_judges.py tests/test_rl_workflow_adapter.py \
+  tests/test_rl_policy_alignment.py \
   tests/test_rl_actor_gate.py tests/test_rl_gate_b.py -o addopts= -q -p no:cacheprovider
 PYTHONPATH=src python -m pytest -o addopts= -q -p no:cacheprovider
 git diff --check

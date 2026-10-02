@@ -19,6 +19,9 @@ from opensearch_vl_repro.rl.gate_c import (
 from opensearch_vl_repro.rl.group import read_group, run_lock
 from opensearch_vl_repro.rl.rloo import official_rloo
 from opensearch_vl_repro.rl.training_batch import build_dataproto, mask_artifact, training_rows
+from opensearch_vl_repro.rl.policy_alignment import (
+    alignment_artifact, alignment_checks, compare_policy_logprobs, require_policy_alignment,
+)
 from opensearch_vl_repro.sft_tool_audit import sha256_file
 from opensearch_vl_repro.eval_subset import canonical_json_sha256
 
@@ -65,6 +68,27 @@ def audited_policy_update(actor, data):
     return metrics, {**gradient_audit, "optimizer_step_count": count}
 
 
+def audit_pre_update_policy(actor, data, gate, *, expected_masked_token_count):
+    """Real verl inference on the SAME DataProto that update_policy will consume."""
+    import torch
+
+    with torch.no_grad():
+        current_log_probs, _ = actor.compute_log_prob(data, calculate_entropy=False)
+    audit = compare_policy_logprobs(current_log_probs, data.batch["old_log_probs"],
+        data.batch["response_mask"], clip_ratio_low=gate["clip_ratio_low"],
+        clip_ratio_high=gate["clip_ratio_high"], expected_masked_token_count=expected_masked_token_count)
+    audit.update(logprobs_computed=True, temperature=data.meta_info.get("temperature"),
+                 rollout_temperature=gate["vllm"]["temperature"])
+    audit["checks"] = alignment_checks(audit)
+    audit["passed"] = all(audit["checks"].values())
+    return audit
+
+
+def policy_update_after_alignment(actor, data, alignment):
+    require_policy_alignment(alignment)
+    return audited_policy_update(actor, data)
+
+
 def update(args, root):
     os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
     import torch
@@ -82,6 +106,8 @@ def update(args, root):
     output, reports = paths_for(root, args.run_id)
     ctx = prepare_context(args, root)
     actor = fresh = before = after = None
+    checks = dict.fromkeys(UPDATE_CHECKS, False)
+    alignment = None
     stage, started = "actor_initializing", time.monotonic()
     lock = None
     try:
@@ -126,29 +152,67 @@ def update(args, root):
         rewards = [m["reward"]["total"] for m in sorted(group["members"], key=lambda m: m["rollout_index"])]
         fatal = [m["fatal"]["fatal"] for m in sorted(group["members"], key=lambda m: m["rollout_index"])]
         raw, final = run("real_verl_rloo", lambda: official_rloo(rewards, fatal, group_id=group["identity"]["trajectory_group_id"]))
+        checks["real_verl_rloo"] = len(raw) == 2
+        checks["fatal_clamp_after_rloo"] = all(
+            b == (max(a, 0.) if f else a) for a, b, f in zip(raw, final, fatal, strict=True))
+        checks["finite_advantages"] = all(math.isfinite(v) for v in raw + final)
         rows, token_audit = run("fatal_aware_training_rows", lambda: training_rows(group, final))
+        checks["response_only_mask"] = token_audit["supervised_response_tokens"] == sum(sum(r["response_mask"]) for r in rows)
         run("token_mask_audit_artifact", lambda: atomic_json(output / "training_masks.json", mask_artifact(group, final)) if rank == 0 else None)
         mesh = run("device_mesh", lambda: init_device_mesh("cuda", (world,), mesh_dim_names=("fsdp",)))
         processor = run("processor", lambda: load_processor(ctx["runtime_sft"], local_files_only=True))
         actor, audit = run("original_sft_lora_fsdp2", lambda: construct_actor(
             config=ctx["runtime_sft"], gate=ctx["a22"], adapter=ctx["adapter"], mesh=mesh))
-        checks = dict.fromkeys(UPDATE_CHECKS, False)
+        # construct_actor validates the original PEFT/frozen parameters and real
+        # verl FSDP2 wrapping (including every decoder) before it returns.
+        checks["formal_sft_actor_init"] = ctx["adapter"] == root / "outputs/sft_main_imageid_v3/checkpoint-3k/adapter"
+        checks["real_fsdp2"] = actor.config.strategy == "fsdp2"
         active = (audit["model_training"] is True and audit["language_model_training"] is True
                   and audit["decoder_layers_training"] == 36 and audit["decoder_layers_gradient_checkpointing"] == 36
                   and audit["effective_attention_implementation"] == "flash_attention_2")
         if not active:
             raise RuntimeError("FSDP2 actor train/checkpointing/FA2 contract failed")
+        checks["training_checkpointing_active"] = active
         configure_one_update(actor, len(rows), ctx["gate"])
         data = run("real_multimodal_dataproto", lambda: build_dataproto(rows, directory=output / "group",
             model=actor.actor_module, pad_id=processor.tokenizer.pad_token_id, device=torch.device("cuda", local_rank), temperature=.7))
+        from verl import DataProto
+        checks["real_dataproto"] = isinstance(data, DataProto)
         before = run("pre_update_lora_snapshot", lambda: lora_snapshot(actor.actor_module))
-        metrics, grad_audit = run("real_verl_update_policy", lambda: audited_policy_update(actor, data))
+        local_alignment = run("pre_update_policy_alignment", lambda: audit_pre_update_policy(
+            actor, data, ctx["gate"], expected_masked_token_count=token_audit["supervised_response_tokens"]))
+        local_alignment["rank"] = rank
+        checks.update(local_alignment["checks"])
+        def gather_alignment():
+            rows = [None] * world
+            dist.all_gather_object(rows, local_alignment)
+            return alignment_artifact(rows, gate_version=ctx["gate"]["gate_version"], identity=ctx["identity"],
+                trajectory_group_id=group["identity"]["trajectory_group_id"],
+                policy_fingerprint=ctx["actor"]["source_sft_adapter_fingerprint"])
+        alignment = run("pre_update_policy_alignment", gather_alignment)
+        run("pre_update_policy_alignment", lambda: atomic_json(
+            output / "pre_update_policy_alignment.json", alignment) if rank == 0 else None)
+        # Collective check BEFORE entering the policy-loss stage: neither rank
+        # may update if its peer failed. Same data object, no old-logprob write.
+        run("pre_update_policy_alignment", lambda: require_policy_alignment(alignment))
+        metrics, grad_audit = run("real_verl_update_policy", lambda: policy_update_after_alignment(actor, data, alignment))
+        checks["real_verl_policy_loss"] = bool(metrics.get("actor/pg_loss"))
+        checks["loss_finite"] = all(math.isfinite(float(v)) for v in metrics["actor/pg_loss"])
+        checks["exactly_one_optimizer_step"] = grad_audit["optimizer_step_count"] == 1
+        for key in ("lora_grad_finite", "nonzero_lora_grad", "vision_projector_base_frozen"):
+            checks[key] = grad_audit[key] is True
         after = run("post_update_lora_snapshot", lambda: lora_snapshot(actor.actor_module))
         changed = update_checks(before, after)
         if not all(changed.values()):
             raise RuntimeError("one RL step did not change finite LoRA parameters")
+        checks.update(changed)
         run("post_update_frozen_audit", lambda: trainable_policy(actor.actor_module, actor.actor_optimizer))
+        checks["optimizer_only_lora"] = True  # exact parameter-identity audit returned without error
         saved = run("native_checkpoint_and_peft_export", lambda: save_checkpoint(actor, processor, output / "updated_actor"))
+        checks["native_checkpoint_saved"] = all(
+            (output / "updated_actor/distributed" / f"{prefix}_world_size_{world}_rank_{r}.pt").is_file()
+            for r in range(world) for prefix in ("model", "optim", "extra_state"))
+        checks["peft_exported"] = bool(saved.get("adapter_fingerprint"))
         def gate_only_metadata():
             if rank == 0:
                 atomic_json(output / "updated_actor/gate_only_metadata.json", {
@@ -159,6 +223,7 @@ def update(args, root):
         post_fingerprint = saved["adapter_fingerprint"]
         if post_fingerprint == ctx["actor"]["source_sft_adapter_fingerprint"]:
             raise RuntimeError("post-update adapter fingerprint unchanged")
+        checks["post_policy_fingerprint_changed"] = post_fingerprint != ctx["actor"]["source_sft_adapter_fingerprint"]
         model_ref, optimizer_ref = weakref.ref(actor.actor_module), weakref.ref(actor.actor_optimizer)
         del actor, before
         actor = before = None
@@ -167,15 +232,19 @@ def update(args, root):
         destroyed = model_ref() is None and optimizer_ref() is None
         if not destroyed:
             raise RuntimeError("original actor/optimizer still alive before fresh reload")
+        checks["original_actor_destroyed"] = destroyed
         run("destroy_and_barrier", dist.barrier)
         fresh, _ = run("fresh_base_updated_peft_fsdp2", lambda: construct_actor(
             config=ctx["runtime_sft"], gate=ctx["a22"], adapter=output / "updated_actor/adapter", mesh=mesh))
+        checks["fresh_actor_reloaded"] = fresh is not None
         if not reload_matches(after, lora_snapshot(fresh.actor_module)):
             raise RuntimeError("fresh PEFT reload parameter mismatch")
         run("native_model_optimizer_reload", lambda: checkpoint_manager(fresh, processor).load_checkpoint(
             str(output / "updated_actor/distributed"), del_local_after_load=False))
         native_ok = bool(fresh.actor_optimizer.state)
         matched = reload_matches(after, lora_snapshot(fresh.actor_module))
+        checks["native_checkpoint_reloaded"] = native_ok
+        checks["reload_param_match"] = matched
         def finite_forward():
             with torch.no_grad():
                 logprobs, _ = fresh.compute_log_prob(data, calculate_entropy=False)
@@ -183,13 +252,11 @@ def update(args, root):
                 raise RuntimeError("fresh native checkpoint forward logprobs nonfinite")
             return {"finite": True, "shape": list(logprobs.shape)}
         proof = run("fresh_multimodal_forward", finite_forward)
-        checks.update(dict.fromkeys(UPDATE_CHECKS, True))
-        checks.update(native_checkpoint_reloaded=native_ok, reload_param_match=matched,
-                      original_actor_destroyed=destroyed, training_checkpointing_active=active,
-                      **changed, **{k: grad_audit[k] for k in ("lora_grad_finite", "nonzero_lora_grad", "vision_projector_base_frozen")})
+        checks["fresh_forward_finite"] = proof["finite"] is True
         if not all(checks.values()):
             raise RuntimeError(f"incomplete Gate C update checks: {checks}")
         rank_report = {"rank": rank, "world_size": world, "checks": checks, "model_audit": audit,
+                       "pre_update_policy_alignment": local_alignment,
                        "metrics": {k: [float(v) for v in vals] for k, vals in metrics.items()},
                        "gradient_audit": grad_audit, "optimizer_step_count": grad_audit["optimizer_step_count"],
                        "reload_proof": proof, **memory_stats(torch, local_rank), "elapsed_seconds": time.monotonic() - started}
@@ -211,6 +278,8 @@ def update(args, root):
                           "raw_returns": raw, "final_returns": final, "rewards": rewards,
                           "training_token_counts": token_audit, "pre_update_policy_fingerprint": ctx["actor"]["source_sft_adapter_fingerprint"],
                           "training_masks_sha256": sha256_file(output / "training_masks.json"),
+                          "pre_update_policy_alignment_sha256": sha256_file(output / "pre_update_policy_alignment.json"),
+                          "pre_update_policy_alignment": alignment,
                           "post_update_policy_fingerprint": post_fingerprint,
                           "checkpoint_file_sha256": files, "checkpoint_fingerprint": canonical_json_sha256(files),
                           "completed_stages": stages.log,
@@ -221,7 +290,12 @@ def update(args, root):
         return 0
     except BaseException as exc:
         if not dist.is_initialized() or dist.get_rank() == 0:
-            failure_report(output, reports, ctx["identity"], stage, exc)
+            extra = {"checks": checks}
+            if stage == "pre_update_policy_alignment":
+                extra.update(optimizer_step_count=0, pre_update_policy_alignment=alignment)
+                if alignment is not None:
+                    extra["checks"] = {**checks, **alignment["checks"]}
+            failure_report(output, reports, ctx["identity"], stage, exc, **extra)
         raise
     finally:
         actor = fresh = before = after = None

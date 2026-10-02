@@ -33,6 +33,9 @@ from opensearch_vl_repro.rl.workflow_adapter import build_rllm_workflow
 from opensearch_vl_repro.rl.data import safe_image_relpath, question_sha256
 from opensearch_vl_repro.rl.workflow_types import RLInfrastructureError
 from opensearch_vl_repro.sft_tool_audit import sha256_file
+from opensearch_vl_repro.rl.policy_alignment import (
+    ALIGNMENT_CHECKS, alignment_artifact, alignment_checks, require_policy_alignment,
+)
 
 GATE_C_VERSION = "minimum-rl-integration-c-v1"
 COLLECT_CHECKS = (
@@ -50,7 +53,7 @@ UPDATE_CHECKS = (
     "parameters_finite", "lora_param_changed", "post_policy_fingerprint_changed",
     "native_checkpoint_saved", "peft_exported", "original_actor_destroyed", "fresh_actor_reloaded",
     "native_checkpoint_reloaded", "reload_param_match", "fresh_forward_finite",
-)
+) + ALIGNMENT_CHECKS
 ALL_CHECKS = COLLECT_CHECKS + UPDATE_CHECKS + ("artifacts_verified", "gate_only_output")
 
 
@@ -162,7 +165,8 @@ def prepare_context(args, root):
                 "layout_config_sha256": sha256_file(args.layout_config), "seed": args.seed,
                 "integration_source_sha256": {name: sha256_file(root / "src/opensearch_vl_repro/rl" / name)
                     for name in ("gate_c.py", "group.py", "live_workflow.py", "reward_judges.py", "rloo.py",
-                                 "training_batch.py", "verl_policy_update.py", "workflow_adapter.py", "rollout_gate.py", "rollout_sync.py")},
+                                 "training_batch.py", "verl_policy_update.py", "policy_alignment.py",
+                                 "workflow_adapter.py", "rollout_gate.py", "rollout_sync.py")},
                 "logprobs_mode": "processed_logprobs",
                 "base_model": BASE_MODEL, "base_revision": BASE_REVISION,
                 "runtime_protocol": RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION}
@@ -355,6 +359,32 @@ def publish_pass(output, report_path, report, writer=atomic_json):
         raise
 
 
+def verify_policy_alignment_artifact(output, update, group, identity, policy_fingerprint):
+    """Recheck hash, both ranks, numeric checks and group/source-policy lineage."""
+    path = output / "pre_update_policy_alignment.json"
+    if sha256_file(path) != update["pre_update_policy_alignment_sha256"]:
+        raise ValueError("pre-update policy alignment checksum mismatch")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    rebuilt = alignment_artifact(value["per_rank"], gate_version=GATE_C_VERSION, identity=identity,
+        trajectory_group_id=group["identity"]["trajectory_group_id"], policy_fingerprint=policy_fingerprint)
+    if (value != rebuilt or value != update["pre_update_policy_alignment"]
+            or update["pre_update_policy_fingerprint"] != policy_fingerprint
+            or group["identity"]["pre_update_policy_fingerprint"] != policy_fingerprint
+            or value["masked_token_count"] != update["training_token_counts"]["supervised_response_tokens"]):
+        raise ValueError("pre-update policy alignment identity/evidence mismatch")
+    require_policy_alignment(value)
+    per_rank = {row["rank"]: row for row in value["per_rank"]}
+    if len(update["per_rank"]) != 2 or {r["rank"] for r in update["per_rank"]} != {0, 1}:
+        raise ValueError("alignment requires two actor rank receipts")
+    for row in update["per_rank"]:
+        evidence = per_rank[row["rank"]]
+        actual = alignment_checks(evidence)
+        if (row["pre_update_policy_alignment"] != evidence or evidence.get("checks") != actual
+                or any(row["checks"].get(k) is not True or actual[k] is not True for k in ALIGNMENT_CHECKS)):
+            raise ValueError("not all actor ranks passed pre-update alignment")
+    return value
+
+
 def finalize(args, root):
     output, reports = paths_for(root, args.run_id)
     with run_lock(root / "outputs/rl_gate_c" / (args.run_id + ".lock")):
@@ -369,6 +399,8 @@ def finalize(args, root):
                     or update["training_masks_sha256"] != sha256_file(output / "training_masks.json")
                     or len(update["per_rank"]) != 2 or {r["rank"] for r in update["per_rank"]} != {0, 1}):
                 raise ValueError("Gate update/group/rank identity mismatch")
+            alignment = verify_policy_alignment_artifact(output, update, group, ctx["identity"],
+                ctx["actor"]["source_sft_adapter_fingerprint"])
             for name, digest in update["checkpoint_file_sha256"].items():
                 path = (output / "updated_actor" / name).resolve()
                 if not path.is_relative_to((output / "updated_actor").resolve()) or sha256_file(path) != digest:
@@ -377,6 +409,7 @@ def finalize(args, root):
             if any(any(row["checks"].get(k) is not True for k in UPDATE_CHECKS) for row in update["per_rank"]):
                 raise ValueError("not all actor ranks passed")
             report = {**update, "gate_version": GATE_C_VERSION, "checks": checks, "formal_rl_initialization_allowed": False,
+                      "pre_update_policy_alignment": alignment,
                       "software_versions": ctx["identity"]["software_versions"],
                       "base_model": BASE_MODEL, "base_revision": BASE_REVISION,
                       "source_sft_adapter_fingerprint": ctx["actor"]["source_sft_adapter_fingerprint"],
