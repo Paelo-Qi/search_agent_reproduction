@@ -28,6 +28,10 @@ from opensearch_vl_repro.rl.old_logprob import (
 )
 from opensearch_vl_repro.sft_tool_audit import sha256_file
 from opensearch_vl_repro.eval_subset import canonical_json_sha256
+from opensearch_vl_repro.rl.rl_actor_semantics import (
+    contract_sft_config, require_rl_lora_dropout_runtime, require_update_forward_audit,
+    require_saved_source_dropout,
+)
 
 
 def configure_one_update(actor, row_count, gate):
@@ -43,34 +47,85 @@ def configure_one_update(actor, row_count, gate):
                            loss_agg_mode="seq-mean-token-mean")
 
 
-def audited_policy_update(actor, data):
+def audited_policy_update(actor, data, *, runtime_receipt=None):
     """Inspect clipped live gradients at the REAL AdamW.step, never manufacture them."""
     count, gradient_audit = 0, {}
     optimizer = actor.actor_optimizer
     original_step = optimizer.step
+    forwards, forward_errors = [], []
+    hook = None
+    step_started = False
+    if runtime_receipt is not None:
+        import torch
+        contract = runtime_receipt["rl_policy_execution_contract"]
+        sft_config = contract_sft_config(contract)
+        signature = runtime_receipt["lora_dropout_runtime_sha256"]
+        def require_runtime():
+            audit = require_rl_lora_dropout_runtime(actor.actor_module, sft_config)
+            if audit["lora_dropout_runtime_sha256"] != signature:
+                raise ValueError("actual update dropout fingerprint differs from actor-old receipt")
+            return audit
+        require_runtime()
+        def observe(module, args):
+            try:
+                audit = require_runtime()
+                audit["grad_enabled"] = torch.is_grad_enabled()
+                if (module.training is not True or not audit["grad_enabled"]
+                        or not all(r["training"] for r in audit["dropout_modules"]
+                                   if r["name"].endswith(".lora_dropout.default"))):
+                    raise ValueError("actual PPO forward requires train mode, gradients and p0 LoRA")
+                forwards.append(audit)
+            except BaseException as exc:
+                forward_errors.append(str(exc))  # sticky even if actor catches a hook failure
+                raise
+        hook = actor.actor_module.register_forward_pre_hook(observe)
+        def forward_evidence():
+            if forward_errors:
+                raise ValueError(f"invalid actual RL forward: {forward_errors}")
+            evidence = dict(forwards=forwards, forward_count=len(forwards),
+                train_mode_forward_seen=bool(forwards), nonzero_dropout_count=0,
+                lora_dropout_p_values=sorted({p for a in forwards for p in a["lora_dropout_p_values"]}),
+                dropout_training_true_count_per_forward=[a["dropout_training_true_count"] for a in forwards])
+            evidence["audit_sha256"] = canonical_json_sha256(evidence)
+            return require_update_forward_audit(evidence, contract, signature)
     def step(*args, **kwargs):
-        nonlocal count, gradient_audit
+        nonlocal count, gradient_audit, step_started
         if count != 0:
             raise RuntimeError("Gate C refuses a second optimizer step")
+        if runtime_receipt is not None:
+            require_runtime()
+            if actor.actor_module.training is not True:
+                raise ValueError("RL optimizer boundary must retain train mode")
+            forward_evidence()  # rejects missing/eval-only/invalid real policy-loss forwards
         gradient_audit = gradient_checks(actor.actor_module)
         frozen_clean = all(p.grad is None for p in actor.actor_module.parameters() if not p.requires_grad)
         gradient_audit["vision_projector_base_frozen"] = frozen_clean
         trainable_policy(actor.actor_module, optimizer)
         if not all(gradient_audit.values()):
             raise RuntimeError(f"RL gradient gate failed (possibly zero reward variance): {gradient_audit}")
+        step_started = True
         value = original_step(*args, **kwargs)
         count += 1
         return value
     optimizer.step = step
     try:
         metrics = actor.update_policy(data)  # official RL clipped policy loss + backward + optimizer
+        if runtime_receipt is not None:
+            require_runtime()
+            gradient_audit["rl_dropout_execution_audit"] = forward_evidence()
+        if count != 1:
+            raise RuntimeError("real verl update_policy did not perform exactly one optimizer step")
+        losses = metrics.get("actor/pg_loss", [])
+        if not losses or not all(math.isfinite(float(loss)) for loss in losses):
+            raise RuntimeError("real verl policy loss missing/nonfinite")
+    except BaseException as exc:
+        exc.optimizer_step_count = count
+        exc.optimizer_step_started = step_started
+        raise
     finally:
         optimizer.step = original_step
-    if count != 1:
-        raise RuntimeError("real verl update_policy did not perform exactly one optimizer step")
-    losses = metrics.get("actor/pg_loss", [])
-    if not losses or not all(math.isfinite(float(loss)) for loss in losses):
-        raise RuntimeError("real verl policy loss missing/nonfinite")
+        if hook is not None:
+            hook.remove()
     return metrics, {**gradient_audit, "optimizer_step_count": count}
 
 
@@ -93,7 +148,7 @@ def audit_pre_update_policy(actor, data, gate, *, expected_masked_token_count):
 def policy_update_after_alignment(actor, data, alignment, receipt=None):
     require_policy_alignment(alignment)
     verify_update_receipt(actor, data, alignment, receipt)
-    return audited_policy_update(actor, data)
+    return audited_policy_update(actor, data, runtime_receipt=receipt.artifact)
 
 
 def update(args, root):
@@ -104,7 +159,7 @@ def update(args, root):
     from opensearch_vl_repro.model import load_processor
     from opensearch_vl_repro.inference.adapter import adapter_file_identity
     from opensearch_vl_repro.rl.verl_actor_gate import (
-        CollectiveStages, checkpoint_manager, construct_actor, memory_stats, save_checkpoint,
+        CollectiveStages, checkpoint_manager, construct_rl_actor, memory_stats, save_checkpoint,
     )
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise RuntimeError("Gate C actor update requires real CUDA/BF16; CPU test is not PASS")
@@ -116,6 +171,8 @@ def update(args, root):
     checks = dict.fromkeys(UPDATE_CHECKS, False)
     alignment = None
     update_entered = False
+    observed_steps = None
+    observed_step_started = False
     stage, started = "actor_initializing", time.monotonic()
     lock = None
     try:
@@ -171,7 +228,7 @@ def update(args, root):
         run("token_mask_audit_artifact", lambda: atomic_json(output / "training_masks.json", mask_artifact(group, final, rollout_schema=True)) if rank == 0 else None)
         mesh = run("device_mesh", lambda: init_device_mesh("cuda", (world,), mesh_dim_names=("fsdp",)))
         processor = run("processor", lambda: load_processor(ctx["runtime_sft"], local_files_only=True))
-        actor, audit = run("original_sft_lora_fsdp2", lambda: construct_actor(
+        actor, audit = run("original_sft_lora_fsdp2", lambda: construct_rl_actor(
             config=ctx["runtime_sft"], gate=ctx["a22"], adapter=ctx["adapter"], mesh=mesh))
         # construct_actor validates the original PEFT/frozen parameters and real
         # verl FSDP2 wrapping (including every decoder) before it returns.
@@ -183,6 +240,12 @@ def update(args, root):
         if not active:
             raise RuntimeError("FSDP2 actor train/checkpointing/FA2 contract failed")
         checks["training_checkpointing_active"] = active
+        initial_runtime = require_rl_lora_dropout_runtime(actor.actor_module, ctx["sft"])
+        checks["rl_lora_dropout_runtime_configured"] = initial_runtime["nonzero_dropout_count"] == 0
+        checks["rl_lora_dropout_source_config_preserved"] = initial_runtime["source_adapter_lora_dropout"] == .05
+        print("RL_POLICY_EXECUTION_CONTRACT: " + json.dumps({"rank": rank,
+            **initial_runtime["rl_policy_execution_contract"], "nonzero_policy_dropout_modules": initial_runtime["nonzero_dropout_count"]}), flush=True)
+        print("SOURCE_LORA_DROPOUT: 0.05; RL_RUNTIME_LORA_DROPOUT: 0.0", flush=True)
         configure_one_update(actor, len(rows), ctx["gate"])
         data = run("real_multimodal_dataproto", lambda: build_dataproto(rows, directory=output / "group",
             model=actor.actor_module, pad_id=processor.tokenizer.pad_token_id, device=torch.device("cuda", local_rank), temperature=.7))
@@ -194,6 +257,8 @@ def update(args, root):
             expected_masked_token_count=token_audit["supervised_response_tokens"], rank=rank))
         local_alignment = run("pre_update_policy_alignment", lambda: prepared["alignment"])
         old_receipt = prepared["receipt"]
+        checks["rl_lora_dropout_zero_before_old"] = old_receipt.artifact["rl_dropout_boundary_audits"]["old_before"]["nonzero_dropout_count"] == 0
+        checks["rl_dropout_execution_contract_verified"] = old_receipt.artifact["rl_policy_execution_contract"] == ctx["identity"]["rl_policy_execution_contract"]
         local_handoff = prepared["handoff"]
         checks["rollout_log_probs_preserved"] = local_handoff["rollout_log_probs_sha256"] == old_receipt.artifact["rollout_log_probs_sha256"]
         checks["actor_old_log_probs_recomputed"] = old_receipt.artifact["independent_actor_compute_count"] == 2
@@ -221,7 +286,7 @@ def update(args, root):
             dist.all_gather_object(rows, local_alignment)
             return actor_alignment_artifact(rows, gate_version=ctx["gate"]["gate_version"], identity=ctx["identity"],
                 trajectory_group_id=group["identity"]["trajectory_group_id"],
-                policy_fingerprint=ctx["actor"]["source_sft_adapter_fingerprint"])
+                policy_fingerprint=ctx["identity"]["effective_pre_update_policy_fingerprint"])
         alignment = run("pre_update_policy_alignment", gather_alignment)
         run("pre_update_policy_alignment", lambda: atomic_json(
             output / "pre_update_policy_alignment.json", alignment) if rank == 0 else None)
@@ -235,8 +300,28 @@ def update(args, root):
             print("PRE_UPDATE_POLICY_ALIGNMENT: " + json.dumps({k: v for k, v in alignment.items()
                 if k not in {"identity", "per_rank"}}, allow_nan=False), flush=True)
             print(f"OLD_LOGPROB_SOURCE: {OLD_SOURCE}; ROLLOUT_LOGPROB_SOURCE: {UPDATE_ROLLOUT_SOURCE}; USE_ROLLOUT_LOG_PROBS: true", flush=True)
+        before_update_runtime = run("rl_dropout_before_update", lambda:
+            require_rl_lora_dropout_runtime(actor.actor_module, ctx["sft"]))
+        checks["rl_lora_dropout_zero_before_update"] = before_update_runtime["nonzero_dropout_count"] == 0
+        def real_update():
+            nonlocal observed_steps, observed_step_started
+            try:
+                result = policy_update_after_alignment(actor, data, alignment, old_receipt)
+                observed_steps, observed_step_started = result[1]["optimizer_step_count"], True
+                return result
+            except BaseException as exc:
+                observed_steps = getattr(exc, "optimizer_step_count", 0)
+                observed_step_started = getattr(exc, "optimizer_step_started", False)
+                raise
         update_entered = True
-        metrics, grad_audit = run("real_verl_update_policy", lambda: policy_update_after_alignment(actor, data, alignment, old_receipt))
+        metrics, grad_audit = run("real_verl_update_policy", real_update)
+        execution_audit = grad_audit["rl_dropout_execution_audit"]
+        checks["rl_lora_dropout_zero_during_update"] = execution_audit["nonzero_dropout_count"] == 0
+        checks["rl_update_train_mode_forward_seen"] = execution_audit["train_mode_forward_seen"] is True
+        checks["policy_nonzero_dropout_absent"] = all(a["nonzero_dropout_count"] == 0 for a in execution_audit["forwards"])
+        print("UPDATE_FORWARD_EXECUTION: " + json.dumps({"rank": rank,
+            **{k: v for k, v in execution_audit.items() if k != "forwards"}}), flush=True)
+        print(f"OPTIMIZER_STEP_COUNT: {grad_audit['optimizer_step_count']}", flush=True)
         def carriers_preserved():
             if any(fingerprint(data.batch[key]) != old_receipt.artifact[key + "_sha256"]
                    for key in ("rollout_log_probs", "old_log_probs", "response_mask")):
@@ -255,7 +340,14 @@ def update(args, root):
         checks.update(changed)
         run("post_update_frozen_audit", lambda: trainable_policy(actor.actor_module, actor.actor_optimizer))
         checks["optimizer_only_lora"] = True  # exact parameter-identity audit returned without error
-        saved = run("native_checkpoint_and_peft_export", lambda: save_checkpoint(actor, processor, output / "updated_actor"))
+        def save_rl():
+            require_rl_lora_dropout_runtime(actor.actor_module, ctx["sft"])
+            require_saved_source_dropout(ctx["adapter"])
+            saved = save_checkpoint(actor, processor, output / "updated_actor")
+            require_saved_source_dropout(output / "updated_actor/adapter")
+            require_rl_lora_dropout_runtime(actor.actor_module, ctx["sft"])
+            return saved
+        saved = run("native_checkpoint_and_peft_export", save_rl)
         checks["native_checkpoint_saved"] = all(
             (output / "updated_actor/distributed" / f"{prefix}_world_size_{world}_rank_{r}.pt").is_file()
             for r in range(world) for prefix in ("model", "optim", "extra_state"))
@@ -265,6 +357,10 @@ def update(args, root):
                 atomic_json(output / "updated_actor/gate_only_metadata.json", {
                     "formal_rl_initialization_allowed": False, "source_policy_fingerprint":
                     ctx["actor"]["source_sft_adapter_fingerprint"], "optimizer_step_count": 1,
+                    "rl_policy_execution_contract": ctx["identity"]["rl_policy_execution_contract"],
+                    "effective_pre_update_policy_fingerprint": ctx["identity"]["effective_pre_update_policy_fingerprint"],
+                    "source_adapter_lora_dropout": .05, "runtime_effective_lora_dropout": 0.,
+                    "rl_dropout_execution_audit_sha256": execution_audit["audit_sha256"],
                     "group_id": group["identity"]["trajectory_group_id"], "adapter_identity": saved})
         run("gate_only_checkpoint_metadata", gate_only_metadata)
         post_fingerprint = saved["adapter_fingerprint"]
@@ -281,13 +377,17 @@ def update(args, root):
             raise RuntimeError("original actor/optimizer still alive before fresh reload")
         checks["original_actor_destroyed"] = destroyed
         run("destroy_and_barrier", dist.barrier)
-        fresh, _ = run("fresh_base_updated_peft_fsdp2", lambda: construct_actor(
+        fresh, _ = run("fresh_base_updated_peft_fsdp2", lambda: construct_rl_actor(
             config=ctx["runtime_sft"], gate=ctx["a22"], adapter=output / "updated_actor/adapter", mesh=mesh))
         checks["fresh_actor_reloaded"] = fresh is not None
+        fresh_runtime = run("fresh_rl_dropout_runtime", lambda: require_rl_lora_dropout_runtime(fresh.actor_module, ctx["sft"]))
+        checks["fresh_rl_dropout_runtime_verified"] = fresh_runtime["nonzero_dropout_count"] == 0
         if not reload_matches(after, lora_snapshot(fresh.actor_module)):
             raise RuntimeError("fresh PEFT reload parameter mismatch")
         run("native_model_optimizer_reload", lambda: checkpoint_manager(fresh, processor).load_checkpoint(
             str(output / "updated_actor/distributed"), del_local_after_load=False))
+        native_runtime = run("native_rl_dropout_runtime", lambda: require_rl_lora_dropout_runtime(fresh.actor_module, ctx["sft"]))
+        checks["native_rl_dropout_runtime_verified"] = native_runtime["nonzero_dropout_count"] == 0
         native_ok = bool(fresh.actor_optimizer.state)
         matched = reload_matches(after, lora_snapshot(fresh.actor_module))
         checks["native_checkpoint_reloaded"] = native_ok
@@ -299,12 +399,26 @@ def update(args, root):
                 raise RuntimeError("fresh native checkpoint forward logprobs nonfinite")
             return {"finite": True, "shape": list(logprobs.shape)}
         proof = run("fresh_multimodal_forward", finite_forward)
+        after_reload_runtime = run("after_reload_rl_dropout_runtime", lambda: require_rl_lora_dropout_runtime(fresh.actor_module, ctx["sft"]))
         checks["fresh_forward_finite"] = proof["finite"] is True
         if not all(checks.values()):
             raise RuntimeError(f"incomplete Gate C update checks: {checks}")
         rank_report = {"rank": rank, "world_size": world, "checks": checks, "model_audit": audit,
                        "pre_update_policy_alignment": local_alignment,
                        "actor_old_logprob_receipt": old_receipt.artifact, "rollout_actor_handoff": local_handoff,
+                       "initial_runtime_audit": initial_runtime, "before_update_runtime_audit": before_update_runtime,
+                       "fresh_runtime_audit": fresh_runtime, "native_runtime_audit": native_runtime,
+                       "after_reload_runtime_audit": after_reload_runtime,
+                       "rl_dropout_execution_audit": execution_audit,
+                       "rl_dropout_execution_audit_sha256": execution_audit["audit_sha256"],
+                       "rl_lora_dropout_runtime_verified": execution_audit["nonzero_dropout_count"] == 0,
+                       "rl_update_train_mode_forward_seen": execution_audit["train_mode_forward_seen"],
+                       "rl_update_forward_count": execution_audit["forward_count"], "rl_update_nonzero_dropout_count": execution_audit["nonzero_dropout_count"],
+                       "rl_policy_execution_contract": ctx["identity"]["rl_policy_execution_contract"],
+                       "effective_pre_update_policy_fingerprint": ctx["identity"]["effective_pre_update_policy_fingerprint"],
+                       "source_adapter_lora_dropout": initial_runtime["source_adapter_lora_dropout"],
+                       "runtime_effective_lora_dropout": initial_runtime["runtime_effective_lora_dropout"],
+                       "lora_dropout_target_count": initial_runtime["lora_dropout_target_count"],
                        "metrics": {k: [float(v) for v in vals] for k, vals in metrics.items()},
                        "gradient_audit": grad_audit, "optimizer_step_count": grad_audit["optimizer_step_count"],
                        "reload_proof": proof, **memory_stats(torch, local_rank), "elapsed_seconds": time.monotonic() - started}
@@ -324,7 +438,15 @@ def update(args, root):
                           "checks": {k: all(row["checks"].get(k) is True for row in ranks) for k in UPDATE_CHECKS},
                           "per_rank": ranks, "raw_advantages": raw, "final_advantages": final,
                           "raw_returns": raw, "final_returns": final, "rewards": rewards,
-                          "training_token_counts": token_audit, "pre_update_policy_fingerprint": ctx["actor"]["source_sft_adapter_fingerprint"],
+                          "training_token_counts": token_audit, "pre_update_policy_fingerprint": ctx["identity"]["effective_pre_update_policy_fingerprint"],
+                          "effective_pre_update_policy_fingerprint": ctx["identity"]["effective_pre_update_policy_fingerprint"],
+                          "rl_policy_execution_contract": ctx["identity"]["rl_policy_execution_contract"],
+                          "source_adapter_lora_dropout": .05, "runtime_effective_lora_dropout": 0., "lora_dropout_target_count": 252,
+                          "rl_lora_dropout_runtime_verified": all(r["rl_lora_dropout_runtime_verified"] for r in ranks),
+                          "rl_update_train_mode_forward_seen": all(r["rl_update_train_mode_forward_seen"] for r in ranks),
+                          "rl_update_forward_count": sum(r["rl_update_forward_count"] for r in ranks),
+                          "rl_update_nonzero_dropout_count": sum(r["rl_update_nonzero_dropout_count"] for r in ranks),
+                          "rl_dropout_execution_audit": [r["rl_dropout_execution_audit"] for r in sorted(ranks, key=lambda r: r["rank"])],
                           "training_masks_sha256": sha256_file(output / "training_masks.json"),
                           "pre_update_policy_alignment_sha256": sha256_file(output / "pre_update_policy_alignment.json"),
                           "pre_update_policy_alignment": alignment,
@@ -347,6 +469,8 @@ def update(args, root):
     except BaseException as exc:
         if not dist.is_initialized() or dist.get_rank() == 0:
             extra = {"checks": checks}
+            if observed_steps is not None:
+                extra.update(optimizer_step_count=observed_steps, optimizer_step_started=observed_step_started)
             if not update_entered:
                 extra.update(optimizer_step_count=0, pre_update_policy_alignment=alignment)
                 if alignment is not None:

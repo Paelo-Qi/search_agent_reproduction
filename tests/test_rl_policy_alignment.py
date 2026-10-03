@@ -159,13 +159,15 @@ def test_real_update_orchestration_peer_failure_persists_zero_step_report(tmp_pa
     args = SimpleNamespace(run_id="cpu-peer-failure", seed=1)
     output, reports = gate_c.paths_for(tmp_path, args.run_id)
     group = fixture_group()
-    identity = {"identity_sha256": group["identity"]["context"], "gate_version": gate_c.GATE_C_VERSION}
+    identity = {"identity_sha256": group["identity"]["context"], "gate_version": gate_c.GATE_C_VERSION,
+                "effective_pre_update_policy_fingerprint": group["identity"]["pre_update_policy_fingerprint"],
+                "rl_policy_execution_contract": {"CPU collective isolation": True}}
     gate_c.bind_run(output, reports, identity)
     staging = tmp_path / "group-staging"; staging.mkdir()
     torch.save({"fixture": torch.ones(1)}, staging / "mm.pt")
     publish_group(staging, output / "group", group)
     ctx = dict(identity=identity, gate=gate_c.load_gate_c_config(ROOT / "configs/rl_gate_c.yaml"),
-        runtime_sft={}, a22={}, adapter=tmp_path / "outputs/sft_main_imageid_v3/checkpoint-3k/adapter",
+        runtime_sft={}, sft={}, a22={}, adapter=tmp_path / "outputs/sft_main_imageid_v3/checkpoint-3k/adapter",
         actor={"source_sft_adapter_fingerprint": group["identity"]["pre_update_policy_fingerprint"]})
     monkeypatch.setattr(verl_policy_update, "prepare_context", lambda *a: ctx)
     monkeypatch.setattr(verl_policy_update, "verify_same_policy_lineage", lambda *a: {"same_policy_lineage_verified": True})
@@ -190,7 +192,10 @@ def test_real_update_orchestration_peer_failure_persists_zero_step_report(tmp_pa
     actor = toy_actor(); actor.config = SimpleNamespace(strategy="fsdp2")
     actor_audit = dict(model_training=True, language_model_training=True, decoder_layers_training=36,
         decoder_layers_gradient_checkpointing=36, effective_attention_implementation="flash_attention_2")
-    monkeypatch.setattr(verl_actor_gate, "construct_actor", lambda **k: (actor, actor_audit))
+    monkeypatch.setattr(verl_actor_gate, "construct_rl_actor", lambda **k: (actor, actor_audit))
+    monkeypatch.setattr(verl_policy_update, "require_rl_lora_dropout_runtime", lambda *a:
+                        dict(nonzero_dropout_count=0, source_adapter_lora_dropout=.05,
+                             rl_policy_execution_contract=identity["rl_policy_execution_contract"]))
     monkeypatch.setattr(verl_policy_update, "official_rloo", lambda *a, **k: ([1., -1.], [1., -1.]))
     monkeypatch.setattr(verl_policy_update, "configure_one_update", lambda *a: None)
     class CPUProto:
@@ -216,7 +221,9 @@ def test_real_update_orchestration_peer_failure_persists_zero_step_report(tmp_pa
         local = cpu_audit(0)
         local.update(ALIGNMENT_META)
         calls.extend(["compute O", "compute C"])
-        proof = dict(rank=0, independent_actor_compute_count=2, rollout_log_probs_sha256="r")
+        proof = dict(rank=0, independent_actor_compute_count=2, rollout_log_probs_sha256="r",
+            rl_policy_execution_contract=identity["rl_policy_execution_contract"],
+            rl_dropout_boundary_audits={"old_before": {"nonzero_dropout_count": 0}})
         return dict(alignment=local, receipt=SimpleNamespace(artifact=proof, old_tensor=data.batch["old_log_probs"]),
                     handoff=dict(rank=0, rollout_log_probs_sha256="r", metrics=dict(all_finite=True, token_count_match=True)))
     monkeypatch.setattr(verl_policy_update, "prepare_actor_old_log_probs", prepare)
@@ -275,20 +282,21 @@ def test_two_rank_artifact_binding_and_numeric_checks(tmp_path):
 def test_finalize_rejects_alignment_failure_without_pass_manifest(tmp_path, monkeypatch, failure):
     args = SimpleNamespace(run_id="cpu-alignment-finalize")
     output, reports = gate_c.paths_for(tmp_path, args.run_id)
-    gate_c.bind_run(output, reports, {"identity_sha256": "context"})
+    identity = {"identity_sha256": "context", "effective_pre_update_policy_fingerprint": "policy"}
+    gate_c.bind_run(output, reports, identity)
     group = {"identity": {"context": "context", "trajectory_group_id": "group",
                           "pre_update_policy_fingerprint": "policy"}}
     atomic_json(output / "group/group.json", group)
     atomic_json(output / "training_masks.json", {})
     update = receipt(output, [cpu_audit(0), cpu_audit(1, .3)] if failure == "rank1" else None)
-    update.update(identity={"identity_sha256": "context"}, group_sha256=sha256_file(output / "group/group.json"),
+    update.update(identity=identity, group_sha256=sha256_file(output / "group/group.json"),
                   training_masks_sha256=sha256_file(output / "training_masks.json"))
     if failure == "count": update["training_token_counts"]["supervised_response_tokens"] = 99
     if failure == "policy": update["pre_update_policy_fingerprint"] = "other"
     atomic_json(output / "update_verified.json", update)
     if failure == "tamper":
         atomic_json(output / "pre_update_policy_alignment.json", {"passed": True, "tampered": True})
-    monkeypatch.setattr(gate_c, "prepare_context", lambda *a: {"identity": {"identity_sha256": "context"},
+    monkeypatch.setattr(gate_c, "prepare_context", lambda *a: {"identity": identity,
         "actor": {"source_sft_adapter_fingerprint": "policy"}})
     monkeypatch.setattr(gate_c, "read_group", lambda *a: group)
     with pytest.raises((ValueError, RuntimeError)): gate_c.finalize(args, tmp_path)

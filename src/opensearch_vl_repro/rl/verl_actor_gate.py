@@ -164,6 +164,15 @@ def construct_actor(*, config: dict[str, Any], gate: dict[str, Any], adapter: Pa
     return actor, audit
 
 
+def construct_rl_actor(*, config: dict[str, Any], gate: dict[str, Any], adapter: Path,
+                       mesh: Any) -> tuple[Any, dict[str, Any]]:
+    """Explicit formal RL semantics; raw Gate A/forensic constructor stays intact."""
+    from opensearch_vl_repro.rl.rl_actor_semantics import configure_rl_lora_dropout_runtime
+    actor, audit = construct_actor(config=config, gate=gate, adapter=adapter, mesh=mesh)
+    audit["rl_lora_dropout_runtime"] = configure_rl_lora_dropout_runtime(actor.actor_module, config)
+    return actor, audit
+
+
 def checkpoint_manager(actor: Any, processor: Any) -> Any:
     from omegaconf import OmegaConf
     from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager

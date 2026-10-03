@@ -19,7 +19,8 @@ from opensearch_vl_repro.inference.adapter import adapter_file_identity
 from opensearch_vl_repro.eval_subset import canonical_json_sha256
 from opensearch_vl_repro.sft_tool_audit import sha256_file
 from opensearch_vl_repro.agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
-from test_rl_gate_c import toy_actor
+from _rl_actor_fixture import actor as toy_actor, first_weight, sft_config
+from opensearch_vl_repro.rl.rl_actor_semantics import execution_contract, effective_policy_fingerprint, configure_rl_lora_dropout_runtime
 from test_rl_group import fixture_group
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,7 +67,7 @@ def test_logprobs_first_entropy_second_preserves_formal_alignment_return_contrac
 def lineage_fixture(root):
     """Real file hashes/merge identity, deliberately fake weights and NO model load."""
     adapter = root / "outputs/sft_main_imageid_v3/checkpoint-3k/adapter"
-    atomic_json(adapter / "adapter_config.json", {})
+    atomic_json(adapter / "adapter_config.json", {"lora_dropout": .05})
     (adapter / "adapter_model.safetensors").write_bytes(b"CPU source fixture")
     fp = adapter_file_identity(adapter)["adapter_fingerprint"]
     actor = dict(actor_adapter_fingerprint=fp, source_sft_adapter_fingerprint=fp,
@@ -74,14 +75,18 @@ def lineage_fixture(root):
         actor_gate_identity_sha256=None, base_model=BASE_MODEL, base_revision=BASE_REVISION,
         formal_rl_initialization_allowed=False)
     gate = gate_c.load_gate_c_config(ROOT / "configs/rl_gate_c.yaml")
-    identity = dict(run_id="cpu-v460", gate_version=gate_c.GATE_C_VERSION, source_sft_actor=actor,
+    contract = execution_contract(sft_config())
+    effective_fp = effective_policy_fingerprint(fp, contract)
+    identity = dict(run_id="cpu-v461", gate_version=gate_c.GATE_C_VERSION, source_sft_actor=actor,
+        rl_policy_execution_contract=contract, effective_pre_update_policy_fingerprint=effective_fp,
         base_model=BASE_MODEL, base_revision=BASE_REVISION, logprobs_mode="processed_logprobs",
         prompt_id="rl_000001", runtime_protocol=RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION)
     identity["identity_sha256"] = canonical_json_sha256(identity)
-    output = root / "outputs/rl_gate_c/cpu-v460"
-    gid = group_identity(prompt_id=identity["prompt_id"], policy_fingerprint=fp,
+    output = root / "outputs/rl_gate_c/cpu-v461"
+    gid = group_identity(prompt_id=identity["prompt_id"], policy_fingerprint=effective_fp,
         rollout_fingerprint=canonical_json_sha256(gate), attempt="new-collection", context=identity["identity_sha256"])
     group = fixture_group(); group["identity"] = gid
+    group.update(rl_policy_execution_contract=contract, effective_pre_update_policy_fingerprint=effective_fp)
     for member in group["members"]:
         member["identity"] = copy.deepcopy(gid)
     merged = output / "merged-new-collection"
@@ -93,7 +98,7 @@ def lineage_fixture(root):
         merge_complete=True, no_active_peft=True, fresh_hf_forward_finite=True, merge_hf_destroyed=True, reload_hf_destroyed=True))
     group["merged_checkpoint_fingerprint"] = merge["merged_checkpoint_fingerprint"]
     atomic_json(output / "group/group.json", group)
-    ctx = dict(actor=actor, identity=identity, gate=gate, adapter=adapter, versions={})
+    ctx = dict(actor=actor, identity=identity, gate=gate, adapter=adapter, versions={}, sft=sft_config())
     return ctx, group, output
 
 
@@ -109,7 +114,7 @@ def carrier_fixture(group, *, delta=.5, current_delta=0., mutation=None):
         non_tensor_batch=dict(multi_modal_inputs=[dict(pixel_values=torch.ones(2, 8), image_grid_thw=torch.tensor([[1, 2, 2]]))] * 2),
         meta_info=dict(temperature=.7, micro_batch_size=1, use_dynamic_bsz=False))
     actor = toy_actor(); actor.config = Config()
-    actor.actor_module.forward = lambda x: x * actor.actor_module.q_proj.lora_B
+    configure_rl_lora_dropout_runtime(actor.actor_module, sft_config())
     configure_one_update(actor, len(rows), dict(clip_ratio_low=.2, clip_ratio_high=.28))
     calls = []
     def compute(received, calculate_entropy):
@@ -158,7 +163,7 @@ def test_large_legal_handoff_two_independent_forwards_strict_actor_alignment_and
         assert torch.equal(received.batch["old_log_probs"], rollout - .5)
         updates.append("official API stub")
         actor.actor_module.train()
-        actor.actor_module.q_proj.lora_B.sum().backward()
+        actor.actor_module(torch.ones(1)).sum().backward()
         actor.actor_optimizer.step(); actor.actor_optimizer.zero_grad(set_to_none=True)
         return {"actor/pg_loss": [.1], "actor/pg_clipfrac": [0.]}
     actor.update_policy = update
@@ -234,7 +239,7 @@ def test_update_boundary_rejects_substitution_stale_or_missing_receipt(tmp_path,
     elif bad == "advantage": data.batch["advantages"][0, 0] += 1
     elif bad == "temperature": data.meta_info["temperature"] = 1.
     elif bad == "param":
-        with torch.no_grad(): actor.actor_module.q_proj.lora_B.add_(1)
+        with torch.no_grad(): first_weight(actor.actor_module).add_(1)
     elif bad == "receipt": receipt = receipt.artifact  # serialized receipt is not an in-process capability
     elif bad == "missing_receipt": receipt = None
     elif bad == "old_fp": receipt.artifact["old_log_probs_sha256"] = "a" * 64
@@ -284,7 +289,7 @@ def test_stale_group_cannot_be_hidden_by_deterministic_zero_actor_difference(tmp
         rollout_fingerprint=old["rollout_config_fingerprint"], attempt=old["collection_attempt"], context=old["context"])
     group["identity"] = wrong
     for member in group["members"]: member["identity"] = copy.deepcopy(wrong)
-    with pytest.raises(ValueError, match="stale"):
+    with pytest.raises(ValueError, match="stale|contract"):
         lineage = production.verify_same_policy_lineage(ctx, group, output)
         production.prepare_actor_old_log_probs(actor, data, ctx["gate"], lineage=lineage,
             expected_masked_token_count=counts["supervised_response_tokens"], rank=0)
@@ -309,11 +314,11 @@ def test_independent_computations_reject_mutation_and_nonfinite(tmp_path, bad):
         elif bad == "R": data.batch["rollout_log_probs"][0, 0] += 1
         elif bad == "old":
             if "old_log_probs" in data.batch: data.batch["old_log_probs"][0, 0] += 1
-        elif bad == "parameter": actor.actor_module.q_proj.lora_B.add_(1)
+        elif bad == "parameter": first_weight(actor.actor_module).add_(1)
         elif bad == "RNG": torch.rand(1)
-        elif bad == "nonfinite": actor.actor_module.q_proj.lora_B.fill_(float("nan"))
-        elif bad == "backward": actor.actor_module.q_proj.lora_B.grad = torch.ones(1)
-        else: actor.actor_optimizer.state[actor.actor_module.q_proj.lora_B] = {"step": 1}
+        elif bad == "nonfinite": first_weight(actor.actor_module).fill_(float("nan"))
+        elif bad == "backward": first_weight(actor.actor_module).grad = torch.ones(1, 1)
+        else: actor.actor_optimizer.state[first_weight(actor.actor_module)] = {"step": 1}
     with pytest.raises(ValueError): prepared_fixture(tmp_path, mutation=mutate)
 
 
@@ -325,7 +330,7 @@ def artifact_fixture(root):
     proofs = [proof, proof2]
     alignment = production.actor_alignment_artifact([p["alignment"] for p in proofs],
         gate_version=gate_c.GATE_C_VERSION, identity=ctx["identity"], trajectory_group_id=group["identity"]["trajectory_group_id"],
-        policy_fingerprint=ctx["actor"]["source_sft_adapter_fingerprint"])
+        policy_fingerprint=ctx["identity"]["effective_pre_update_policy_fingerprint"])
     atomic_json(output / "pre_update_policy_alignment.json", alignment)
     for kind, field in (("actor_old_logprob_receipt", "receipt"), ("rollout_actor_handoff", "handoff")):
         values = [p[field].artifact if field == "receipt" else p[field] for p in proofs]
@@ -333,7 +338,7 @@ def artifact_fixture(root):
     atomic_json(output / "training_masks.json", mask_artifact(group, [1., -1.], rollout_schema=True))
     update = dict(identity=ctx["identity"], final_advantages=[1., -1.], training_token_counts=counts,
         group_sha256=sha256_file(output / "group/group.json"), training_masks_sha256=sha256_file(output / "training_masks.json"),
-        pre_update_policy_fingerprint=ctx["actor"]["source_sft_adapter_fingerprint"],
+        pre_update_policy_fingerprint=ctx["identity"]["effective_pre_update_policy_fingerprint"],
         pre_update_policy_alignment=alignment, pre_update_policy_alignment_sha256=sha256_file(output / "pre_update_policy_alignment.json"),
         pre_update_actor_alignment_sha256=sha256_file(output / "pre_update_policy_alignment.json"),
         old_logprob_source=production.OLD_SOURCE, rollout_logprob_source=production.UPDATE_ROLLOUT_SOURCE,
@@ -345,13 +350,40 @@ def artifact_fixture(root):
             rollout_actor_handoff=p["handoff"]) for i, p in enumerate(proofs)])
     for kind in ("actor_old_logprob_receipt", "rollout_actor_handoff"):
         update[kind + "_sha256"] = sha256_file(output / (kind + ".json"))
+    update.update(rl_policy_execution_contract=ctx["identity"]["rl_policy_execution_contract"],
+        effective_pre_update_policy_fingerprint=ctx["identity"]["effective_pre_update_policy_fingerprint"],
+        source_adapter_lora_dropout=.05, runtime_effective_lora_dropout=0., lora_dropout_target_count=252)
+    atomic_json(output / "updated_actor/adapter/adapter_config.json", {"lora_dropout": .05})
+    for value, batch, proof, report in zip((actor, actor2), (data, data2), proofs, update["per_rank"], strict=True):
+        def cpu_update(unused):
+            value.actor_module.train()
+            value.actor_module(torch.ones(1)).sum().backward()
+            value.actor_optimizer.step()
+            value.actor_optimizer.zero_grad(set_to_none=True)
+            return {"actor/pg_loss": [.1]}
+        value.update_policy = cpu_update
+        _, gradient = verl_policy_update.audited_policy_update(value, batch, runtime_receipt=proof["receipt"].artifact)
+        evidence = gradient["rl_dropout_execution_audit"]
+        runtime = proof["receipt"].artifact["rl_dropout_boundary_audits"]["old_before"]
+        report.update(rl_lora_dropout_runtime_verified=True, rl_update_train_mode_forward_seen=True,
+            rl_update_forward_count=evidence["forward_count"], rl_update_nonzero_dropout_count=0,
+            rl_dropout_execution_audit=evidence, rl_dropout_execution_audit_sha256=evidence["audit_sha256"],
+            gradient_audit=gradient, **{k: update[k] for k in ("rl_policy_execution_contract",
+                "effective_pre_update_policy_fingerprint", "source_adapter_lora_dropout", "runtime_effective_lora_dropout", "lora_dropout_target_count")})
+        for key in ("initial_runtime_audit", "before_update_runtime_audit", "fresh_runtime_audit", "native_runtime_audit", "after_reload_runtime_audit"):
+            report[key] = copy.deepcopy(runtime)
+    update.update(rl_lora_dropout_runtime_verified=True, rl_update_train_mode_forward_seen=True,
+        rl_update_forward_count=sum(r["rl_update_forward_count"] for r in update["per_rank"]),
+        rl_update_nonzero_dropout_count=0,
+        rl_dropout_execution_audit=[r["rl_dropout_execution_audit"] for r in update["per_rank"]])
     return ctx, group, output, lineage, update
 
 
 def test_finalizer_accepts_new_receipts_and_large_finite_handoff(tmp_path):
     ctx, group, output, lineage, update = artifact_fixture(tmp_path)
-    assert gate_c.verify_policy_alignment_artifact(output, update, group, ctx["identity"], ctx["actor"]["source_sft_adapter_fingerprint"])["passed"]
+    assert gate_c.verify_policy_alignment_artifact(output, update, group, ctx["identity"], ctx["identity"]["effective_pre_update_policy_fingerprint"])["passed"]
     artifacts = production.verify_old_logprob_artifacts(output, update, group, ctx["identity"], lineage)
+    gate_c.verify_dropout_artifacts(ctx, group, update, output)
     assert artifacts["rollout_actor_handoff"]["per_rank"][0]["metrics"]["max_abs_logprob_diff"] > .1
 
 
@@ -394,9 +426,11 @@ def test_old_attempt_read_only_and_new_version_identity_not_reused(tmp_path):
     before = {str(p): sha256_file(p) for p in tmp_path.rglob("*") if p.is_file()}
     with pytest.raises(ValueError, match="read-only"): gate_c.paths_for(tmp_path, "gate-c-v451-attempt1")
     assert before == {str(p): sha256_file(p) for p in tmp_path.rglob("*") if p.is_file()}
-    assert "actor-recomputed-old-logprob" in gate_c.GATE_C_VERSION
+    assert gate_c.GATE_C_VERSION == "minimum-rl-integration-c-v3-actor-old-zero-lora-dropout"
     assert gate_c.load_gate_c_config(ROOT / "configs/rl_gate_c.yaml")["gate_version"] == gate_c.GATE_C_VERSION
-    assert gate_c.paths_for(tmp_path, "gate-c-v460-attempt1")[0] != output
+    with pytest.raises(ValueError, match="read-only"):
+        gate_c.paths_for(tmp_path, "gate-c-v460-attempt1")
+    assert gate_c.paths_for(tmp_path, "gate-c-v461-attempt1")[0] != output
 
 
 def test_production_has_no_forensic_dependency_no_custom_loss_and_new_artifacts_required():

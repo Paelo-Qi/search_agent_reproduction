@@ -19,6 +19,10 @@ from opensearch_vl_repro.rl.policy_alignment import (
 )
 from opensearch_vl_repro.rl.rollout_sync import validate_merged_files
 from opensearch_vl_repro.sft_tool_audit import sha256_file
+from opensearch_vl_repro.rl.rl_actor_semantics import (
+    RL_LORA_DROPOUT_RUNTIME_VERSION, contract_sft_config, require_execution_binding,
+    require_saved_source_dropout, require_rl_lora_dropout_runtime, require_runtime_audit,
+)
 
 OLD_SOURCE = "actor_recomputed_pre_update"
 ROLLOUT_SOURCE = "saved_vllm_processed_logprobs"
@@ -107,6 +111,7 @@ def verify_same_policy_lineage(ctx, group, output):
     from opensearch_vl_repro.rl.group import validate_group
     validate_group(group)
     identity, actor = ctx["identity"], ctx["actor"]
+    contract, effective_fp = require_execution_binding(identity, group)
     gid = group["identity"]
     fp = actor["source_sft_adapter_fingerprint"]
     adapter = ctx["adapter"].resolve()
@@ -114,11 +119,12 @@ def verify_same_policy_lineage(ctx, group, output):
     if not adapter.as_posix().endswith("/" + formal_suffix):
         raise ValueError("actor source adapter is not formal checkpoint-3k")
     source_adapter = adapter_file_identity(adapter)
+    require_saved_source_dropout(adapter)
     if (source_adapter["adapter_fingerprint"] != fp
             or actor.get("actor_adapter_fingerprint") != fp
             or actor.get("actor_source_kind") != "formal_sft_checkpoint_fallback"
             or identity.get("source_sft_actor") != actor
-            or gid.get("pre_update_policy_fingerprint") != fp
+            or gid.get("pre_update_policy_fingerprint") != effective_fp
             or gid.get("context") != identity["identity_sha256"]
             or gid.get("prompt_id") != identity["prompt_id"]
             or gid.get("rollout_config_fingerprint") != canonical_json_sha256(ctx["gate"])
@@ -158,7 +164,8 @@ def verify_same_policy_lineage(ctx, group, output):
                     str(output / "group/group.json"): sha256_file(output / "group/group.json")}
     source_files.update({str(adapter / name): digest for name, digest in source_adapter["file_sha256"].items()})
     return SamePolicyLineage(dict(same_policy_lineage_verified=True,
-        actor_adapter_fingerprint=fp, pre_update_policy_fingerprint=fp,
+        actor_adapter_fingerprint=fp, pre_update_policy_fingerprint=effective_fp,
+        effective_pre_update_policy_fingerprint=effective_fp, rl_policy_execution_contract=contract,
         actor_source_adapter=str(adapter), actor_source_kind=actor["actor_source_kind"],
         base_model=BASE_MODEL, base_revision=BASE_REVISION,
         identity_sha256=identity["identity_sha256"], trajectory_group_id=gid["trajectory_group_id"],
@@ -174,7 +181,7 @@ def require_source_files(lineage):
         raise ValueError("source policy/group/merge evidence changed since lineage verification")
 
 
-def independent_actor_compute(actor, data, *, parameters, inputs, rollout, rng):
+def independent_actor_compute(actor, data, *, parameters, inputs, rollout, rng, sft_config):
     """Actual eval/no-grad actor forward on a private copy of identical inputs."""
     import torch
     if parameter_fingerprint(actor) != parameters or input_fingerprint(data) != inputs:
@@ -187,6 +194,7 @@ def independent_actor_compute(actor, data, *, parameters, inputs, rollout, rng):
     old_before = fingerprint(batch.batch["old_log_probs"]) if "old_log_probs" in batch.batch else None
     forwards = []
     def observe(module, args):
+        require_rl_lora_dropout_runtime(module, sft_config)
         if (module.training or torch.is_grad_enabled() or any(
                 m.training for m in module.modules() if isinstance(m, torch.nn.modules.dropout._DropoutNd))):
             raise ValueError("actor recompute must execute deterministic eval/no_grad")
@@ -247,6 +255,12 @@ def prepare_actor_old_log_probs(actor, data, gate, *, lineage, expected_masked_t
             or lineage.get("same_policy_lineage_verified") is not True):
         raise ValueError("same-policy lineage verification required before actor recompute")
     require_source_files(lineage)
+    sft_config = contract_sft_config(lineage.get("rl_policy_execution_contract"))
+    boundary_audits = {}
+    def boundary(name):
+        audit = require_rl_lora_dropout_runtime(actor.actor_module, sft_config)
+        boundary_audits[name] = audit
+        return audit["lora_dropout_runtime_sha256"]
     if "old_log_probs" in data.batch or "rollout_log_probs" not in data.batch:
         raise ValueError("initial DataProto must carry rollout R and NO old_log_probs")
     if not temperature_matches(data.meta_info.get("temperature"), gate["vllm"]["temperature"]):
@@ -258,12 +272,17 @@ def prepare_actor_old_log_probs(actor, data, gate, *, lineage, expected_masked_t
             or int(mask.sum().item()) != expected_masked_token_count or expected_masked_token_count < 1):
         raise ValueError("invalid saved rollout FP32 shape/finite mask/token count")
     inputs, parameters, rng, rollout = input_fingerprint(data), parameter_fingerprint(actor), rng_fingerprint(), fingerprint(r)
-    old, old_forwards = independent_actor_compute(actor, data, parameters=parameters, inputs=inputs, rollout=rollout, rng=rng)
+    signature = boundary("old_before")
+    old, old_forwards = independent_actor_compute(actor, data, parameters=parameters, inputs=inputs, rollout=rollout, rng=rng, sft_config=sft_config)
+    if boundary("old_after") != signature or boundary("current_before") != signature:
+        raise ValueError("RL dropout semantics changed around O recompute")
     data.batch["old_log_probs"] = old.detach().clone()
     installed = data.batch["old_log_probs"]
     if installed.untyped_storage().data_ptr() == r.untyped_storage().data_ptr():
         raise ValueError("actor-old and rollout carrier alias")
-    current, current_forwards = independent_actor_compute(actor, data, parameters=parameters, inputs=inputs, rollout=rollout, rng=rng)
+    current, current_forwards = independent_actor_compute(actor, data, parameters=parameters, inputs=inputs, rollout=rollout, rng=rng, sft_config=sft_config)
+    if boundary("current_after") != signature:
+        raise ValueError("RL dropout semantics changed around C recompute")
     if not torch.equal(installed, old):
         raise ValueError("installed actor-old mutated during second forward")
     artifact = dict(schema_version=1, rank=rank, **lineage, **ALIGNMENT_META,
@@ -272,6 +291,9 @@ def prepare_actor_old_log_probs(actor, data, gate, *, lineage, expected_masked_t
         pre_update_parameter_sha256=parameters, parameters_unchanged=True, rng_unchanged=True,
         independent_actor_compute_count=2, old_forward_count=old_forwards, current_forward_count=current_forwards,
         optimizer_step_count=0, formal_rl_initialization_allowed=False)
+    artifact.update(rl_lora_dropout_runtime_version=RL_LORA_DROPOUT_RUNTIME_VERSION,
+        source_adapter_lora_dropout=.05, runtime_effective_lora_dropout=0., lora_dropout_target_count=252,
+        lora_dropout_runtime_sha256=signature, rl_dropout_boundary_audits=boundary_audits)
     artifact["receipt_sha256"] = canonical_json_sha256(artifact)
     receipt = OldLogprobReceipt(artifact, id(data), id(actor), installed, _SEAL)
     alignment = compare_policy_logprobs(current, installed, mask, clip_ratio_low=gate["clip_ratio_low"],
@@ -301,6 +323,9 @@ def verify_update_receipt(actor, data, alignment, receipt):
     if a.get("receipt_sha256") != canonical_json_sha256({k: v for k, v in a.items() if k != "receipt_sha256"}):
         raise ValueError("actor-old receipt content changed")
     require_source_files(a)
+    audit = require_rl_lora_dropout_runtime(actor.actor_module, contract_sft_config(a.get("rl_policy_execution_contract")))
+    if audit["lora_dropout_runtime_sha256"] != a.get("lora_dropout_runtime_sha256"):
+        raise ValueError("actor-old/update dropout runtime fingerprint mismatch")
     old = data.batch.get("old_log_probs")
     r = data.batch.get("rollout_log_probs")
     if (old is None or r is None or old is not receipt.old_tensor
@@ -382,6 +407,16 @@ def verify_old_logprob_artifacts(output, update, group, identity, lineage):
     actor_rows = sorted(update["per_rank"], key=lambda r: r["rank"])
     alignments = sorted(update["pre_update_policy_alignment"]["per_rank"], key=lambda r: r["rank"])
     for rank, (receipt, handoff, actor_row, alignment) in enumerate(zip(receipts, handoffs, actor_rows, alignments, strict=True)):
+        contract = identity["rl_policy_execution_contract"]
+        if (receipt.get("rl_lora_dropout_runtime_version") != RL_LORA_DROPOUT_RUNTIME_VERSION
+                or receipt.get("source_adapter_lora_dropout") != .05
+                or receipt.get("runtime_effective_lora_dropout") != 0.
+                or receipt.get("lora_dropout_target_count") != 252):
+            raise ValueError("missing old-logprob RL dropout execution evidence")
+        for boundary in ("old_before", "old_after", "current_before", "current_after"):
+            audit = require_runtime_audit(receipt.get("rl_dropout_boundary_audits", {}).get(boundary, {}), contract)
+            if audit["lora_dropout_runtime_sha256"] != receipt.get("lora_dropout_runtime_sha256"):
+                raise ValueError("old/current RL dropout execution fingerprint mismatch")
         if (receipt["rank"] != rank or actor_row["rank"] != rank or handoff["rank"] != rank
                 or any(receipt.get(k) != v or handoff.get(k) != v for k, v in lineage.items())
                 or any(receipt.get(k) != v for k, v in ALIGNMENT_META.items())

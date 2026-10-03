@@ -304,10 +304,18 @@ def test_collect_interruption_recollects_whole_group_then_durable_resume(tmp_pat
     row = {"source_sample_id":"s", "prompt_id":"s", "question":"Q", "reference_answer":"SECRET"}
     args = SimpleNamespace(run_id="cpu-fixture", seed=1, source_root=tmp_path, search_config=tmp_path,
                            layout_config=tmp_path, base_model_path=tmp_path, tool_cache_dir=None)
-    ctx = dict(identity={"identity_sha256":"context"}, row=row, images=[Image.new("RGB", (8, 6))],
+    ctx = dict(identity={"identity_sha256":"context", "effective_pre_update_policy_fingerprint": "e" * 64,
+        "rl_policy_execution_contract": {"CPU collective isolation": True}}, row=row, images=[Image.new("RGB", (8, 6))],
         gate=load_gate_c_config(ROOT / "configs/rl_gate_c.yaml"), sft={}, versions={}, judge=SimpleNamespace(),
         actor={"source_sft_adapter_fingerprint":"a" * 64}, adapter=tmp_path / "formal-checkpoint3k/adapter",
         rl={"paths":{"tool_cache_dir":"outputs/shared_cache"}})
+    from _rl_actor_fixture import sft_config
+    from opensearch_vl_repro.rl.rl_actor_semantics import execution_contract, effective_policy_fingerprint
+    from opensearch_vl_repro.eval_subset import canonical_json_sha256
+    contract = execution_contract(sft_config())
+    ctx["identity"] = dict(source_sft_actor=ctx["actor"], rl_policy_execution_contract=contract,
+        effective_pre_update_policy_fingerprint=effective_policy_fingerprint("a" * 64, contract))
+    ctx["identity"]["identity_sha256"] = canonical_json_sha256(ctx["identity"])
     monkeypatch.setattr(gate_c, "prepare_context", lambda *a: ctx)
     merges = []
     def merge(**kw):

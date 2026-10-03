@@ -1,8 +1,8 @@
 # Gate C — Minimum RL Integration
 
-Status: **READY FOR AUTODL FORMAL GATE C OLD-LOGPROB REPAIR VALIDATION**.
+Status: **READY FOR AUTODL FORMAL GATE C DROPOUT-CONSISTENCY VALIDATION**.
 CPU tests are not rollout, live Judge, FSDP2 policy-update or GPU reload evidence.
-v4.6 behavior: `minimum-rl-integration-c-v2-actor-recomputed-old-logprob`.
+v4.6.1 behavior: `minimum-rl-integration-c-v3-actor-old-zero-lora-dropout`.
 
 ## Scope and immutable inputs
 
@@ -334,9 +334,85 @@ specific failed checks. A compute/publication exception also stops there before
 the optimizer. No PASS manifest is published. Use a NEW run-id after correction.
 Post-update reload requires a finite forward, NOT same-policy ratios near 1.
 
+## v4.6.1 formal RL dropout execution consistency
+
+SFT adapter config `lora_dropout=0.05` is SFT training metadata. Formal RL
+behavior is a **dropout-free inference policy** even though the training actor
+stays in `model.train()` for gradients, backward and gradient checkpointing.
+This is runtime-only execution policy: **disable LoRA dropout at RL runtime
+while preserving source adapter configuration metadata**. Source checkpoint-3k,
+adapter_config, SFT YAML, target membership and base/vision/projector freezing
+are not changed. No eval-mode policy-loss shortcut is used.
+
+Pinned [PEFT 0.21.1 LoRA layer](https://github.com/huggingface/peft/blob/v0.21.1/src/peft/tuners/lora/layer.py)
+stores `lora_A`, `lora_B`, `lora_dropout` as per-adapter ModuleDicts and applies
+the active adapter's dropout in forward. Its
+[save path](https://github.com/huggingface/peft/blob/v0.21.1/src/peft/peft_model.py)
+serializes PEFT config, not the runtime module's `p`. The helper validates one
+active `default` adapter, unmerged/enabled LoRA, trainable A/B and exactly one
+of seven language targets in each of 36 layers (252 unique targets). It changes
+only `lora_dropout["default"].p` from .05 to 0, never the config or module object.
+Other nonzero Dropout modules (including frozen vision/projector), and known
+functional attention/config dropout values, fail closed rather than being
+silently zeroed. Complete names/p/training rosters are recorded. A real pinned
+GPU actor must prove absence of other stochastic dropout; CPU mocks cannot.
+
+`RL_LORA_DROPOUT_RUNTIME_VERSION=rl-lora-dropout-disabled-v1` and
+`RL_POLICY_EXECUTION_VERSION=rl-policy-execution-v1-zero-lora-dropout` enter the
+explicit `rl_policy_execution_contract`. Run identity and integration source
+hashes bind the new semantics module and constructor. Effective policy SHA is
+canonical(source adapter weight fingerprint, pinned base/revision, execution
+contract). Group `pre_update_policy_fingerprint`, same-policy lineage, O receipt,
+alignment and update/finalizer all use this **effective** SHA. Source adapter
+weight fingerprint remains separate and unchanged; Gate B and static merge
+continue comparing the original source fingerprint. Equal O/C numbers cannot
+waive a mismatched execution contract.
+
+Initial and fresh actors use `construct_rl_actor`; raw `construct_actor` stays
+unchanged for Gate A / historical forensic diagnostics. O-before/O-after and
+C-before/C-after require p0 and the same stable runtime SHA (mode flags are
+recorded but excluded from that SHA). The live sealed receipt and update
+boundary recheck it. Saved adapter config must still be .05; fresh PEFT loads
+.05 metadata and the RL wrapper reapplies module p0. Native reload and the
+final reload forward are separately reaudited.
+
+During the **actual official `actor.update_policy`**, a temporary forward hook
+requires root train mode, enabled gradients, all 252 active/trainable LoRA
+targets with p0, and no other nonzero policy dropout. Each forward records the
+roster, train flags, p distribution, count and stable runtime SHA, not tensors.
+Dropout `training=True, p=0` is correct. No forward, eval/no-grad-only forward,
+reset p=.05, unknown dropout, or a swallowed hook error blocks optimizer.step.
+The real step boundary rechecks this evidence and the unchanged gradient gate.
+Failed pre-step checks report zero completed steps; a post-step failure retains
+the truthful completed count and step-started flag, never pretends it was zero.
+No custom loss, new advantage, denominator substitution or upstream patch is
+introduced; TRUE/O, immutable R, temperature .7, strict O/C max-abs .1 and
+ratio [.8,1.28] remain unchanged. R/O handoff magnitude remains informational.
+
+`update_verified`, rank reports, Gate-only checkpoint metadata and final reports
+carry the contract/effective SHA, source .05/runtime0, count252 and actual
+forward/reload evidence. The CPU finalizer reconstructs complete roster/SHA,
+checks real source and exported adapter configs, paired forward evidence,
+initial/O/C/update/fresh/native signatures and literal checks. A true boolean
+without the evidence cannot publish PASS. Final report precedes gate_manifest;
+the manifest is still the LAST durable PASS artifact.
+
+Use **gate-c-v461-attempt1** for fresh collect -> update -> finalize. Do not
+create/use v460; v451 and all old forensic artifacts remain read-only. Old
+version identities are refused before writes. If update has entered and fails,
+use a new explicit run-id; never relax thresholds or repeat an ambiguous step.
+Only collect/tool/reward uses external APIs; update/finalize do not. After
+AutoDL, return the commit/version, contract, source config, runtime rosters,
+R/O metrics, O/C alignment, actual train-mode forward audit, step count,
+gradient audit, save/reload and fresh/native dropout proofs, final report,
+gate_manifest and old-attempt checksum comparison. Formal smoke20 production
+design/review remains a later task, even after a genuine Gate C PASS.
+
 ## Actual update and save/reload proof
 
-Reuse A2.2 construct_actor/activate training/FSDP2 wrapping/LoRA-only AdamW and
+Reuse A2.2 through the explicit `construct_rl_actor` wrapper (raw
+`construct_actor` keeps Gate A / historical SFT dropout semantics),
+activate training/FSDP2 wrapping/LoRA-only AdamW and
 native checkpoint helpers. Configure official actor use_rollout_log_probs=True
 (otherwise its single-mini-batch on-policy shortcut would ignore supplied old
 logprobs). Vanilla clipped RL loss, low=.2/high=.28, no entropy/KL bonus.
@@ -382,14 +458,27 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
 
+git pull --ff-only
+
 # Set these locators to YOUR previously verified local inputs.
 export RL_SOURCE_ROOT=/absolute/path/to/Search-VL-RL-8K
 export QWEN_BASE_SNAPSHOT=/absolute/path/to/pinned/Qwen3-VL-4B-Instruct/snapshot
 
-# Confirm the deployed v4.6 revision (record the actual hash; never run the old
-# b9821f598b64931cbab1af952f1c44f9160e63aa production path by accident).
+# Confirm the deployed v4.6.1 revision. These local changes are not committed
+# automatically; first deploy your reviewed commit containing this repair.
 git rev-parse HEAD
-python -c 'from opensearch_vl_repro.rl.gate_c import GATE_C_VERSION; assert GATE_C_VERSION == "minimum-rl-integration-c-v2-actor-recomputed-old-logprob"; print(GATE_C_VERSION)'
+python - <<'PY'
+import yaml
+from opensearch_vl_repro.rl.gate_c import GATE_C_VERSION
+from opensearch_vl_repro.rl.rl_actor_semantics import (
+    RL_LORA_DROPOUT_RUNTIME_VERSION, RL_POLICY_EXECUTION_VERSION, execution_contract)
+assert GATE_C_VERSION == "minimum-rl-integration-c-v3-actor-old-zero-lora-dropout"
+print("GATE_C_VERSION:", GATE_C_VERSION)
+print("RL_LORA_DROPOUT_RUNTIME_VERSION:", RL_LORA_DROPOUT_RUNTIME_VERSION)
+print("RL_POLICY_EXECUTION_VERSION:", RL_POLICY_EXECUTION_VERSION)
+print("RL_POLICY_EXECUTION_CONTRACT:", execution_contract(yaml.safe_load(
+    open("configs/sft_main_imageid_v3.yaml", encoding="utf-8"))))
+PY
 
 # API keys must already be set securely: DEEPSEEK_API_KEY, SERPER_API_KEY,
 # SERPAPI_API_KEY, JINA_API_KEY, PADDLEOCR_ACCESS_TOKEN for enabled tools.
@@ -405,15 +494,15 @@ python -m pytest tests/test_rl_gate_c.py::test_real_installed_rllm_tokens_surviv
   -o addopts= -q -rs -p no:cacheprovider
 
 # Use the identical COMMON args in all three stages; do not hand-edit artifacts.
-COMMON=(--run-id gate-c-v460-attempt1 --config configs/rl_main.yaml \
+COMMON=(--run-id gate-c-v461-attempt1 --config configs/rl_main.yaml \
   --gate-config configs/rl_gate_c.yaml --data data/rl/smoke20.json --sample-index 0 \
   --source-root "$RL_SOURCE_ROOT" --base-model-path "$QWEN_BASE_SNAPSHOT" \
   --gate-b-manifest outputs/rl_gate_b/a22-tp1-attempt2/gate_manifest.json \
   --judge-config configs/judge.example.yaml \
   --search-config configs/search_backends.example.yaml \
   --layout-config configs/layout_parsing.example.yaml)
-test ! -e outputs/rl_gate_c/gate-c-v460-attempt1
-test ! -e reports/rl_gate_c/gate-c-v460-attempt1
+test ! -e outputs/rl_gate_c/gate-c-v461-attempt1
+test ! -e reports/rl_gate_c/gate-c-v461-attempt1
 
 # 1. Real one-GPU collection + TWO independent live judges per rollout.
 CUDA_VISIBLE_DEVICES=0 python scripts/validate_rl_minimum_update.py collect "${COMMON[@]}"
@@ -434,14 +523,25 @@ diff -u "$OLD_AUDIT" "$OLD_AUDIT_AFTER"
 python - <<'PY'
 import json
 from pathlib import Path
-p = Path("outputs/rl_gate_c/gate-c-v460-attempt1")
+p = Path("outputs/rl_gate_c/gate-c-v461-attempt1")
 manifest = json.loads((p / "gate_manifest.json").read_text())
 assert manifest["passed"] is True
 assert manifest["formal_rl_initialization_allowed"] is False
 assert manifest["optimizer_step_count"] == 1
+assert manifest["source_adapter_lora_dropout"] == .05
+assert manifest["runtime_effective_lora_dropout"] == 0.
+assert manifest["lora_dropout_target_count"] == 252
+assert manifest["rl_update_train_mode_forward_seen"] is True
+assert manifest["rl_update_nonzero_dropout_count"] == 0
+assert manifest["rl_update_forward_count"] > 0
 for name in ("pre_update_policy_alignment.json", "rollout_actor_handoff.json",
              "actor_old_logprob_receipt.json", "update_verified.json", "gate_manifest.json"):
     print(name, (p / name).read_text())
+print("FINAL_REPORT", Path("reports/rl_gate_c/gate-c-v461-attempt1/gate_c_report.json").read_text())
+for rank in manifest["per_rank"]:
+    print("RANK_DROPOUT_AND_RELOAD", rank["rank"], {
+        k: rank[k] for k in ("initial_runtime_audit", "before_update_runtime_audit",
+            "rl_dropout_execution_audit", "fresh_runtime_audit", "native_runtime_audit", "after_reload_runtime_audit")})
 PY
 ```
 
@@ -486,11 +586,11 @@ These must be resolved with REAL Gate evidence, not relaxed checks.
 ## Local tests and next boundary
 
 ```bash
-PYTHONPATH=src python -m pytest tests/test_rl_group.py tests/test_rl_reward.py \
-  tests/test_rl_fatal.py tests/test_rl_rloo.py tests/test_rl_training_batch.py \
-  tests/test_rl_gate_c.py tests/test_rl_reward_judges.py tests/test_rl_workflow_adapter.py \
-  tests/test_rl_policy_alignment.py \
-  tests/test_rl_actor_gate.py tests/test_rl_gate_b.py -o addopts= -q -p no:cacheprovider
+PYTHONPATH=src python -m pytest tests/test_rl_actor_semantics.py \
+  tests/test_rl_verl_policy_update.py tests/test_rl_gate_c.py \
+  tests/test_rl_policy_alignment.py tests/test_rl_training_batch.py \
+  tests/test_rl_actor_old_logprob_diagnostic.py tests/test_rl_bf16_lora_dtype_diagnostic.py \
+  tests/test_rl_bf16_sdpa_diagnostic.py -o addopts= -q -p no:cacheprovider
 PYTHONPATH=src python -m pytest -o addopts= -q -p no:cacheprovider
 git diff --check
 ```

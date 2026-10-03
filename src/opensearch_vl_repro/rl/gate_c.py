@@ -40,7 +40,12 @@ from opensearch_vl_repro.rl.old_logprob import (
     OLD_LOGPROB_CHECKS, actor_alignment_artifact, verify_old_logprob_artifacts, verify_same_policy_lineage,
 )
 
-GATE_C_VERSION = "minimum-rl-integration-c-v2-actor-recomputed-old-logprob"
+from opensearch_vl_repro.rl.rl_actor_semantics import (
+    DROPOUT_CHECKS, execution_contract, effective_policy_fingerprint, require_execution_binding,
+    require_saved_source_dropout, require_runtime_audit, require_update_forward_audit,
+)
+
+GATE_C_VERSION = "minimum-rl-integration-c-v3-actor-old-zero-lora-dropout"
 COLLECT_CHECKS = (
     "software_versions", "formal_sft_lineage", "gate_b_prerequisite", "real_smoke_prompt",
     "no_reference_in_model_task", "runtime_group_identity", "exactly_two_complete_rollouts",
@@ -56,7 +61,7 @@ UPDATE_CHECKS = (
     "parameters_finite", "lora_param_changed", "post_policy_fingerprint_changed",
     "native_checkpoint_saved", "peft_exported", "original_actor_destroyed", "fresh_actor_reloaded",
     "native_checkpoint_reloaded", "reload_param_match", "fresh_forward_finite",
-) + ALIGNMENT_CHECKS + OLD_LOGPROB_CHECKS
+) + ALIGNMENT_CHECKS + OLD_LOGPROB_CHECKS + DROPOUT_CHECKS
 ALL_CHECKS = COLLECT_CHECKS + UPDATE_CHECKS + ("artifacts_verified", "gate_only_output")
 
 
@@ -130,6 +135,9 @@ def prepare_context(args, root):
         raise ValueError("Gate C RL init must be original formal checkpoint-3k, NOT Gate A/B/C weights")
     actor = validate_actor_adapter(adapter=formal_path, gate_manifest=None, rl_config=rl,
                                   sft_config=sft, source_sft_adapter=formal_path)
+    contract = execution_contract(sft)
+    require_saved_source_dropout(formal_path)
+    effective_fp = effective_policy_fingerprint(actor["source_sft_adapter_fingerprint"], contract)
     prerequisite = validate_gate_b(args.gate_b_manifest.resolve(), actor["source_sft_adapter_fingerprint"])
     rl["data"]["quality_audit_dir"] = str(root / rl["data"]["quality_audit_dir"])
     records, manifest = load_smoke_records(args.data.resolve(), rl)
@@ -162,6 +170,8 @@ def prepare_context(args, root):
                 "formal_rl_initialization_allowed": False,
                 "formal_config_sha256": sha256_file(args.config), "sft_config_sha256": sha256_file(root / rl["model"]["sft_config"]),
                 "source_sft_actor": actor, "gate_b_prerequisite": prerequisite,
+                "rl_policy_execution_contract": contract,
+                "effective_pre_update_policy_fingerprint": effective_fp,
                 "sample_id": row["source_sample_id"], "prompt_id": row["prompt_id"],
                 "source_data_manifest_sha256": manifest["manifest_sha256"], "software_versions": versions,
                 "judge_config": asdict(judge), "search_config_sha256": sha256_file(args.search_config),
@@ -169,7 +179,8 @@ def prepare_context(args, root):
                 "integration_source_sha256": {name: sha256_file(root / "src/opensearch_vl_repro/rl" / name)
                     for name in ("gate_c.py", "group.py", "live_workflow.py", "reward_judges.py", "rloo.py",
                                  "training_batch.py", "verl_policy_update.py", "policy_alignment.py", "old_logprob.py",
-                                 "workflow_adapter.py", "rollout_gate.py", "rollout_sync.py")},
+                                 "workflow_adapter.py", "rollout_gate.py", "rollout_sync.py",
+                                 "rl_actor_semantics.py", "verl_actor_gate.py")},
                 "logprobs_mode": "processed_logprobs",
                 "base_model": BASE_MODEL, "base_revision": BASE_REVISION,
                 "runtime_protocol": RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION}
@@ -188,9 +199,9 @@ def paths_for(root, run_id):
     # Reject BEFORE locks, stage/failure reports or PASS revocation can write to
     # forensic history. New behavior requires a fresh production run identity.
     manifest = output / "run_manifest.json"
-    if run_id == "gate-c-v451-attempt1" or (manifest.is_file() and
+    if run_id in {"gate-c-v451-attempt1", "gate-c-v460-attempt1"} or (manifest.is_file() and
             json.loads(manifest.read_text(encoding="utf-8")).get("gate_version", GATE_C_VERSION) != GATE_C_VERSION):
-        raise ValueError("historical Gate C attempt is read-only; use a NEW v4.6 run-id")
+        raise ValueError("historical/reserved Gate C attempt is read-only; use a NEW v4.6.1 run-id")
     return output, reports
 
 
@@ -238,6 +249,7 @@ def collect(args, root):
             value = read_group(committed)
             if value["identity"]["context"] != ctx["identity"]["identity_sha256"]:
                 raise ValueError("committed group belongs to another run context")
+            require_execution_binding(ctx["identity"], value)
             print("Complete committed group reused; no rollout recollection", flush=True)
             return 0
         import torch
@@ -247,7 +259,7 @@ def collect(args, root):
         torch.cuda.reset_peak_memory_stats(0)
         attempt = uuid.uuid4().hex
         group_id = group_identity(prompt_id=ctx["row"]["prompt_id"],
-                                 policy_fingerprint=ctx["actor"]["source_sft_adapter_fingerprint"],
+                                 policy_fingerprint=ctx["identity"]["effective_pre_update_policy_fingerprint"],
                                  rollout_fingerprint=canonical_json_sha256(ctx["gate"]), attempt=attempt,
                                  context=ctx["identity"]["identity_sha256"])
         staging = output / (".group-" + attempt)
@@ -333,6 +345,8 @@ def collect(args, root):
             checks.update(dict.fromkeys(COLLECT_CHECKS, True))
             enter("group_atomic_publication")
             value = publish_group(staging, committed, {"identity": group_id, "members": redact_secrets(members),
+                "rl_policy_execution_contract": ctx["identity"]["rl_policy_execution_contract"],
+                "effective_pre_update_policy_fingerprint": ctx["identity"]["effective_pre_update_policy_fingerprint"],
                 "checks": checks, "merged_checkpoint_fingerprint": merge["identity"]["merged_checkpoint_fingerprint"],
                 "collect_elapsed_seconds": time.monotonic() - started,
                 "peak_cuda_memory": {"allocated": torch.cuda.max_memory_allocated(0), "reserved": torch.cuda.max_memory_reserved(0)}})
@@ -410,9 +424,10 @@ def finalize(args, root):
                     or len(update["per_rank"]) != 2 or {r["rank"] for r in update["per_rank"]} != {0, 1}):
                 raise ValueError("Gate update/group/rank identity mismatch")
             alignment = verify_policy_alignment_artifact(output, update, group, ctx["identity"],
-                ctx["actor"]["source_sft_adapter_fingerprint"])
+                ctx["identity"]["effective_pre_update_policy_fingerprint"])
             lineage = verify_same_policy_lineage(ctx, group, output)
             verify_old_logprob_artifacts(output, update, group, ctx["identity"], lineage)
+            verify_dropout_artifacts(ctx, group, update, output)
             for name, digest in update["checkpoint_file_sha256"].items():
                 path = (output / "updated_actor" / name).resolve()
                 if not path.is_relative_to((output / "updated_actor").resolve()) or sha256_file(path) != digest:
@@ -443,3 +458,52 @@ def finalize(args, root):
         except BaseException as exc:
             failure_report(output, reports, ctx["identity"], "finalize", exc)
             raise
+
+
+def verify_dropout_artifacts(ctx, group, update, output):
+    """Do not accept caller booleans as proof of live policy-loss semantics."""
+    contract, fp = require_execution_binding(ctx["identity"], group)
+    if contract != execution_contract(ctx["sft"]):
+        raise ValueError("frozen SFT/contract mismatch")
+    require_saved_source_dropout(ctx["adapter"])
+    require_saved_source_dropout(output / "updated_actor/adapter")
+    if (update.get("rl_policy_execution_contract") != contract
+            or update.get("effective_pre_update_policy_fingerprint") != fp
+            or update.get("source_adapter_lora_dropout") != .05
+            or update.get("runtime_effective_lora_dropout") != 0.
+            or update.get("lora_dropout_target_count") != 252):
+        raise ValueError("missing RL dropout update evidence")
+    ranks = sorted(update["per_rank"], key=lambda r: r["rank"])
+    if (len(ranks) != 2 or [r["rank"] for r in ranks] != [0, 1]
+            or update.get("rl_lora_dropout_runtime_verified") is not True
+            or update.get("rl_update_train_mode_forward_seen") is not True
+            or update.get("rl_update_forward_count") != sum(r.get("rl_update_forward_count", 0) for r in ranks)
+            or update.get("rl_update_nonzero_dropout_count") != 0
+            or update.get("rl_dropout_execution_audit") != [r.get("rl_dropout_execution_audit") for r in ranks]):
+        raise ValueError("missing/tampered paired RL dropout forward evidence")
+    for row in update["per_rank"]:
+        receipt = row["actor_old_logprob_receipt"]
+        signature = receipt.get("lora_dropout_runtime_sha256")
+        for key in ("initial_runtime_audit", "before_update_runtime_audit", "fresh_runtime_audit", "native_runtime_audit", "after_reload_runtime_audit"):
+            audit = require_runtime_audit(row.get(key, {}), contract)
+            if audit["lora_dropout_runtime_sha256"] != signature:
+                raise ValueError("initial/update/fresh/native runtime semantics changed")
+        for key in ("old_before", "old_after", "current_before", "current_after"):
+            audit = require_runtime_audit(receipt.get("rl_dropout_boundary_audits", {}).get(key, {}), contract)
+            if audit["lora_dropout_runtime_sha256"] != signature:
+                raise ValueError("O/C dropout runtime semantics changed")
+        evidence = row.get("rl_dropout_execution_audit", {})
+        require_update_forward_audit(evidence, contract, signature)
+        if (row.get("rl_dropout_execution_audit_sha256") != evidence["audit_sha256"]
+                or row["gradient_audit"].get("rl_dropout_execution_audit") != evidence
+                or row.get("rl_lora_dropout_runtime_verified") is not True
+                or row.get("rl_update_train_mode_forward_seen") is not True
+                or row.get("rl_update_forward_count") != evidence["forward_count"]
+                or row.get("rl_update_nonzero_dropout_count") != 0
+                or row.get("rl_policy_execution_contract") != contract
+                or row.get("effective_pre_update_policy_fingerprint") != fp
+                or row.get("source_adapter_lora_dropout") != .05
+                or row.get("runtime_effective_lora_dropout") != 0.
+                or row.get("lora_dropout_target_count") != 252
+                or any(row["checks"].get(k) is not True or update["checks"].get(k) is not True for k in DROPOUT_CHECKS)):
+            raise ValueError("RL dropout live-forward evidence/check mismatch")
