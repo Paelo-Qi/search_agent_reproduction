@@ -158,7 +158,8 @@ def audit_batch(data, rows, count):
     if data.meta_info != {"temperature": .7, "micro_batch_size": 1, "use_dynamic_bsz": False}:
         raise ValueError("formal temperature/microbatch metadata mismatch")
     tensors = data.batch
-    if set(tensors.keys()) != {"input_ids", "attention_mask", "position_ids", "responses", "response_mask", "old_log_probs", "advantages"}:
+    carrier = rollout_carrier(data)
+    if set(tensors.keys()) != {"input_ids", "attention_mask", "position_ids", "responses", "response_mask", carrier, "advantages"}:
         raise ValueError("formal DataProto tensor fields mismatch")
     if tensors["position_ids"].shape != (len(rows), 3, tensors["input_ids"].shape[-1]):
         raise ValueError("real M-RoPE shape mismatch")
@@ -169,7 +170,7 @@ def audit_batch(data, rows, count):
         n = len(row["responses"])
         if (tensors["responses"][i, :n].tolist() != row["responses"]
                 or mask[i].tolist() != row["response_mask"] + [0] * (mask.shape[1]-n)
-                or not torch.equal(tensors["old_log_probs"][i, :n].cpu(), torch.tensor(row["old_log_probs"], dtype=torch.float32))):
+                or not torch.equal(tensors[carrier][i, :n].cpu(), torch.tensor(row["old_log_probs"], dtype=torch.float32))):
             raise ValueError("R, token IDs or fatal response mask differ from saved rollout")
     multimodal = data.non_tensor_batch.get("multi_modal_inputs")
     if multimodal is None or len(multimodal) != len(rows) or any(
@@ -177,6 +178,12 @@ def audit_batch(data, rows, count):
         raise ValueError("multimodal inputs missing")
     return dict(token_identity_verified=True, multimodal_inputs_verified=True, temperature=.7,
                 mrope_shape=list(tensors["position_ids"].shape), response_mask_reused=True)
+
+
+def rollout_carrier(data):
+    # Read-only historical compatibility. The modern builder names saved R
+    # rollout_log_probs; historical fixtures/artifacts called R old_log_probs.
+    return "rollout_log_probs" if "rollout_log_probs" in data.batch else "old_log_probs"
 
 
 def feasibility(metrics, historical):
@@ -387,7 +394,7 @@ def run_diagnostic(args, root):
         semantics = run("installed_verl_source_audit", lambda: inspect_verl_old_logprob_semantics(actor, version=versions["verl"]) if rank == 0 else None)
         if rank == 0:
             installed_before = semantics["source_hashes"]
-            semantics["runtime_gate_denominator_origin"] = "Caller-supplied saved rollout old_log_probs; true flag unchanged; NO update executed. O was not installed as denominator."
+            semantics["runtime_gate_denominator_origin"] = "Historical diagnostic reads saved rollout R (legacy row old_log_probs, modern rollout_log_probs carrier); true flag unchanged; NO update executed. O was not installed as denominator."
             report.update(verl_old_logprob_semantics=semantics,
                           ppo_semantic_acceptability=semantics["ppo_semantic_acceptability"])
             atomic_json(destination / "verl_source_audit.json", {**META, **semantics})
@@ -420,7 +427,7 @@ def run_diagnostic(args, root):
             if audit_O["forward_states"] != audit_C["forward_states"]:
                 raise ValueError("O/C forward mode/autocast/dropout semantics differ")
         run("O_C_execution_state_match", same_execution)
-        mask, R = data.batch["response_mask"].cpu(), data.batch["old_log_probs"].cpu()
+        mask, R = data.batch["response_mask"].cpu(), data.batch[rollout_carrier(data)].cpu()
         def oc_check():
             metric = handoff.pair_metrics(C[mask.bool()].double().tolist(), O[mask.bool()].double().tolist())
             decision = feasibility(metric, ctx["alignment"])

@@ -165,7 +165,7 @@ def attempt(tmp_path, actor_artifacts):
     identity = dict(run_id=run_id, gate_version="minimum-rl-integration-c-v1", base_model=BASE_MODEL,
         base_revision=BASE_REVISION, formal_rl_initialization_allowed=False,
         source_sft_actor=actor, logprobs_mode="processed_logprobs",
-        gate_config=load_gate_c_config(ROOT / "configs/rl_gate_c.yaml"),
+        gate_config={**load_gate_c_config(ROOT / "configs/rl_gate_c.yaml"), "gate_version": "minimum-rl-integration-c-v1"},
         formal_config_sha256=sha256_file(root / "configs/rl_main.yaml"),
         sft_config_sha256=sha256_file(root / "configs/sft_main_imageid_v3.yaml"),
         offline_base_file_sha256={p.name: sha256_file(p) for p in base.iterdir()},

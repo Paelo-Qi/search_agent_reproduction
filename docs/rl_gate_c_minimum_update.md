@@ -1,7 +1,8 @@
 # Gate C — Minimum RL Integration
 
-Status: **READY FOR AUTODL EXECUTION — NOT YET GPU PASSED**.
+Status: **READY FOR AUTODL FORMAL GATE C OLD-LOGPROB REPAIR VALIDATION**.
 CPU tests are not rollout, live Judge, FSDP2 policy-update or GPU reload evidence.
+v4.6 behavior: `minimum-rl-integration-c-v2-actor-recomputed-old-logprob`.
 
 ## Scope and immutable inputs
 
@@ -70,6 +71,7 @@ The compatibility layer is a DATA/INTERACTION layer, not a local PPO loss:
   Crucially, default raw_logprobs are BEFORE temperature. Gate C explicitly
   configures `LLM(logprobs_mode='processed_logprobs')` so old logprobs describe
   temperature=.7 sampling. Top-p1/top-k-1 do not truncate the distribution.
+  Those values are R (`rollout_log_probs`), not the new PPO denominator O.
 - [Qwen3-VL 4.57.1 M-RoPE](https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/models/qwen3_vl/modeling_qwen3_vl.py):
   actual `get_rope_index(input_ids, image_grid_thw, attention_mask)` supplies
   multimodal positions; no generic text-only arange replacement.
@@ -88,7 +90,9 @@ collect: original checkpoint-3k -> safe static merge -> fresh HF reload
          -> validate entire group -> atomic directory publication
 update:  torchrun 2 -> original checkpoint-3k -> real verl FSDP2 actor
          -> official RLOO -> fatal clamp -> actual token DataProto
-         -> both-rank pre-update policy alignment -> update_policy once
+         -> same-policy lineage -> independent actor O -> install old_log_probs
+         -> independent actor C -> strict C/O alignment + informational O/R
+         -> receipt-guarded update_policy once (official third current forward)
          -> native checkpoint + PEFT export
          -> destroy actor -> fresh FSDP2 actor + native reload -> finite forward
 finalize: verify immutable run/group/mask/checkpoint/rank evidence
@@ -121,7 +125,7 @@ weighting redesign.
 Every real rLLM Step stores prompt_ids, response_ids, logprobs, ModelOutput,
 token count, parser kind, finish reason and processed-logprobs provenance.
 IDs come from `RequestOutput.prompt_token_ids` and `CompletionOutput.token_ids`;
-old logprobs are the actual chosen-token values, length-matched and finite.
+rollout logprobs R are the actual chosen-token values, length-matched and finite.
 No response-text re-encoding or zero logprob placeholders are used.
 After both live judges succeed, bind the actual total to the real rLLM
 Trajectory.reward and Step.mc_return, with terminal-only Step.reward and
@@ -144,7 +148,7 @@ post-fatal masks are omitted from the actor mini-batch (to avoid an empty-loss
 denominator), but their zero masks remain in `training_masks.json`.
 
 Left padding aligns context lengths; right padding aligns response lengths.
-Only padded positions have dummy pad IDs/zero old logprob storage; their
+Only padded positions have dummy pad IDs/zero rollout logprob storage; their
 attention/response masks are zero. References are never SFT labels or policy
 targets. `model_task` copies exactly sample_id/question/images; reference_answer
 is available ONLY to the separate reward orchestration.
@@ -238,19 +242,39 @@ the gate FAILS. No dummy advantages, altered rewards or hidden extra attempts.
 Use a new explicit run-id/sample-index for another real gate attempt; record it
 as such, never cherry-pick silently within a completed group.
 
-## Pre-update policy handoff alignment
+## v4.6 actor-recomputed old logprobs and same-policy safety
 
-v4.5.1 audits the handoff from checkpoint-3k PEFT -> static merge -> vLLM
-processed old_log_probs to checkpoint-3k PEFT -> FSDP2 actor current logprobs.
-Incorrect merge/reload, image binding, M-RoPE or sampling semantics must fail
-BEFORE a policy update, not merely produce finite PPO loss.
+Historical `gate-c-v451-attempt1` compared saved vLLM R against actor C and
+failed BEFORE optimizer (max_abs=0.524349, clip_fraction=0.0139104). User-provided
+AutoDL forensic evidence v4.5.2–v4.5.7 excluded token/context/M-RoPE/merge-math
+errors. Dynamic PEFT BF16 execution (`Wx + deltaWx`) and static merged BF16
+execution (`(W + deltaW)x`) are the same mathematical policy lineage, but can
+have stable rounding/kernel/accumulation handoff drift. Two independent
+unchanged FSDP2 actor computations O/C were identical in that historical probe.
+This evidence motivates the new dataflow; it is NOT a new Gate C PASS.
 
-After building the real multimodal DataProto and taking the pre-update LoRA
-snapshot, BOTH ranks call the pinned verl 0.6.1 actor's
-`compute_log_prob(data, calculate_entropy=False)`. The exact same DataProto
-object then goes to `update_policy`; no response-text tokenization or rebuilt
-batch is allowed. The audit is no-grad, changes no optimizer state/parameters,
-and never overwrites the actual vLLM sampled old_log_probs.
+Formal rows explicitly use `rollout_log_probs`; historical forensic readers
+retain the deprecated row key `old_log_probs`. The DataProto boundary maps
+either row spelling ONLY to FP32 `rollout_log_probs` with the same saved values.
+Initial DataProto has NO `old_log_probs`, so update cannot consume R by mistake.
+Prompt/response IDs, response/fatal masks, advantages, vision and actual Qwen
+M-RoPE are unchanged. No retokenization, HF proxy or merged-model recomputation.
+
+Before O, recheck formal checkpoint-3k adapter files/fingerprint/source kind,
+collection group/run identity and rollout-config fingerprint, pinned base and
+revision, plus the EXACT collection merge manifest, canonical fingerprint and
+all actual merged file hashes. A stale/wrong-policy trajectory fails even if a
+new actor would give O=C. Recomputed old is NOT a generic off-policy bypass.
+
+BOTH ranks independently execute `compute_log_prob(..., calculate_entropy=False)`
+twice on private copies of the same real DataProto inputs. The first real
+eval/no-grad/BF16 forward yields O; detach/clone installs it as `old_log_probs`
+without aliasing R. The second independent real forward yields C; strict
+comparison is `exp(C-O)`. No parameter/input/carrier/RNG mutation, backward or
+optimizer operation is allowed between them. Full local parameter-shard hashes
+are intentionally strong (CPU copying/hashing has Gate-only overhead).
+The original prepared DataProto goes to official update_policy; its internal
+current forward is the THIRD computation and remains entirely verl-owned.
 
 Pinned `compute_log_prob` internally calls actor_module.eval(): LoRA dropout
 0.05 is disabled only by inference mode, not by a changed dropout setting.
@@ -260,22 +284,49 @@ processed vLLM logprobs and actor temperature-scaled logits describe an
 untruncated distribution. Future top_p<1 or finite top_k requires a new
 old-logprob semantics audit; it is NOT handled by this gate.
 
-Comparison selects ONLY response_mask==1. Padding and post-fatal mask-zero
-tokens are ignored even if their stored values are nonfinite. Shape mismatch,
+Strict C/O comparison selects ONLY response_mask==1. Shape mismatch,
 nonbinary/empty/inconsistent masks, masked NaN/Inf logprobs or ratios fail closed.
 Report mean/max absolute and mean signed difference, and
 `ratio=exp(current-old)` mean/min/max without clamping. Require zero fraction
 outside [1-.2, 1+.28] = [0.8, 1.28] AND strictly max_abs_logprob_diff < 0.1.
-The Gate-only bound permits small BF16/kernel/merge drift, not bitwise equality;
-0.1 itself fails. No GPU evidence justifies loosening that bound.
+The bounds have NOT changed; 0.1 itself fails. No drift evidence loosens them.
 
-`outputs/rl_gate_c/<run>/pre_update_policy_alignment.json` records source-policy
-fingerprint, context/group identity, bounds, all metrics and both ranks' separate
-checks/stats. Means are averaged across duplicate group views, not extra
-rollouts. Rank0 cannot override a failed rank1. `update_verified.json` binds its
-SHA256 and per-rank evidence; CPU finalize rechecks hash, numeric checks,
-rank evidence, token counts and group/source-policy lineage. Final Gate report
-includes the complete pre_update_policy_alignment summary.
+R/O uses the same selected tokens but ONLY as an informational handoff audit:
+mean/max/signed differences, ratio min/mean/max, clipping fraction, percentiles,
+outlier counts. `informational_only=true`, `gate_blocking=false`, no `passed`
+or `alignment_passed` field. Large max_abs/nonzero clip does not block. Missing
+R/O, nonfinite logprobs/ratios, shape/mask/count/temperature or lineage mismatch
+still fail closed. R is permanently retained for handoff/backend drift auditing
+and future correction research; it is never this Gate's PPO denominator.
+
+`pre_update_policy_alignment.json` retains its name with explicit
+`comparison=actor_recomputed_old_vs_actor_current`,
+`old_logprob_source=actor_recomputed_pre_update`,
+`current_logprob_source=second_independent_pre_update_actor_forward`,
+`rollout_logprob_source=saved_vllm_processed_logprobs`, and
+`rollout_log_probs_not_used_as_ppo_denominator=true`. Both rank checks are
+required; rank0 cannot override rank1. Means describe duplicated group views.
+
+`actor_old_logprob_receipt.json` stores both rank receipts binding source/group/
+merge lineage, full input/vision/M-RoPE/metadata hash, old and rollout tensor
+hashes, mask, temperature, token count and unchanged parameter hash. Update
+requires the live sealed in-process receipt and original installed old tensor:
+alignment old hash == receipt old hash == data old hash. Assigning R (or its
+clone) back to old, absent/serialized/forged/stale receipt, mutated inputs or
+changed parameters fail BEFORE the update call. Official update is additionally
+checked not to mutate R/O/mask values.
+The source group, adapter files and merge manifest checksums are rechecked at
+recompute and update boundaries, not just when the lineage capability is issued.
+
+`rollout_actor_handoff.json` binds informational R/O metrics to those same
+receipts/source/merged checkpoint. `update_verified.json` records both new
+artifact SHAs, `pre_update_actor_alignment_sha256` (alias of the retained
+alignment filename SHA), old/rollout sources, preserved R, explicit PPO
+denominator source, same-policy verification and optimizer_step_count=1.
+CPU finalizer requires all new artifacts, revalidates original source/merge
+lineage, per-rank receipts, source-derived R/mask hashes, strict C/O alignment,
+one step, all existing gradient/checkpoint/reload checks. R/O magnitude is not
+a finalizer blocker. Final report PASS precedes manifest PASS LAST as before.
 
 Numerical failure persists a failed alignment artifact and false final report
 at stage `pre_update_policy_alignment`, with optimizer_step_count=0 and the
@@ -289,6 +340,10 @@ Reuse A2.2 construct_actor/activate training/FSDP2 wrapping/LoRA-only AdamW and
 native checkpoint helpers. Configure official actor use_rollout_log_probs=True
 (otherwise its single-mini-batch on-policy shortcut would ignore supplied old
 logprobs). Vanilla clipped RL loss, low=.2/high=.28, no entropy/KL bonus.
+TRUE in pinned verl 0.6.1 means consume caller-provided
+`model_inputs["old_log_probs"]`, not necessarily vLLM values. Here it consumes O.
+FALSE in the single-mini-batch/epoch shortcut would detach the UPDATE forward's
+current logprobs; that is NOT independent pre-update old and NOT this repair.
 No CE, reference labels, homegrown surrogate loss or scheduler step.
 
 The real AdamW.step is temporarily audited: finite nonzero LoRA gradients,
@@ -325,10 +380,24 @@ export PYTHONPATH=src
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
 
 # Set these locators to YOUR previously verified local inputs.
 export RL_SOURCE_ROOT=/absolute/path/to/Search-VL-RL-8K
 export QWEN_BASE_SNAPSHOT=/absolute/path/to/pinned/Qwen3-VL-4B-Instruct/snapshot
+
+# Confirm the deployed v4.6 revision (record the actual hash; never run the old
+# b9821f598b64931cbab1af952f1c44f9160e63aa production path by accident).
+git rev-parse HEAD
+python -c 'from opensearch_vl_repro.rl.gate_c import GATE_C_VERSION; assert GATE_C_VERSION == "minimum-rl-integration-c-v2-actor-recomputed-old-logprob"; print(GATE_C_VERSION)'
+
+# API keys must already be set securely: DEEPSEEK_API_KEY, SERPER_API_KEY,
+# SERPAPI_API_KEY, JINA_API_KEY, PADDLEOCR_ACCESS_TOKEN for enabled tools.
+# Never print key values or put them into CLI arguments.
+# Freeze a read-only checksum inventory of the old attempt (outside its tree).
+OLD_AUDIT=$(mktemp)
+find outputs/rl_gate_c/gate-c-v451-attempt1 reports/rl_gate_c/gate-c-v451-attempt1 \
+  -type f -print0 | sort -z | xargs -0 sha256sum > "$OLD_AUDIT"
 
 # MUST execute, not skip, in the installed real rLLM environment (CPU fake model).
 python -c 'import rllm.workflows.multi_turn_workflow'
@@ -336,13 +405,15 @@ python -m pytest tests/test_rl_gate_c.py::test_real_installed_rllm_tokens_surviv
   -o addopts= -q -rs -p no:cacheprovider
 
 # Use the identical COMMON args in all three stages; do not hand-edit artifacts.
-COMMON=(--run-id gate-c-v451-attempt1 --config configs/rl_main.yaml \
+COMMON=(--run-id gate-c-v460-attempt1 --config configs/rl_main.yaml \
   --gate-config configs/rl_gate_c.yaml --data data/rl/smoke20.json --sample-index 0 \
   --source-root "$RL_SOURCE_ROOT" --base-model-path "$QWEN_BASE_SNAPSHOT" \
   --gate-b-manifest outputs/rl_gate_b/a22-tp1-attempt2/gate_manifest.json \
   --judge-config configs/judge.example.yaml \
   --search-config configs/search_backends.example.yaml \
   --layout-config configs/layout_parsing.example.yaml)
+test ! -e outputs/rl_gate_c/gate-c-v460-attempt1
+test ! -e reports/rl_gate_c/gate-c-v460-attempt1
 
 # 1. Real one-GPU collection + TWO independent live judges per rollout.
 CUDA_VISIBLE_DEVICES=0 python scripts/validate_rl_minimum_update.py collect "${COMMON[@]}"
@@ -353,6 +424,25 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
 
 # 3. No GPU/model loading in finalize; immutable artifacts/checks must all match.
 python scripts/validate_rl_minimum_update.py finalize "${COMMON[@]}"
+
+# Check the original tree is unchanged, and print authoritative new evidence.
+sha256sum -c "$OLD_AUDIT"
+OLD_AUDIT_AFTER=$(mktemp)
+find outputs/rl_gate_c/gate-c-v451-attempt1 reports/rl_gate_c/gate-c-v451-attempt1 \
+  -type f -print0 | sort -z | xargs -0 sha256sum > "$OLD_AUDIT_AFTER"
+diff -u "$OLD_AUDIT" "$OLD_AUDIT_AFTER"
+python - <<'PY'
+import json
+from pathlib import Path
+p = Path("outputs/rl_gate_c/gate-c-v460-attempt1")
+manifest = json.loads((p / "gate_manifest.json").read_text())
+assert manifest["passed"] is True
+assert manifest["formal_rl_initialization_allowed"] is False
+assert manifest["optimizer_step_count"] == 1
+for name in ("pre_update_policy_alignment.json", "rollout_actor_handoff.json",
+             "actor_old_logprob_receipt.json", "update_verified.json", "gate_manifest.json"):
+    print(name, (p / name).read_text())
+PY
 ```
 
 Correctness/query Judge share the existing DeepSeek config; configure the real
@@ -367,6 +457,8 @@ outputs/rl_gate_c/<run>/run_manifest.json
 outputs/rl_gate_c/<run>/group/group.json + real multimodal tensor files
 outputs/rl_gate_c/<run>/training_masks.json
 outputs/rl_gate_c/<run>/pre_update_policy_alignment.json
+outputs/rl_gate_c/<run>/actor_old_logprob_receipt.json
+outputs/rl_gate_c/<run>/rollout_actor_handoff.json
 outputs/rl_gate_c/<run>/updated_actor/distributed/{model,optim,extra_state}_*.pt
 outputs/rl_gate_c/<run>/updated_actor/adapter/*
 outputs/rl_gate_c/<run>/updated_actor/gate_only_metadata.json

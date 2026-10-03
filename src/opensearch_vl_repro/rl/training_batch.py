@@ -32,7 +32,9 @@ def response_loss_mask(length, *, step_index, fatal_step):
     return [int(fatal_step is None or step_index <= fatal_step)] * length
 
 
-def training_rows(group, final_advantages):
+def training_rows(group, final_advantages, *, rollout_schema=False):
+    # Historical forensic readers retain their legacy row key. Formal Gate C
+    # explicitly selects the new schema; neither key is ever a PPO denominator.
     validate_group(group)
     if len(final_advantages) != 2 or not all(math.isfinite(a) for a in final_advantages):
         raise ValueError("finite group advantages required")
@@ -48,7 +50,7 @@ def training_rows(group, final_advantages):
             audit["prompt_tokens"] += len(step["prompt_ids"])
             if any(mask):
                 rows.append({"prompt_ids": step["prompt_ids"], "responses": step["response_ids"],
-                             "old_log_probs": step["logprobs"], "response_mask": mask,
+                             ("rollout_log_probs" if rollout_schema else "old_log_probs"): step["logprobs"], "response_mask": mask,
                              "advantage": float(final_advantages[member["rollout_index"]]),
                              "multimodal_file": step["multimodal_file"],
                              "rollout_index": member["rollout_index"], "step_index": index})
@@ -59,8 +61,8 @@ def training_rows(group, final_advantages):
     return rows, audit
 
 
-def mask_artifact(group, final_advantages):
-    rows, counts = training_rows(group, final_advantages)
+def mask_artifact(group, final_advantages, *, rollout_schema=False):
+    rows, counts = training_rows(group, final_advantages, rollout_schema=rollout_schema)
     per_step = []
     for member in group["members"]:
         cutoff = member["fatal"]["fatal_step"] if member["fatal"]["fatal"] else None
@@ -85,6 +87,12 @@ def build_dataproto(rows, *, directory: Path, model, pad_id: int, device, temper
     # Qwen3-VL-4B pinned real M-RoPE, not generic arange/text-only positions.
     rope_model = model.get_base_model().model
     for row in rows:
+        # Deprecated legacy row old_log_probs is saved vLLM R, NOT actor O.
+        rollout = row.get("rollout_log_probs", row.get("old_log_probs"))
+        if (rollout is None or len(rollout) != len(row["responses"])
+                or ("rollout_log_probs" in row and "old_log_probs" in row
+                    and row["rollout_log_probs"] != row["old_log_probs"])):
+            raise ValueError("missing/inconsistent saved rollout logprobs")
         path = (directory / row["multimodal_file"]).resolve()
         if not path.is_relative_to(directory.resolve()):
             raise ValueError("unsafe multimodal artifact path")
@@ -107,7 +115,7 @@ def build_dataproto(rows, *, directory: Path, model, pad_id: int, device, temper
             "responses": torch.tensor(row["responses"] + [pad_id] * right, dtype=torch.long, device=device),
             "response_mask": torch.tensor(row["response_mask"] + [0] * right, dtype=torch.long, device=device),
             # Zeros below are PADDED, fully masked positions only, never fake sampled logprobs.
-            "old_log_probs": torch.tensor(row["old_log_probs"] + [0.] * right, dtype=torch.float32, device=device),
+            "rollout_log_probs": torch.tensor(rollout + [0.] * right, dtype=torch.float32, device=device),
             "advantages": torch.tensor([row["advantage"]] * len(row["responses"]) + [0.] * right,
                                        dtype=torch.float32, device=device),
         })

@@ -34,10 +34,13 @@ from opensearch_vl_repro.rl.data import safe_image_relpath, question_sha256
 from opensearch_vl_repro.rl.workflow_types import RLInfrastructureError
 from opensearch_vl_repro.sft_tool_audit import sha256_file
 from opensearch_vl_repro.rl.policy_alignment import (
-    ALIGNMENT_CHECKS, alignment_artifact, alignment_checks, require_policy_alignment,
+    ALIGNMENT_CHECKS, alignment_checks, require_policy_alignment,
+)
+from opensearch_vl_repro.rl.old_logprob import (
+    OLD_LOGPROB_CHECKS, actor_alignment_artifact, verify_old_logprob_artifacts, verify_same_policy_lineage,
 )
 
-GATE_C_VERSION = "minimum-rl-integration-c-v1"
+GATE_C_VERSION = "minimum-rl-integration-c-v2-actor-recomputed-old-logprob"
 COLLECT_CHECKS = (
     "software_versions", "formal_sft_lineage", "gate_b_prerequisite", "real_smoke_prompt",
     "no_reference_in_model_task", "runtime_group_identity", "exactly_two_complete_rollouts",
@@ -53,7 +56,7 @@ UPDATE_CHECKS = (
     "parameters_finite", "lora_param_changed", "post_policy_fingerprint_changed",
     "native_checkpoint_saved", "peft_exported", "original_actor_destroyed", "fresh_actor_reloaded",
     "native_checkpoint_reloaded", "reload_param_match", "fresh_forward_finite",
-) + ALIGNMENT_CHECKS
+) + ALIGNMENT_CHECKS + OLD_LOGPROB_CHECKS
 ALL_CHECKS = COLLECT_CHECKS + UPDATE_CHECKS + ("artifacts_verified", "gate_only_output")
 
 
@@ -165,7 +168,7 @@ def prepare_context(args, root):
                 "layout_config_sha256": sha256_file(args.layout_config), "seed": args.seed,
                 "integration_source_sha256": {name: sha256_file(root / "src/opensearch_vl_repro/rl" / name)
                     for name in ("gate_c.py", "group.py", "live_workflow.py", "reward_judges.py", "rloo.py",
-                                 "training_batch.py", "verl_policy_update.py", "policy_alignment.py",
+                                 "training_batch.py", "verl_policy_update.py", "policy_alignment.py", "old_logprob.py",
                                  "workflow_adapter.py", "rollout_gate.py", "rollout_sync.py")},
                 "logprobs_mode": "processed_logprobs",
                 "base_model": BASE_MODEL, "base_revision": BASE_REVISION,
@@ -181,7 +184,14 @@ def prepare_context(args, root):
 def paths_for(root, run_id):
     if not isinstance(run_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,100}", run_id) is None:
         raise ValueError("safe explicit Gate C run-id required")
-    return root / "outputs/rl_gate_c" / run_id, root / "reports/rl_gate_c" / run_id
+    output, reports = root / "outputs/rl_gate_c" / run_id, root / "reports/rl_gate_c" / run_id
+    # Reject BEFORE locks, stage/failure reports or PASS revocation can write to
+    # forensic history. New behavior requires a fresh production run identity.
+    manifest = output / "run_manifest.json"
+    if run_id == "gate-c-v451-attempt1" or (manifest.is_file() and
+            json.loads(manifest.read_text(encoding="utf-8")).get("gate_version", GATE_C_VERSION) != GATE_C_VERSION):
+        raise ValueError("historical Gate C attempt is read-only; use a NEW v4.6 run-id")
+    return output, reports
 
 
 def bind_run(output, reports, identity):
@@ -365,7 +375,7 @@ def verify_policy_alignment_artifact(output, update, group, identity, policy_fin
     if sha256_file(path) != update["pre_update_policy_alignment_sha256"]:
         raise ValueError("pre-update policy alignment checksum mismatch")
     value = json.loads(path.read_text(encoding="utf-8"))
-    rebuilt = alignment_artifact(value["per_rank"], gate_version=GATE_C_VERSION, identity=identity,
+    rebuilt = actor_alignment_artifact(value["per_rank"], gate_version=GATE_C_VERSION, identity=identity,
         trajectory_group_id=group["identity"]["trajectory_group_id"], policy_fingerprint=policy_fingerprint)
     if (value != rebuilt or value != update["pre_update_policy_alignment"]
             or update["pre_update_policy_fingerprint"] != policy_fingerprint
@@ -401,6 +411,8 @@ def finalize(args, root):
                 raise ValueError("Gate update/group/rank identity mismatch")
             alignment = verify_policy_alignment_artifact(output, update, group, ctx["identity"],
                 ctx["actor"]["source_sft_adapter_fingerprint"])
+            lineage = verify_same_policy_lineage(ctx, group, output)
+            verify_old_logprob_artifacts(output, update, group, ctx["identity"], lineage)
             for name, digest in update["checkpoint_file_sha256"].items():
                 path = (output / "updated_actor" / name).resolve()
                 if not path.is_relative_to((output / "updated_actor").resolve()) or sha256_file(path) != digest:

@@ -1,5 +1,5 @@
 # Gate-only: one prompt, n=2, ONE real policy optimizer update. Not smoke20/main400.
-gate_version: minimum-rl-integration-c-v1
+gate_version: minimum-rl-integration-c-v2-actor-recomputed-old-logprob
 rollout_n: 2
 actor_world_size: 2
 optimizer_steps: 1

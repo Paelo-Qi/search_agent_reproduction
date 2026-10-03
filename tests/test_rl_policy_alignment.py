@@ -18,6 +18,7 @@ from opensearch_vl_repro.rl.policy_alignment import (
 from opensearch_vl_repro.sft_tool_audit import sha256_file
 from test_rl_gate_c import toy_actor
 from test_rl_group import fixture_group
+from opensearch_vl_repro.rl.old_logprob import ALIGNMENT_META, actor_alignment_artifact
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -125,7 +126,10 @@ def test_audit_is_no_grad_read_only_and_success_update_uses_identical_data():
                 "actor/pg_clipfrac_lower": [0.], "future/actual_metric": [2.]}
     actor.update_policy = update
     alignment = artifact([{**local, "rank": 0}, {**local, "rank": 1}])
-    metrics, grad = verl_policy_update.policy_update_after_alignment(actor, data, alignment)
+    # This legacy read-only audit does NOT authorize production updates anymore.
+    with pytest.raises(ValueError, match="receipt"):
+        verl_policy_update.policy_update_after_alignment(actor, data, alignment)
+    metrics, grad = verl_policy_update.audited_policy_update(actor, data)
     assert calls == ["compute", "update"] and grad["optimizer_step_count"] == 1
     assert metrics["future/actual_metric"] == [2.]  # no metrics discarded/invented
     assert torch.equal(original_old, data.batch["old_log_probs"])
@@ -155,7 +159,7 @@ def test_real_update_orchestration_peer_failure_persists_zero_step_report(tmp_pa
     args = SimpleNamespace(run_id="cpu-peer-failure", seed=1)
     output, reports = gate_c.paths_for(tmp_path, args.run_id)
     group = fixture_group()
-    identity = {"identity_sha256": group["identity"]["context"]}
+    identity = {"identity_sha256": group["identity"]["context"], "gate_version": gate_c.GATE_C_VERSION}
     gate_c.bind_run(output, reports, identity)
     staging = tmp_path / "group-staging"; staging.mkdir()
     torch.save({"fixture": torch.ones(1)}, staging / "mm.pt")
@@ -164,6 +168,7 @@ def test_real_update_orchestration_peer_failure_persists_zero_step_report(tmp_pa
         runtime_sft={}, a22={}, adapter=tmp_path / "outputs/sft_main_imageid_v3/checkpoint-3k/adapter",
         actor={"source_sft_adapter_fingerprint": group["identity"]["pre_update_policy_fingerprint"]})
     monkeypatch.setattr(verl_policy_update, "prepare_context", lambda *a: ctx)
+    monkeypatch.setattr(verl_policy_update, "verify_same_policy_lineage", lambda *a: {"same_policy_lineage_verified": True})
     for name in ("is_available", "is_bf16_supported"):
         monkeypatch.setattr(torch.cuda, name, lambda: True)
     for name in ("set_device", "manual_seed_all", "reset_peak_memory_stats", "empty_cache"):
@@ -205,17 +210,28 @@ def test_real_update_orchestration_peer_failure_persists_zero_step_report(tmp_pa
     actor.update_policy = lambda *a: calls.append("update")
     monkeypatch.setattr(verl_policy_update, "audited_policy_update", lambda *a: calls.append("audited_update"))
     actor.actor_optimizer.step = lambda: calls.append("step")
+    def prepare(*a, **kw):
+        # This orchestration test isolates the peer collective. Real O/C carrier
+        # guards/forward observations have separate CPU production-helper tests.
+        local = cpu_audit(0)
+        local.update(ALIGNMENT_META)
+        calls.extend(["compute O", "compute C"])
+        proof = dict(rank=0, independent_actor_compute_count=2, rollout_log_probs_sha256="r")
+        return dict(alignment=local, receipt=SimpleNamespace(artifact=proof, old_tensor=data.batch["old_log_probs"]),
+                    handoff=dict(rank=0, rollout_log_probs_sha256="r", metrics=dict(all_finite=True, token_count_match=True)))
+    monkeypatch.setattr(verl_policy_update, "prepare_actor_old_log_probs", prepare)
     def gather(rows, local):
         peer = copy.deepcopy(local)
-        peer.update(rank=1, passed=False, max_abs_logprob_diff=.3, max_importance_ratio=1.35,
-                    initial_clip_fraction=.5)
-        peer["checks"] = alignment_checks(peer)
+        peer.update(rank=1)
+        if local.get("comparison") == ALIGNMENT_META["comparison"]:
+            peer.update(passed=False, max_abs_logprob_diff=.3, max_importance_ratio=1.35, initial_clip_fraction=.5)
+            peer["checks"] = alignment_checks(peer)
         rows[:] = [local, peer]
     monkeypatch.setattr(dist, "all_gather_object", gather)
     before = actor.actor_module.q_proj.lora_B.detach().clone()
     with pytest.raises(RuntimeError, match="0 steps"):
         verl_policy_update.update(args, tmp_path)
-    assert calls == ["compute"] and not actor.actor_optimizer.state
+    assert calls == ["compute O", "compute C"] and not actor.actor_optimizer.state
     assert torch.equal(before, actor.actor_module.q_proj.lora_B)
     failure = json.loads((reports / "gate_c_report.json").read_text())
     evidence = json.loads((output / "pre_update_policy_alignment.json").read_text())
@@ -228,7 +244,9 @@ def test_real_update_orchestration_peer_failure_persists_zero_step_report(tmp_pa
 
 
 def receipt(output, rows=None):
-    value = artifact(rows)
+    rows = [{**r, **ALIGNMENT_META} for r in (rows or [cpu_audit(0), cpu_audit(1)])]
+    value = actor_alignment_artifact(rows, gate_version=gate_c.GATE_C_VERSION,
+        identity={"identity_sha256": "context"}, trajectory_group_id="group", policy_fingerprint="policy")
     atomic_json(output / "pre_update_policy_alignment.json", value)
     return {"pre_update_policy_alignment_sha256": sha256_file(output / "pre_update_policy_alignment.json"),
         "pre_update_policy_alignment": value, "pre_update_policy_fingerprint": "policy",

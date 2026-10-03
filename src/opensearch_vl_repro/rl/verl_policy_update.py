@@ -20,7 +20,11 @@ from opensearch_vl_repro.rl.group import read_group, run_lock
 from opensearch_vl_repro.rl.rloo import official_rloo
 from opensearch_vl_repro.rl.training_batch import build_dataproto, mask_artifact, training_rows
 from opensearch_vl_repro.rl.policy_alignment import (
-    alignment_artifact, alignment_checks, compare_policy_logprobs, require_policy_alignment,
+    alignment_checks, compare_policy_logprobs, require_policy_alignment,
+)
+from opensearch_vl_repro.rl.old_logprob import (
+    OLD_SOURCE, UPDATE_ROLLOUT_SOURCE, actor_alignment_artifact, paired_artifact,
+    fingerprint, prepare_actor_old_log_probs, verify_same_policy_lineage, verify_update_receipt,
 )
 from opensearch_vl_repro.sft_tool_audit import sha256_file
 from opensearch_vl_repro.eval_subset import canonical_json_sha256
@@ -29,7 +33,9 @@ from opensearch_vl_repro.eval_subset import canonical_json_sha256
 def configure_one_update(actor, row_count, gate):
     if type(row_count) is not int or row_count < 1:
         raise ValueError("nonempty policy rows required")
-    # Pinned actor mini-batch/epoch loops yield EXACTLY ONE optimizer call.
+    # Pinned TRUE branch consumes caller-provided old_log_probs (actor O here),
+    # NOT necessarily rollout R. FALSE single-minibatch shortcut uses the update
+    # forward's own detach instead of an independent pre-update computation.
     actor.config = replace(actor.config, ppo_mini_batch_size=row_count,
                            ppo_micro_batch_size_per_gpu=1, ppo_epochs=1, shuffle=False,
                            clip_ratio_low=gate["clip_ratio_low"], clip_ratio_high=gate["clip_ratio_high"],
@@ -84,8 +90,9 @@ def audit_pre_update_policy(actor, data, gate, *, expected_masked_token_count):
     return audit
 
 
-def policy_update_after_alignment(actor, data, alignment):
+def policy_update_after_alignment(actor, data, alignment, receipt=None):
     require_policy_alignment(alignment)
+    verify_update_receipt(actor, data, alignment, receipt)
     return audited_policy_update(actor, data)
 
 
@@ -108,6 +115,7 @@ def update(args, root):
     actor = fresh = before = after = None
     checks = dict.fromkeys(UPDATE_CHECKS, False)
     alignment = None
+    update_entered = False
     stage, started = "actor_initializing", time.monotonic()
     lock = None
     try:
@@ -149,6 +157,8 @@ def update(args, root):
                     raise ValueError("actor update previously entered; ambiguous step/save cannot resume. Use NEW run-id from checkpoint-3k")
                 atomic_json(output / "update_started.json", {"identity": ctx["identity"], "formal_rl_initialization_allowed": False})
         run("actor_updating", begin_update)
+        lineage = run("same_policy_lineage_verify", lambda: verify_same_policy_lineage(ctx, group, output))
+        checks["same_policy_lineage_verified"] = lineage["same_policy_lineage_verified"] is True
         rewards = [m["reward"]["total"] for m in sorted(group["members"], key=lambda m: m["rollout_index"])]
         fatal = [m["fatal"]["fatal"] for m in sorted(group["members"], key=lambda m: m["rollout_index"])]
         raw, final = run("real_verl_rloo", lambda: official_rloo(rewards, fatal, group_id=group["identity"]["trajectory_group_id"]))
@@ -156,9 +166,9 @@ def update(args, root):
         checks["fatal_clamp_after_rloo"] = all(
             b == (max(a, 0.) if f else a) for a, b, f in zip(raw, final, fatal, strict=True))
         checks["finite_advantages"] = all(math.isfinite(v) for v in raw + final)
-        rows, token_audit = run("fatal_aware_training_rows", lambda: training_rows(group, final))
+        rows, token_audit = run("fatal_aware_training_rows", lambda: training_rows(group, final, rollout_schema=True))
         checks["response_only_mask"] = token_audit["supervised_response_tokens"] == sum(sum(r["response_mask"]) for r in rows)
-        run("token_mask_audit_artifact", lambda: atomic_json(output / "training_masks.json", mask_artifact(group, final)) if rank == 0 else None)
+        run("token_mask_audit_artifact", lambda: atomic_json(output / "training_masks.json", mask_artifact(group, final, rollout_schema=True)) if rank == 0 else None)
         mesh = run("device_mesh", lambda: init_device_mesh("cuda", (world,), mesh_dim_names=("fsdp",)))
         processor = run("processor", lambda: load_processor(ctx["runtime_sft"], local_files_only=True))
         actor, audit = run("original_sft_lora_fsdp2", lambda: construct_actor(
@@ -179,23 +189,60 @@ def update(args, root):
         from verl import DataProto
         checks["real_dataproto"] = isinstance(data, DataProto)
         before = run("pre_update_lora_snapshot", lambda: lora_snapshot(actor.actor_module))
-        local_alignment = run("pre_update_policy_alignment", lambda: audit_pre_update_policy(
-            actor, data, ctx["gate"], expected_masked_token_count=token_audit["supervised_response_tokens"]))
-        local_alignment["rank"] = rank
+        prepared = run("actor_old_logprob_recompute", lambda: prepare_actor_old_log_probs(
+            actor, data, ctx["gate"], lineage=lineage,
+            expected_masked_token_count=token_audit["supervised_response_tokens"], rank=rank))
+        local_alignment = run("pre_update_policy_alignment", lambda: prepared["alignment"])
+        old_receipt = prepared["receipt"]
+        local_handoff = prepared["handoff"]
+        checks["rollout_log_probs_preserved"] = local_handoff["rollout_log_probs_sha256"] == old_receipt.artifact["rollout_log_probs_sha256"]
+        checks["actor_old_log_probs_recomputed"] = old_receipt.artifact["independent_actor_compute_count"] == 2
+        checks["actor_old_log_probs_installed"] = old_receipt.old_tensor is data.batch["old_log_probs"]
+        checks["rollout_actor_handoff_finite"] = local_handoff["metrics"]["all_finite"] is True
+        checks["rollout_actor_handoff_token_count_match"] = local_handoff["metrics"]["token_count_match"] is True
         checks.update(local_alignment["checks"])
+        def gather_pair(local, kind):
+            evidence = [None] * world
+            dist.all_gather_object(evidence, local)
+            return paired_artifact(evidence, identity=ctx["identity"], kind=kind)
+        receipts = run("actor_old_logprob_receipt", lambda: gather_pair(old_receipt.artifact, "actor_old_logprob_receipt"))
+        handoff = run("rollout_actor_handoff", lambda: gather_pair(local_handoff, "rollout_actor_handoff"))
+        def publish_old_evidence():
+            if rank == 0:
+                atomic_json(output / "actor_old_logprob_receipt.json", receipts)
+                atomic_json(output / "rollout_actor_handoff.json", handoff)
+                print("ROLLOUT_ACTOR_HANDOFF: " + json.dumps({k: handoff[k] for k in (
+                    "informational_only", "gate_blocking", "reason")}
+                    | {"per_rank": [{"rank": r["rank"], "metrics": r["metrics"]} for r in handoff["per_rank"]]},
+                    allow_nan=False), flush=True)
+        run("old_logprob_evidence_publication", publish_old_evidence)
         def gather_alignment():
             rows = [None] * world
             dist.all_gather_object(rows, local_alignment)
-            return alignment_artifact(rows, gate_version=ctx["gate"]["gate_version"], identity=ctx["identity"],
+            return actor_alignment_artifact(rows, gate_version=ctx["gate"]["gate_version"], identity=ctx["identity"],
                 trajectory_group_id=group["identity"]["trajectory_group_id"],
                 policy_fingerprint=ctx["actor"]["source_sft_adapter_fingerprint"])
         alignment = run("pre_update_policy_alignment", gather_alignment)
         run("pre_update_policy_alignment", lambda: atomic_json(
             output / "pre_update_policy_alignment.json", alignment) if rank == 0 else None)
-        # Collective check BEFORE entering the policy-loss stage: neither rank
-        # may update if its peer failed. Same data object, no old-logprob write.
+        # Collective check BEFORE entering policy loss: neither rank may update
+        # if its peer failed; denominator O is sealed against R substitution.
         run("pre_update_policy_alignment", lambda: require_policy_alignment(alignment))
-        metrics, grad_audit = run("real_verl_update_policy", lambda: policy_update_after_alignment(actor, data, alignment))
+        checks["actor_old_current_alignment_passed"] = alignment["passed"] is True
+        run("ppo_denominator_receipt_verify", lambda: verify_update_receipt(actor, data, alignment, old_receipt))
+        checks["ppo_denominator_source_verified"] = True  # completed live binding check, not a flag supplied by caller
+        if rank == 0:
+            print("PRE_UPDATE_POLICY_ALIGNMENT: " + json.dumps({k: v for k, v in alignment.items()
+                if k not in {"identity", "per_rank"}}, allow_nan=False), flush=True)
+            print(f"OLD_LOGPROB_SOURCE: {OLD_SOURCE}; ROLLOUT_LOGPROB_SOURCE: {UPDATE_ROLLOUT_SOURCE}; USE_ROLLOUT_LOG_PROBS: true", flush=True)
+        update_entered = True
+        metrics, grad_audit = run("real_verl_update_policy", lambda: policy_update_after_alignment(actor, data, alignment, old_receipt))
+        def carriers_preserved():
+            if any(fingerprint(data.batch[key]) != old_receipt.artifact[key + "_sha256"]
+                   for key in ("rollout_log_probs", "old_log_probs", "response_mask")):
+                raise ValueError("official update mutated saved rollout/actor-old/fatal mask carriers")
+            return True
+        checks["rollout_log_probs_preserved"] = run("post_update_carrier_audit", carriers_preserved)
         checks["real_verl_policy_loss"] = bool(metrics.get("actor/pg_loss"))
         checks["loss_finite"] = all(math.isfinite(float(v)) for v in metrics["actor/pg_loss"])
         checks["exactly_one_optimizer_step"] = grad_audit["optimizer_step_count"] == 1
@@ -257,6 +304,7 @@ def update(args, root):
             raise RuntimeError(f"incomplete Gate C update checks: {checks}")
         rank_report = {"rank": rank, "world_size": world, "checks": checks, "model_audit": audit,
                        "pre_update_policy_alignment": local_alignment,
+                       "actor_old_logprob_receipt": old_receipt.artifact, "rollout_actor_handoff": local_handoff,
                        "metrics": {k: [float(v) for v in vals] for k, vals in metrics.items()},
                        "gradient_audit": grad_audit, "optimizer_step_count": grad_audit["optimizer_step_count"],
                        "reload_proof": proof, **memory_stats(torch, local_rank), "elapsed_seconds": time.monotonic() - started}
@@ -280,6 +328,14 @@ def update(args, root):
                           "training_masks_sha256": sha256_file(output / "training_masks.json"),
                           "pre_update_policy_alignment_sha256": sha256_file(output / "pre_update_policy_alignment.json"),
                           "pre_update_policy_alignment": alignment,
+                          "old_logprob_source": OLD_SOURCE, "rollout_logprob_source": UPDATE_ROLLOUT_SOURCE,
+                          "pre_update_actor_alignment_sha256": sha256_file(output / "pre_update_policy_alignment.json"),
+                          "rollout_log_probs_preserved": checks["rollout_log_probs_preserved"],
+                          "ppo_denominator_source": 'data.batch["old_log_probs"]',
+                          "same_policy_lineage_verified": checks["same_policy_lineage_verified"],
+                          "optimizer_step_count": 1,
+                          "actor_old_logprob_receipt_sha256": sha256_file(output / "actor_old_logprob_receipt.json"),
+                          "rollout_actor_handoff_sha256": sha256_file(output / "rollout_actor_handoff.json"),
                           "post_update_policy_fingerprint": post_fingerprint,
                           "checkpoint_file_sha256": files, "checkpoint_fingerprint": canonical_json_sha256(files),
                           "completed_stages": stages.log,
@@ -291,7 +347,7 @@ def update(args, root):
     except BaseException as exc:
         if not dist.is_initialized() or dist.get_rank() == 0:
             extra = {"checks": checks}
-            if stage == "pre_update_policy_alignment":
+            if not update_entered:
                 extra.update(optimizer_step_count=0, pre_update_policy_alignment=alignment)
                 if alignment is not None:
                     extra["checks"] = {**checks, **alignment["checks"]}

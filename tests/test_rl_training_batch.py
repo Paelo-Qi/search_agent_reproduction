@@ -67,9 +67,29 @@ def test_dataproto_actual_ids_multimodal_positions_padding_and_masks(tmp_path, m
     assert tensors["position_ids"].shape == (2, 3, 4) and len(calls) == 2
     assert len(data["non_tensors"]["multi_modal_inputs"]) == 2
     assert data["meta_info"]["temperature"] == .7 and "labels" not in tensors
-    assert tensors["old_log_probs"][1].tolist() == pytest.approx([-.4, 0])
+    assert "old_log_probs" not in tensors
+    assert tensors["rollout_log_probs"].dtype == torch.float32
+    assert tensors["rollout_log_probs"][1].tolist() == pytest.approx([-.4, 0])
     assert tensors["advantages"][0].tolist() == pytest.approx([.8, .8])
     # Context is attention-visible, but loss uses only the separate response suffix mask.
     assert tensors["response_mask"].shape[-1] == 2 < tensors["input_ids"].shape[-1]
+    # Modern formal rows produce identical R without a legacy PPO-named key.
+    modern = [{**{k: v for k, v in row.items() if k != "old_log_probs"},
+               "rollout_log_probs": row["old_log_probs"]} for row in rows]
+    assert torch.equal(tensors["rollout_log_probs"], build_dataproto(modern, directory=tmp_path,
+        model=model, pad_id=0, device="cpu", temperature=.7)["tensors"]["rollout_log_probs"])
+    modern[0]["old_log_probs"] = [-9., -9.]
+    with pytest.raises(ValueError, match="inconsistent"):
+        build_dataproto(modern, directory=tmp_path, model=model, pad_id=0, device="cpu", temperature=.7)
     rows[0]["prompt_ids"] = [99]
     with pytest.raises(ValueError, match="differ"): build_dataproto(rows, directory=tmp_path, model=model, pad_id=0, device="cpu", temperature=.7)
+
+
+def test_formal_rows_separate_saved_rollout_r_and_preserve_legacy_forensics():
+    group = fixture_group()
+    legacy, legacy_counts = training_rows(group, [1., -1.])
+    formal, formal_counts = training_rows(group, [1., -1.], rollout_schema=True)
+    assert formal_counts == legacy_counts
+    assert all("old_log_probs" not in row for row in formal)
+    assert [r["rollout_log_probs"] for r in formal] == [r["old_log_probs"] for r in legacy]
+    assert mask_artifact(group, [1., -1.], rollout_schema=True)["rows"] == formal
