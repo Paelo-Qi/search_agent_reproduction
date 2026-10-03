@@ -21,12 +21,16 @@ def group_identity(*, prompt_id, policy_fingerprint, rollout_fingerprint, attemp
 
 
 def validate_group(group):
+    _validate_group_members(group, 2)
+
+
+def _validate_group_members(group, expected_n):
     identity = group["identity"]
     if identity["trajectory_group_id"] != canonical_json_sha256({k: v for k, v in identity.items() if k != "trajectory_group_id"}):
         raise ValueError("group identity hash mismatch")
     members = group["members"]
-    if len(members) != 2 or {m["rollout_index"] for m in members} != {0, 1}:
-        raise ValueError("exactly one complete n=2 group required")
+    if len(members) != expected_n or {m["rollout_index"] for m in members} != set(range(expected_n)):
+        raise ValueError(f"exactly one complete n={expected_n} group required")
     for member in members:
         if (member["identity"] != identity or member.get("complete") is not True
                 or not member.get("steps") or not member.get("reward")):
@@ -108,3 +112,91 @@ def run_lock(path: Path):
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def formal_group_identity(run, policy, *, prompt_id, source_identity, attempt_id, attempt_index):
+    from .checkpoint import (RL_GROUP_SCHEMA_VERSION, require_counter, require_digest,
+                             require_uuid, validate_policy, validate_training_run_identity)
+    validate_training_run_identity(run)
+    validate_policy(policy)
+    require_uuid(attempt_id)
+    require_counter(attempt_index)
+    require_digest(source_identity)
+    if prompt_id not in run["prompt_ids"] or policy["run_identity_sha256"] != run["run_identity_sha256"]:
+        raise ValueError("prompt/policy outside formal run")
+    identity = {"schema_version": RL_GROUP_SCHEMA_VERSION, "prompt_id": prompt_id,
+                "source_identity": source_identity, "run_identity_sha256": run["run_identity_sha256"],
+                "policy_iteration": policy["policy_iteration"],
+                "parent_checkpoint_identity": policy["checkpoint_identity"],
+                "pre_update_policy_fingerprint": policy["effective_policy_fingerprint"],
+                "rollout_config_fingerprint": canonical_json_sha256(run["semantics"]["rollout"]),
+                "collection_attempt": attempt_id, "collection_attempt_index": attempt_index,
+                "expected_n": run["semantics"]["rollout_n"]}
+    return {**identity, "trajectory_group_id": canonical_json_sha256(identity)}
+
+
+def validate_formal_group(group, *, committed=False):
+    from .checkpoint import (RL_GROUP_SCHEMA_VERSION, check_seal, require_counter,
+                             require_digest, require_uuid)
+    identity = group["identity"]
+    require_counter(identity["schema_version"], 1)
+    if identity["schema_version"] != RL_GROUP_SCHEMA_VERSION:
+        raise ValueError("formal group schema mismatch")
+    require_counter(identity["expected_n"], 2)
+    require_counter(identity["policy_iteration"])
+    require_counter(identity["collection_attempt_index"])
+    require_uuid(identity["collection_attempt"])
+    for key in ("source_identity", "run_identity_sha256", "parent_checkpoint_identity",
+                "pre_update_policy_fingerprint", "rollout_config_fingerprint"):
+        require_digest(identity[key])
+    if not isinstance(identity["prompt_id"], str) or not identity["prompt_id"]:
+        raise ValueError("missing prompt identity")
+    _validate_group_members(group, identity["expected_n"])
+    members = group["members"]
+    if any(type(m["rollout_index"]) is not int for m in members):
+        raise ValueError("formal rollout indices must be integers")
+    ids = [m.get("member_id") for m in members]
+    trajectories = [m.get("trajectory_file") for m in members]
+    if (any(not isinstance(m, str) or not m for m in ids) or len(set(ids)) != len(ids)
+            or len(set(trajectories)) != len(trajectories)
+            or any(type(m.get("fatal")) is not bool or not isinstance(m.get("trajectory_file"), str)
+                   or not m["trajectory_file"] for m in members)):
+        raise ValueError("unique complete trajectory identities/fatal flags required")
+    if committed:
+        check_seal(group, "group_payload_sha256")
+        if group.get("committed") is not True or not group.get("file_sha256"):
+            raise ValueError("uncommitted formal group")
+        required = {m["trajectory_file"] for m in members}
+        required.update(s["multimodal_file"] for m in members for s in m["steps"])
+        if not required <= group["file_sha256"].keys():
+            raise ValueError("member artifact hashes missing")
+        for digest in group["file_sha256"].values():
+            require_digest(digest)
+
+
+def publish_formal_group(staging, destination, group, *, cpu_fixture=False):
+    from .checkpoint import _formal_root, artifact_inventory, publish_directory, seal
+    staging, destination = Path(staging), Path(destination)
+    _formal_root(destination)
+    validate_formal_group(group)
+    if destination.name != group["identity"]["trajectory_group_id"]:
+        raise ValueError("formal group destination must match immutable identity")
+    with run_lock(destination.parent / ".publication.lock"):
+        payload = seal({**group, "committed": True, "file_sha256": artifact_inventory(staging),
+                        "evidence_scope": "cpu_fixture" if cpu_fixture else "runtime"}, "group_payload_sha256")
+        validate_formal_group(payload, committed=True)
+        publish_directory(staging, destination, "group.json", payload, cpu_fixture=cpu_fixture)
+    return payload
+
+
+def read_formal_group(directory):
+    from .checkpoint import verify_artifacts
+    directory = Path(directory)
+    if directory.name.startswith(".") or directory.is_symlink():
+        raise ValueError("staging is not a committed group")
+    value = json.loads((directory / "group.json").read_text(encoding="utf-8"))
+    validate_formal_group(value, committed=True)
+    if directory.name != value["identity"]["trajectory_group_id"]:
+        raise ValueError("committed group directory identity mismatch")
+    verify_artifacts(directory, value["file_sha256"], exclude=("group.json",))
+    return value
