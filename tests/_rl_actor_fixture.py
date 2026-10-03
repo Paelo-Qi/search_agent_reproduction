@@ -26,6 +26,7 @@ def target():
 def model():
     value = torch.nn.Module()
     value.active_adapters = ["default"]
+    value._adapters_disabled = False
     value.peft_config = {"default": SimpleNamespace(r=16, lora_alpha=32, lora_dropout=.05, target_modules=list(LORA_TARGETS))}
     value.visual = torch.nn.Module()
     value.visual.merger = torch.nn.Linear(1, 1)

@@ -55,7 +55,24 @@ def effective_policy_fingerprint(source_fingerprint, contract):
         base_model=BASE_MODEL, base_revision=BASE_REVISION, rl_policy_execution_contract=contract))
 
 
-def _active_default(module):
+def _read_boolean_state(module, name, *, allow_method=False):
+    """Read state, never coerce/call an adapter mutation method.
+
+    PEFT wrappers forward Transformers' disable_adapters() method, whereas
+    BaseTunerLayer.disable_adapters is a bool property backed by _disable_adapters.
+    """
+    missing = object()
+    value = getattr(module, name, missing)
+    if value is missing:
+        return None
+    if allow_method and callable(value):
+        return None
+    if type(value) is not bool:
+        raise ValueError(f"invalid adapter boolean state {name}: {type(value).__name__}")
+    return value
+
+
+def _active_default(module, *, role):
     active = getattr(module, "active_adapters", None)
     if active is None:
         active = getattr(module, "active_adapter", None)
@@ -63,9 +80,24 @@ def _active_default(module):
         active = [active]
     if active != ["default"]:
         raise ValueError("only the default active LoRA adapter is permitted")
-    if getattr(module, "disable_adapters", False) or getattr(module, "_disable_adapters", False):
-        raise ValueError("disabled LoRA adapters are not a formal RL policy")
-    if getattr(module, "merged_adapters", []) or getattr(module, "merged", False):
+    states = {name: _read_boolean_state(module, name, allow_method=name == "disable_adapters")
+              for name in ("disable_adapters", "_disable_adapters", "_adapters_disabled")}
+    if any(value is True for value in states.values()):
+        raise ValueError("disabled LoRA adapters are not a formal RL policy: "
+            f"role={role}, type={type(module).__name__}, active_adapters={active!r}, "
+            f"disable_adapters_type={type(getattr(module, 'disable_adapters', None)).__name__}, "
+            f"states={states}, merged_adapters={getattr(module, 'merged_adapters', [])!r}")
+    if role == "root" and states["_adapters_disabled"] is not False:
+        raise ValueError("root PEFT _adapters_disabled boolean state required")
+    if role == "layer" and not any(states[name] is False for name in ("disable_adapters", "_disable_adapters")):
+        raise ValueError("LoRA layer enabled boolean state required")
+    # BaseTuner has no aggregate disabled bool in pinned PEFT: the root state
+    # plus ALL actual target-layer states establish enabledness, not its methods.
+    merged = _read_boolean_state(module, "merged")
+    merged_adapters = getattr(module, "merged_adapters", [])
+    if not isinstance(merged_adapters, list) or any(type(name) is not str for name in merged_adapters):
+        raise ValueError("invalid merged_adapters state")
+    if merged is True or len(merged_adapters) != 0:
         raise ValueError("merged LoRA adapters are not a trainable formal RL actor")
 
 
@@ -79,9 +111,14 @@ def _source_roster(model, sft_config):
     if (cfg.lora_dropout != .05 or cfg.r != 16 or cfg.lora_alpha != 32
             or set(cfg.target_modules) != set(LORA_TARGETS)):
         raise ValueError("source PEFT configuration changed; dropout must remain .05")
-    _active_default(model)
+    _active_default(model, role="root")
+    tuner = getattr(model, "base_model", None)
+    if tuner is not None:
+        _active_default(tuner, role="tuner")
     roster, modules, seen = [], [], set()
     for name, module in model.named_modules():
+        if module is model or module is tuner:
+            continue  # wrapper states are audited separately from target membership
         if not any(hasattr(module, k) for k in ("lora_A", "lora_B", "lora_dropout")):
             continue
         match = _TARGET.search(name)
@@ -94,7 +131,7 @@ def _source_roster(model, sft_config):
         if key in seen:
             raise ValueError(f"duplicate LoRA target: {key}")
         seen.add(key)
-        _active_default(module)
+        _active_default(module, role="layer")
         for field in ("lora_A", "lora_B", "lora_dropout"):
             container = getattr(module, field, None)
             if not isinstance(container, torch.nn.ModuleDict) or set(container) != {"default"}:

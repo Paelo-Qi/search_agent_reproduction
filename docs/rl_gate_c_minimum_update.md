@@ -1,8 +1,9 @@
 # Gate C — Minimum RL Integration
 
-Status: **READY FOR AUTODL FORMAL GATE C DROPOUT-CONSISTENCY VALIDATION**.
+Status: **READY FOR AUTODL GATE C ATTEMPT2 ADAPTER-STATE VALIDATION**.
 CPU tests are not rollout, live Judge, FSDP2 policy-update or GPU reload evidence.
-v4.6.1 behavior: `minimum-rl-integration-c-v3-actor-old-zero-lora-dropout`.
+v4.6.2 audit compatibility fix; execution behavior remains
+`minimum-rl-integration-c-v3-actor-old-zero-lora-dropout`.
 
 ## Scope and immutable inputs
 
@@ -397,7 +398,7 @@ initial/O/C/update/fresh/native signatures and literal checks. A true boolean
 without the evidence cannot publish PASS. Final report precedes gate_manifest;
 the manifest is still the LAST durable PASS artifact.
 
-Use **gate-c-v461-attempt1** for fresh collect -> update -> finalize. Do not
+Use **gate-c-v461-attempt2** for fresh collect -> update -> finalize. Do not
 create/use v460; v451 and all old forensic artifacts remain read-only. Old
 version identities are refused before writes. If update has entered and fails,
 use a new explicit run-id; never relax thresholds or repeat an ambiguous step.
@@ -407,6 +408,46 @@ R/O metrics, O/C alignment, actual train-mode forward audit, step count,
 gradient audit, save/reload and fresh/native dropout proofs, final report,
 gate_manifest and old-attempt checksum comparison. Formal smoke20 production
 design/review remains a later task, even after a genuine Gate C PASS.
+
+## v4.6.2 PEFT adapter-state audit compatibility
+
+Attempt1 collected two real members, but both ranks failed during
+`original_sft_lora_fsdp2`, before O/C or optimizer. A forwarded
+`disable_adapters()` bound method was treated as a truthy disabled flag.
+The bug was reproduced on an actual tiny Transformers model wrapped by the
+installed PEFT 0.21.0; that CPU evidence is not pinned PEFT 0.21.1 GPU evidence.
+
+Pinned [PEFT root](https://github.com/huggingface/peft/blob/v0.21.1/src/peft/peft_model.py)
+uses boolean `_adapters_disabled` and forwards missing attributes to its tuner.
+[BaseTuner/BaseTunerLayer](https://github.com/huggingface/peft/blob/v0.21.1/src/peft/tuners/tuners_utils.py)
+distinguish tuner active adapters from per-layer boolean `disable_adapters` /
+`_disable_adapters` and merged state. Transformers' pinned
+[PeftAdapterMixin](https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/integrations/peft.py)
+exposes `disable_adapters` as a mutation method, which wrappers may forward.
+
+The audit now reads only actual bool state. It ignores a callable public
+`disable_adapters` without invoking it, requires root `_adapters_disabled=False`,
+checks tuner active/available state separately, and requires enabled/unmerged
+default adapters in every actual target. Pinned BaseTuner has no aggregate
+disabled flag; root plus all target states establish enabledness. Unknown
+nonboolean state, missing layer enabled state, real disabled flags, wrong/multiple
+active adapters or merge state fail closed. No enable/set/disable API is called
+by production audits. Error messages identify role, object type, active adapters,
+disable attribute type, bool states and merged adapters for further diagnosis.
+
+The execution contract, effective fingerprint formula, dropout versions, Gate v3,
+252 roster, old receipt structure and actual PPO forward hook remain unchanged.
+The existing integration-source SHA binds this implementation change, so no
+extra policy-semantics version bump is needed. Attempt1's `update_started.json`
+and failed artifacts MUST be preserved: do not resume it, copy its group, delete
+markers or auto-enable a genuinely disabled adapter. Attempt2 requires fresh
+collect, then two-GPU update and CPU finalize under its own context.
+
+No separate GPU diagnostic entry is added: the unchanged formal constructor
+also creates the optimizer, so a special optimizer-free interface would widen
+this repair. First run the tiny real-installed-PEFT CPU regression below, then
+use attempt2's formal constructor validation. If enabled-state audit still fails,
+inspect the typed error and real object fields; do not automatically repair state.
 
 ## Actual update and save/reload proof
 
@@ -464,7 +505,7 @@ git pull --ff-only
 export RL_SOURCE_ROOT=/absolute/path/to/Search-VL-RL-8K
 export QWEN_BASE_SNAPSHOT=/absolute/path/to/pinned/Qwen3-VL-4B-Instruct/snapshot
 
-# Confirm the deployed v4.6.1 revision. These local changes are not committed
+# Confirm the deployed v4.6.2 revision. These local changes are not committed
 # automatically; first deploy your reviewed commit containing this repair.
 git rev-parse HEAD
 python - <<'PY'
@@ -483,10 +524,16 @@ PY
 # API keys must already be set securely: DEEPSEEK_API_KEY, SERPER_API_KEY,
 # SERPAPI_API_KEY, JINA_API_KEY, PADDLEOCR_ACCESS_TOKEN for enabled tools.
 # Never print key values or put them into CLI arguments.
-# Freeze a read-only checksum inventory of the old attempt (outside its tree).
+# Freeze read-only checksum inventories outside the historical trees.
 OLD_AUDIT=$(mktemp)
 find outputs/rl_gate_c/gate-c-v451-attempt1 reports/rl_gate_c/gate-c-v451-attempt1 \
+  outputs/rl_gate_c/gate-c-v461-attempt1 reports/rl_gate_c/gate-c-v461-attempt1 \
   -type f -print0 | sort -z | xargs -0 sha256sum > "$OLD_AUDIT"
+
+# Lightweight real-installed-PEFT check: tiny CPU model only, no Gate collect.
+python -c 'import peft; assert peft.__version__ == "0.21.1", peft.__version__'
+python -m pytest tests/test_rl_actor_semantics.py::test_real_installed_peft_save_fresh_load_preserves_source_metadata \
+  -o addopts= -q -rs -p no:cacheprovider
 
 # MUST execute, not skip, in the installed real rLLM environment (CPU fake model).
 python -c 'import rllm.workflows.multi_turn_workflow'
@@ -494,15 +541,15 @@ python -m pytest tests/test_rl_gate_c.py::test_real_installed_rllm_tokens_surviv
   -o addopts= -q -rs -p no:cacheprovider
 
 # Use the identical COMMON args in all three stages; do not hand-edit artifacts.
-COMMON=(--run-id gate-c-v461-attempt1 --config configs/rl_main.yaml \
+COMMON=(--run-id gate-c-v461-attempt2 --config configs/rl_main.yaml \
   --gate-config configs/rl_gate_c.yaml --data data/rl/smoke20.json --sample-index 0 \
   --source-root "$RL_SOURCE_ROOT" --base-model-path "$QWEN_BASE_SNAPSHOT" \
   --gate-b-manifest outputs/rl_gate_b/a22-tp1-attempt2/gate_manifest.json \
   --judge-config configs/judge.example.yaml \
   --search-config configs/search_backends.example.yaml \
   --layout-config configs/layout_parsing.example.yaml)
-test ! -e outputs/rl_gate_c/gate-c-v461-attempt1
-test ! -e reports/rl_gate_c/gate-c-v461-attempt1
+test ! -e outputs/rl_gate_c/gate-c-v461-attempt2
+test ! -e reports/rl_gate_c/gate-c-v461-attempt2
 
 # 1. Real one-GPU collection + TWO independent live judges per rollout.
 CUDA_VISIBLE_DEVICES=0 python scripts/validate_rl_minimum_update.py collect "${COMMON[@]}"
@@ -518,12 +565,13 @@ python scripts/validate_rl_minimum_update.py finalize "${COMMON[@]}"
 sha256sum -c "$OLD_AUDIT"
 OLD_AUDIT_AFTER=$(mktemp)
 find outputs/rl_gate_c/gate-c-v451-attempt1 reports/rl_gate_c/gate-c-v451-attempt1 \
+  outputs/rl_gate_c/gate-c-v461-attempt1 reports/rl_gate_c/gate-c-v461-attempt1 \
   -type f -print0 | sort -z | xargs -0 sha256sum > "$OLD_AUDIT_AFTER"
 diff -u "$OLD_AUDIT" "$OLD_AUDIT_AFTER"
 python - <<'PY'
 import json
 from pathlib import Path
-p = Path("outputs/rl_gate_c/gate-c-v461-attempt1")
+p = Path("outputs/rl_gate_c/gate-c-v461-attempt2")
 manifest = json.loads((p / "gate_manifest.json").read_text())
 assert manifest["passed"] is True
 assert manifest["formal_rl_initialization_allowed"] is False
@@ -537,7 +585,7 @@ assert manifest["rl_update_forward_count"] > 0
 for name in ("pre_update_policy_alignment.json", "rollout_actor_handoff.json",
              "actor_old_logprob_receipt.json", "update_verified.json", "gate_manifest.json"):
     print(name, (p / name).read_text())
-print("FINAL_REPORT", Path("reports/rl_gate_c/gate-c-v461-attempt1/gate_c_report.json").read_text())
+print("FINAL_REPORT", Path("reports/rl_gate_c/gate-c-v461-attempt2/gate_c_report.json").read_text())
 for rank in manifest["per_rank"]:
     print("RANK_DROPOUT_AND_RELOAD", rank["rank"], {
         k: rank[k] for k in ("initial_runtime_audit", "before_update_runtime_audit",

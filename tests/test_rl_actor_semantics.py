@@ -18,6 +18,97 @@ def configured():
     return value, semantics.configure_rl_lora_dropout_runtime(value, sft_config())
 
 
+@pytest.mark.parametrize("role", ["root", "tuner", "layer"])
+def test_callable_disable_method_is_not_state_and_is_never_called(role):
+    calls = []
+    wrapper = SimpleNamespace(active_adapters=["default"], _disable_adapters=False,
+        _adapters_disabled=False, disable_adapters=lambda: calls.append("mutation"))
+    semantics._active_default(wrapper, role=role)
+    assert calls == [] and wrapper._disable_adapters is False and wrapper._adapters_disabled is False
+
+
+@pytest.mark.parametrize("role", ["root", "tuner", "layer"])
+@pytest.mark.parametrize("field", ["disable_adapters", "_disable_adapters", "_adapters_disabled"])
+def test_actual_boolean_disabled_state_is_always_rejected(role, field):
+    wrapper = SimpleNamespace(active_adapters=["default"], _disable_adapters=False,
+        _adapters_disabled=False, disable_adapters=lambda: pytest.fail("audit must never mutate"))
+    setattr(wrapper, field, True)
+    with pytest.raises(ValueError, match="disabled LoRA adapters"):
+        semantics._active_default(wrapper, role=role)
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", [], None, object()])
+@pytest.mark.parametrize("field", ["disable_adapters", "_disable_adapters", "_adapters_disabled", "merged"])
+def test_non_boolean_state_never_coerced_to_bool(field, value):
+    wrapper = SimpleNamespace(active_adapters=["default"], _disable_adapters=False, _adapters_disabled=False)
+    setattr(wrapper, field, value)
+    with pytest.raises(ValueError, match="boolean state"):
+        semantics._active_default(wrapper, role="root")
+
+
+@pytest.mark.parametrize("active", [[], ["other"], ["default", "other"], None, lambda: ["default"]])
+def test_missing_wrong_multiple_or_callable_active_adapter_rejected(active):
+    wrapper = SimpleNamespace(_adapters_disabled=False, active_adapters=active)
+    with pytest.raises(ValueError, match="default active"):
+        semantics._active_default(wrapper, role="root")
+
+
+def test_property_and_missing_alternative_layer_state():
+    class Layer:
+        active_adapters = ["default"]
+        _disable_adapters = False
+        @property
+        def disable_adapters(self):
+            return self._disable_adapters
+    value = Layer()
+    semantics._active_default(value, role="layer")
+    value._disable_adapters = True
+    with pytest.raises(ValueError): semantics._active_default(value, role="layer")
+    semantics._active_default(SimpleNamespace(active_adapters=["default"], _disable_adapters=False), role="layer")
+    semantics._active_default(SimpleNamespace(active_adapters=["default"], disable_adapters=False), role="layer")
+    with pytest.raises(ValueError, match="enabled boolean state"):
+        semantics._active_default(SimpleNamespace(active_adapters=["default"], disable_adapters=lambda: None), role="layer")
+    with pytest.raises(ValueError, match="root PEFT"):
+        semantics._active_default(SimpleNamespace(active_adapters=["default"], disable_adapters=lambda: None), role="root")
+
+
+@pytest.mark.parametrize("role", ["root", "tuner", "layer"])
+def test_unmerged_state_strict_for_all_adapter_roles(role):
+    wrapper = SimpleNamespace(active_adapters=["default"], _adapters_disabled=False, _disable_adapters=False,
+        merged=False, merged_adapters=[])
+    semantics._active_default(wrapper, role=role)
+    for field, value in (("merged", True), ("merged_adapters", ["default"]), ("merged_adapters", "")):
+        bad = copy.copy(wrapper); setattr(bad, field, value)
+        with pytest.raises(ValueError): semantics._active_default(bad, role=role)
+
+
+def test_root_and_base_tuner_state_checks_are_separate_from_252_roster():
+    value = model()
+    tuner = torch.nn.Module()
+    tuner.active_adapters = ["default"]
+    tuner.disable_adapters = lambda: pytest.fail("never call adapter mutations")
+    value.base_model = tuner
+    # Delegated wrapper attributes must not cause wrappers to enter target roster.
+    tuner.lora_A = first_target(value).lora_A
+    audit = semantics.configure_rl_lora_dropout_runtime(value, sft_config())
+    assert audit["lora_dropout_target_count"] == 252
+    tuner.active_adapters = ["other"]
+    with pytest.raises(ValueError): semantics.require_rl_lora_dropout_runtime(value, sft_config())
+    tuner.active_adapters = ["default"]
+    value._adapters_disabled = True
+    with pytest.raises(ValueError): semantics.require_rl_lora_dropout_runtime(value, sft_config())
+
+
+def test_execution_contract_and_effective_fingerprint_formula_unchanged():
+    contract = semantics.execution_contract(sft_config())
+    assert contract["version"] == "rl-policy-execution-v1-zero-lora-dropout"
+    assert contract["rl_lora_dropout_runtime_version"] == "rl-lora-dropout-disabled-v1"
+    expected = canonical_json_sha256(dict(source_adapter_fingerprint="a" * 64,
+        base_model=semantics.BASE_MODEL, base_revision=semantics.BASE_REVISION, rl_policy_execution_contract=contract))
+    assert semantics.effective_policy_fingerprint("a" * 64, contract) == expected
+    assert gate_c.GATE_C_VERSION == "minimum-rl-integration-c-v3-actor-old-zero-lora-dropout"
+
+
 def test_runtime_changes_only_p_preserves_source_weights_freezing_modes_checkpointing():
     value = model()
     weights = {n: p.detach().clone() for n, p in value.named_parameters()}
@@ -288,9 +379,13 @@ def test_failure_after_real_step_does_not_falsely_report_zero_steps():
 def test_real_installed_peft_save_fresh_load_preserves_source_metadata(tmp_path):
     """Actual installed PEFT ModuleDict/save path, tiny CPU model, no HF downloads."""
     peft = pytest.importorskip("peft")
+    from transformers import PreTrainedModel, PretrainedConfig
+    class TinyHF(PreTrainedModel):
+        config_class = PretrainedConfig
+        def __init__(self):
+            super().__init__(PretrainedConfig())
     def base():
-        value = torch.nn.Module()
-        value.config = {"model_type": "cpu_test"}
+        value = TinyHF()  # real Transformers method forwarded through PEFT wrappers
         value.language_model = torch.nn.Module()
         value.language_model.layers = torch.nn.ModuleList()
         for _ in range(36):
@@ -301,7 +396,26 @@ def test_real_installed_peft_save_fresh_load_preserves_source_metadata(tmp_path)
         return value
     value = peft.get_peft_model(base(), peft.LoraConfig(r=16, lora_alpha=32, lora_dropout=.05,
         target_modules=list(semantics.LORA_TARGETS)))
+    layer = value.base_model.model.language_model.layers[0].self_attn.q_proj
+    assert callable(value.disable_adapters) and callable(value.base_model.disable_adapters)
+    assert value._adapters_disabled is False
+    assert type(layer.disable_adapters) is bool and layer.disable_adapters is False
+    assert layer._disable_adapters is False and layer.merged_adapters == []
     semantics.configure_rl_lora_dropout_runtime(value, sft_config())
+    # Official APIs are used ONLY in tests to prove that read-only audits reject
+    # real disabled states, and do not secretly enable them.
+    with value.disable_adapter():
+        assert value._adapters_disabled is True and layer.disable_adapters is True
+        with pytest.raises(ValueError, match="disabled LoRA adapters"):
+            semantics.require_rl_lora_dropout_runtime(value, sft_config())
+        assert value._adapters_disabled is True and layer.disable_adapters is True
+    semantics.require_rl_lora_dropout_runtime(value, sft_config())
+    value.base_model.disable_adapter_layers()
+    assert value._adapters_disabled is False and layer._disable_adapters is True
+    with pytest.raises(ValueError, match="disabled LoRA adapters"):
+        semantics.require_rl_lora_dropout_runtime(value, sft_config())
+    value.base_model.enable_adapter_layers()
+    semantics.require_rl_lora_dropout_runtime(value, sft_config())
     value.save_pretrained(tmp_path / "adapter", safe_serialization=True)
     assert json.loads((tmp_path / "adapter/adapter_config.json").read_text())["lora_dropout"] == .05
     source_bytes = {p.name: p.read_bytes() for p in (tmp_path / "adapter").iterdir() if p.is_file()}
