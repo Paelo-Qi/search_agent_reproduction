@@ -155,3 +155,30 @@ def require_policy_alignment(audit):
     if audit.get("passed") is not True or any(audit.get("checks", {}).get(k) is not True for k in ALIGNMENT_CHECKS):
         failed = [k for k in ALIGNMENT_CHECKS if audit.get("checks", {}).get(k) is not True]
         raise RuntimeError(f"pre-update policy alignment failed before optimizer (0 steps): {failed}")
+
+
+def formal_alignment_artifact(per_rank, *, world_size, window_sha256):
+    """Generic rank-local O/C evidence: token counts need NOT be equal."""
+    if (type(world_size) is not int or world_size < 1 or len(per_rank) != world_size
+            or any(type(r.get("rank")) is not int for r in per_rank)
+            or {r["rank"] for r in per_rank} != set(range(world_size))):
+        raise ValueError("complete distinct formal rank alignment required")
+    rows = sorted(per_rank, key=lambda r: r["rank"])
+    from .old_logprob import ALIGNMENT_META
+    if any(r.get("window_sha256") != window_sha256 or any(r.get(k) != v for k, v in ALIGNMENT_META.items()) for r in rows):
+        raise ValueError("foreign window or non O/C comparison")
+    checks = {k: all(alignment_checks(r)[k] for r in rows) for k in ALIGNMENT_CHECKS}
+    counts = [r["masked_token_count"] for r in rows]
+    result = dict(window_sha256=window_sha256, world_size=world_size, per_rank=rows,
+                  masked_token_count=sum(counts), checks=checks, passed=all(checks.values()), **ALIGNMENT_META)
+    for key in STAT_FIELDS:
+        values = [r.get(key) for r in rows]
+        if not sum(counts) or any(type(v) not in (int, float) or not math.isfinite(v) for v in values):
+            result[key] = None
+        elif key.startswith("max_"):
+            result[key] = max(values)
+        elif key.startswith("min_"):
+            result[key] = min(values)
+        else:
+            result[key] = sum(v * n for v, n in zip(values, counts)) / sum(counts)
+    return result

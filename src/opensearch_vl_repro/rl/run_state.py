@@ -320,7 +320,8 @@ def new_trainer_state(run, policy):
                  "training_behavior_fingerprint": run["training_behavior_fingerprint"]}, "state_sha256")
 
 
-def transition_trainer_state(state, status, *, checkpoint=None, checkpoint_directory=None):
+def transition_trainer_state(state, status, *, checkpoint=None, checkpoint_directory=None,
+                             reload_receipt=None, actor=None):
     from .checkpoint import check_seal, read_verified_checkpoint, require_counter, seal, validate_checkpoint_manifest, validate_policy
     check_seal(state, "state_sha256")
     require_counter(state["schema_version"], 1)
@@ -330,7 +331,12 @@ def transition_trainer_state(state, status, *, checkpoint=None, checkpoint_direc
     if status not in FORMAL_STATE_TRANSITIONS.get(state["status"], set()):
         raise ValueError("illegal formal trainer transition")
     if status == "updating" and state.get("recovery_reload_required") is True:
-        raise ValueError("S2 model/optimizer/RNG reload verification required before retry update")
+        from .formal_policy_update import require_formal_reload
+        if reload_receipt is None or actor is None:
+            raise ValueError("S2 model/optimizer/RNG reload verification required before retry update")
+        require_formal_reload(actor, state["policy"], reload_receipt)
+        # Preserve the recovery flag/history. Only a live capability authorizes
+        # this transition; changing a JSON flag cannot authorize S2 updates.
     policy = state["policy"]
     if status == "iteration_verified":
         if checkpoint is None:

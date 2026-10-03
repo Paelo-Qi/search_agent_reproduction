@@ -1,5 +1,10 @@
 # Formal RL S1 / S1.1: CPU control-plane contracts
 
+S2's separate single-window update primitives are documented in
+[rl_formal_s2_update_primitives.md](rl_formal_s2_update_primitives.md). S1/S1.1
+schemas and Gate orchestration remain unchanged; this document describes the
+control-plane layer, not a Smoke20 coordinator or GPU validation result.
+
 Status: **FORMAL RL S1.1 SCHEMA HARDENING COMPLETE**. This is not Smoke20 ready,
 not a formal training entry point, and not GPU verification. No collector,
 actor, optimizer update, model loading, provider/Judge request, or real weight

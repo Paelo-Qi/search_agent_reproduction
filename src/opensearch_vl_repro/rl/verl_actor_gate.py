@@ -183,13 +183,15 @@ def checkpoint_manager(actor: Any, processor: Any) -> Any:
                                                                     "load_contents": ["model", "optimizer", "extra"]}))
 
 
-def save_checkpoint(actor: Any, processor: Any, output: Path) -> dict[str, Any]:
+def save_checkpoint(actor: Any, processor: Any, output: Path, *, global_step: int = 1) -> dict[str, Any]:
     import torch
     from verl.utils.fsdp_utils import get_fsdp_full_state_dict
     from opensearch_vl_repro.inference.adapter import adapter_file_identity
 
+    if type(global_step) is not int or global_step < 1:
+        raise ValueError("positive native checkpoint optimizer step required")
     manager = checkpoint_manager(actor, processor)
-    manager.save_checkpoint(str(output / "distributed"), global_step=1)
+    manager.save_checkpoint(str(output / "distributed"), global_step=global_step)
     # All ranks participate in the official full-state gather; rank0 exports
     # only the PEFT adapter. No manual DTensor concatenate/sharding format.
     full_state = get_fsdp_full_state_dict(actor.actor_module, offload_to_cpu=True, rank0_only=True)

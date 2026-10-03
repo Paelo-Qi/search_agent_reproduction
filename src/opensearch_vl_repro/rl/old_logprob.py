@@ -40,6 +40,7 @@ OLD_LOGPROB_CHECKS = (
     "rollout_actor_handoff_token_count_match", "ppo_denominator_source_verified",
 )
 _SEAL = object()
+_FORMAL_OLD_SEAL = object()
 
 
 class SamePolicyLineage(dict):
@@ -181,14 +182,16 @@ def require_source_files(lineage):
         raise ValueError("source policy/group/merge evidence changed since lineage verification")
 
 
-def independent_actor_compute(actor, data, *, parameters, inputs, rollout, rng, sft_config):
+def independent_actor_compute(actor, data, *, parameters, inputs, rollout, rng, sft_config,
+                              continuation=False):
     """Actual eval/no-grad actor forward on a private copy of identical inputs."""
     import torch
     if parameter_fingerprint(actor) != parameters or input_fingerprint(data) != inputs:
         raise ValueError("actor parameters or inputs mutated before recompute")
     if fingerprint(data.batch["rollout_log_probs"]) != rollout or rng_fingerprint() != rng:
         raise ValueError("rollout carrier or RNG mutated before recompute")
-    if any(p.grad is not None for p in actor.actor_module.parameters()) or actor.actor_optimizer.state:
+    optimizer = fingerprint(actor.actor_optimizer.state_dict())
+    if any(p.grad is not None for p in actor.actor_module.parameters()) or (not continuation and actor.actor_optimizer.state):
         raise ValueError("backward/optimizer state present before actor-old recompute")
     batch = copy.deepcopy(data)
     old_before = fingerprint(batch.batch["old_log_probs"]) if "old_log_probs" in batch.batch else None
@@ -214,7 +217,9 @@ def independent_actor_compute(actor, data, *, parameters, inputs, rollout, rng, 
                 or input_fingerprint(data) != inputs or parameter_fingerprint(actor) != parameters
                 or fingerprint(batch.batch["rollout_log_probs"]) != rollout
                 or fingerprint(data.batch["rollout_log_probs"]) != rollout or rng_fingerprint() != rng
-                or actor.actor_optimizer.state or any(p.grad is not None for p in actor.actor_module.parameters())):
+                or fingerprint(actor.actor_optimizer.state_dict()) != optimizer
+                or (not continuation and actor.actor_optimizer.state)
+                or any(p.grad is not None for p in actor.actor_module.parameters())):
             raise ValueError("actor compute mutated parameters/input/carriers/RNG or ran backward/optimizer")
         return result.detach().clone(), len(forwards)
     finally:
@@ -367,6 +372,110 @@ def paired_artifact(per_rank, *, identity, kind):
     return dict(schema_version=1, kind=kind, identity=identity, gate_version=identity["gate_version"],
                 per_rank=sorted(per_rank, key=lambda r: r["rank"]), formal_rl_initialization_allowed=False,
                 **(dict(informational_only=True, gate_blocking=False, reason=HANDOFF_REASON) if kind == "rollout_actor_handoff" else {}))
+
+
+def prepare_formal_old_log_probs(actor, data, *, window, policy, reload_receipt, batch_receipt):
+    """Two batched actor calls, independently microbatched by official verl.
+
+    Formal continuation permits populated AdamW and arbitrary rank count. Gate's
+    source-SFT/empty-optimizer/replicated-two-rank wrappers above remain strict.
+    """
+    import torch
+    from .checkpoint import seal
+    from .formal_policy_update import require_formal_reload
+    from .training_batch import materialize_actor_microbatches, require_formal_batch
+    require_formal_reload(actor, policy, reload_receipt, window=window)
+    batch = require_formal_batch(data, batch_receipt, window)
+    if "old_log_probs" in data.batch or "rollout_log_probs" not in data.batch:
+        raise ValueError("formal batch must initially carry R, not an old denominator")
+    r, mask = data.batch["rollout_log_probs"], data.batch["response_mask"]
+    count = int(mask.sum().item())
+    if (r.dtype != torch.float32 or r.shape != mask.shape or r.shape != data.batch["responses"].shape
+            or not bool(torch.isfinite(r).all()) or not bool(((mask == 0) | (mask == 1)).all())
+            or count < 1 or data.meta_info["temperature"] != .7):
+        raise ValueError("invalid formal rollout carrier/mask/temperature")
+    inputs, parameters, rollout, rng = input_fingerprint(data), parameter_fingerprint(actor), fingerprint(r), rng_fingerprint()
+    sft = contract_sft_config(policy["execution_contract"])
+    signature = require_rl_lora_dropout_runtime(actor.actor_module, sft)["lora_dropout_runtime_sha256"]
+    optimizer = fingerprint(actor.actor_optimizer.state_dict())
+    with materialize_actor_microbatches(actor):
+        old, of = independent_actor_compute(actor, data, parameters=parameters, inputs=inputs,
+            rollout=rollout, rng=rng, sft_config=sft, continuation=True)
+        data.batch["old_log_probs"] = old.detach().cpu().clone()
+        current, cf = independent_actor_compute(actor, data, parameters=parameters, inputs=inputs,
+            rollout=rollout, rng=rng, sft_config=sft, continuation=True)
+    installed = data.batch["old_log_probs"]
+    if not torch.equal(old.cpu(), installed):
+        raise ValueError("formal denominator mutated during independent C")
+    artifact = seal(dict(schema_version=1, window_sha256=window["window_sha256"],
+        policy_fingerprint=policy["effective_policy_fingerprint"],
+        reload_receipt_sha256=reload_receipt.artifact["reload_receipt_sha256"],
+        batch_receipt_sha256=batch["batch_receipt_sha256"], rank=batch["rank"], world_size=batch["world_size"],
+        row_ids=batch["row_ids"], token_count=count, temperature=.7, **ALIGNMENT_META,
+        input_sha256=inputs, pre_update_parameter_sha256=parameters, optimizer_state_sha256=optimizer,
+        rng_state_sha256=rng, old_log_probs_sha256=fingerprint(installed), rollout_log_probs_sha256=rollout,
+        response_mask_sha256=fingerprint(mask), independent_actor_compute_count=2,
+        old_forward_count=of, current_forward_count=cf,
+        rl_policy_execution_contract=policy["execution_contract"], lora_dropout_runtime_sha256=signature), "receipt_sha256")
+    alignment = compare_policy_logprobs(current.cpu(), installed, mask, clip_ratio_low=.2,
+        clip_ratio_high=.28, expected_masked_token_count=count)
+    alignment.update(**ALIGNMENT_META, rank=batch["rank"], logprobs_computed=True, temperature=.7,
+        rollout_temperature=.7, window_sha256=window["window_sha256"],
+        old_logprob_receipt_sha256=artifact["receipt_sha256"])
+    alignment["checks"] = alignment_checks(alignment)
+    alignment["passed"] = all(alignment["checks"].values())
+    # No percentiles/outlier token dumps; R/O magnitude never authorizes PPO.
+    handoff = compare_policy_logprobs(installed, r, mask, clip_ratio_low=.2, clip_ratio_high=.28,
+                                     expected_masked_token_count=count)
+    handoff = {k: handoff[k] for k in ("masked_token_count", "mean_abs_logprob_diff", "max_abs_logprob_diff",
+        "mean_importance_ratio", "min_importance_ratio", "max_importance_ratio", "initial_clip_fraction", "ratio_finite")}
+    diff = installed.masked_select(mask.bool()).double() - r.masked_select(mask.bool()).double()
+    # Even if the informational exp(R/O) overflows, finite log differences remain
+    # useful JSON-safe diagnostics; never turn a magnitude into a gate failure.
+    handoff.update(mean_abs_logprob_diff=diff.abs().mean().item(), max_abs_logprob_diff=diff.abs().max().item())
+    handoff.update(informational_only=True, gate_blocking=False, comparison="actor_O_vs_rollout_R",
+                   rank=batch["rank"], window_sha256=window["window_sha256"],
+                   old_logprob_receipt_sha256=artifact["receipt_sha256"])
+    return dict(receipt=OldLogprobReceipt(artifact, id(data), id(actor), installed, _FORMAL_OLD_SEAL),
+                alignment=alignment, handoff=handoff)
+
+
+def verify_formal_old_receipt(actor, data, receipt, alignment, *, window, policy, reload_receipt, batch_receipt):
+    from .checkpoint import check_seal
+    from .formal_policy_update import require_formal_reload
+    from .training_batch import require_formal_batch
+    require_formal_reload(actor, policy, reload_receipt, window=window)
+    batch = require_formal_batch(data, batch_receipt, window)
+    if (not isinstance(receipt, OldLogprobReceipt) or receipt.seal is not _FORMAL_OLD_SEAL
+            or receipt.actor_id != id(actor) or receipt.data_id != id(data)):
+        raise ValueError("actual formal O receipt required")
+    a = receipt.artifact
+    check_seal(a, "receipt_sha256")
+    if (a["window_sha256"] != window["window_sha256"] or a["policy_fingerprint"] != policy["effective_policy_fingerprint"]
+            or a["reload_receipt_sha256"] != reload_receipt.artifact["reload_receipt_sha256"]
+            or a["batch_receipt_sha256"] != batch["batch_receipt_sha256"]
+            or data.batch.get("old_log_probs") is not receipt.old_tensor
+            or fingerprint(receipt.old_tensor) != a["old_log_probs_sha256"]
+            or fingerprint(data.batch["rollout_log_probs"]) != a["rollout_log_probs_sha256"]
+            or input_fingerprint(data) != a["input_sha256"]
+            or parameter_fingerprint(actor) != a["pre_update_parameter_sha256"]
+            or fingerprint(actor.actor_optimizer.state_dict()) != a["optimizer_state_sha256"]
+            or rng_fingerprint() != a["rng_state_sha256"] or actor.config.use_rollout_log_probs is not True
+            or any(p.grad is not None for p in actor.actor_module.parameters())):
+        raise ValueError("formal O/input/policy/optimizer/RNG carrier changed")
+    evidence = alignment
+    if "per_rank" in evidence:
+        matches = [r for r in evidence["per_rank"] if r["rank"] == a["rank"]]
+        if len(matches) != 1:
+            raise ValueError("missing formal rank alignment")
+        evidence = matches[0]
+    if (evidence.get("old_logprob_receipt_sha256") != a["receipt_sha256"]
+            or evidence.get("window_sha256") != window["window_sha256"]
+            or evidence.get("masked_token_count") != a["token_count"]
+            or any(evidence.get(k) != v for k, v in ALIGNMENT_META.items())
+            or not all(alignment_checks(evidence).values())):
+        raise ValueError("strict formal O/C alignment failed before optimizer")
+    return a
 
 
 def verify_old_logprob_artifacts(output, update, group, identity, lineage):
