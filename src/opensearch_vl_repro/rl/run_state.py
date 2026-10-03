@@ -412,6 +412,7 @@ def reconstruct_consumed_ledger(run, initial, groups, verified_checkpoints, *, w
         if checkpoint["parent_policy"] != current or checkpoint["run"]["run_identity_sha256"] != run["run_identity_sha256"]:
             raise ValueError("conflicting/out-of-order checkpoint chain")
         for group in checkpoint["groups"]:
+            validate_formal_group(group, committed=True, run=run)
             identity = group["identity"]
             gid, prompt = identity["trajectory_group_id"], identity["prompt_id"]
             if gid in consumed or ledger[prompt]["status"] == "consumed_by_verified_checkpoint":
@@ -422,7 +423,7 @@ def reconstruct_consumed_ledger(run, initial, groups, verified_checkpoints, *, w
         current = checkpoint_policy(checkpoint)
     seen, group_states = set(), {}
     for group in groups:
-        validate_formal_group(group, committed=True)
+        validate_formal_group(group, committed=True, run=run)
         identity = group["identity"]
         gid, prompt = identity["trajectory_group_id"], identity["prompt_id"]
         if (gid in seen or prompt not in ledger or identity["run_identity_sha256"] != run["run_identity_sha256"]):

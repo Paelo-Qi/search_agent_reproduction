@@ -19,7 +19,7 @@ from opensearch_vl_repro.rl.run_state import (
     read_update_attempt,
 )
 from opensearch_vl_repro.rl.training_window import (
-    build_training_window, deterministic_rank_plan, validate_training_window,
+    build_training_window, deterministic_rank_plan, expected_window_prompts, validate_training_window,
 )
 
 
@@ -27,7 +27,7 @@ def digest(value):
     return canonical_json_sha256(value)
 
 
-def fixture_run(n=2, world_size=2):
+def fixture_run(n=2, world_size=2, *, groups_per_window=4, prompt_count=8):
     semantics = {
         "dataset": {"sha256": digest("dataset"), "split": "smoke"},
         "base_model": {"name": "pinned-base", "revision": "pinned-revision"},
@@ -36,14 +36,17 @@ def fixture_run(n=2, world_size=2):
         "execution_contract": {"dropout": .05, "lora_rank": 16},
         "rollout": {"behavior_version": 1, "config": {"temperature": .7, "seed": 7}},
         "rollout_n": n, "weighting": cp.FORMAL_WEIGHTING,
+        "groups_per_window": groups_per_window, "require_complete_windows": True,
         "optimizer": {"name": "AdamW", "lr": 1e-6, "weight_decay": 0},
         "ppo": {"epochs": 1, "clip_ratio_low": .2, "clip_ratio_high": .28},
         "world_size": world_size, "reward": {"version": 1, "semantics": "format*(.8*accuracy+.2*query)"},
         "tool_protocol_version": "tool-v3", "image_protocol_version": "runtime-image-id-grounding-v3",
         "integration_source_hashes": {"verl": digest("verl-code"), "rllm": digest("rllm-code")},
     }
-    return cp.build_training_run_identity("cpu-contract", semantics=semantics,
-                                          prompt_ids=[f"p{i}" for i in range(8)])
+    prompt_ids = [f"p{i}" for i in range(prompt_count)]
+    return cp.build_training_run_identity("cpu-contract", semantics=semantics, prompt_ids=prompt_ids,
+                                          prompt_sources=[{"prompt_id": p, "source_identity": digest(p)}
+                                                          for p in prompt_ids])
 
 
 def fixture_policy(run):
@@ -107,15 +110,23 @@ def prepare_checkpoint(root, run, policy, groups, window, *, attempt=None, kind=
     rewards = assemble_window_rloo(window, run, policy, groups, estimator=cpu_estimator)
     staging = root / "checkpoints" / f".stage-{uuid.uuid4()}"
     staging.mkdir()
-    for role in ("adapter", "native", "optimizer", "rng"):
-        (staging / f"{role}.fixture").write_bytes(f"{role}:{attempt['attempt_id']}:CPU ONLY".encode())
+    names = ["adapter/adapter_config.json.fixture", "adapter/adapter_model.safetensors.fixture"]
+    names += [f"{role}/{stem}_rank_{rank}.fixture"
+              for role, stem in (("native", "model"), ("optimizer", "optim"), ("rng", "extra"))
+              for rank in range(run["semantics"]["world_size"])]
+    for name in names:
+        path = staging / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(f"{name}:{attempt['attempt_id']}:CPU ONLY".encode())
     inventory = cp.artifact_inventory(staging)
-    roles = {role: inventory[f"{role}.fixture"] for role in ("adapter", "native", "optimizer", "rng")}
+    role_files = {role: {name: sha for name, sha in inventory.items() if name.startswith(role + "/")}
+                  for role in ("adapter", "native", "optimizer", "rng")}
+    roles = cp.artifact_role_identities(role_files, inventory)
     evidence = {"scope": "cpu_fixture", "reloaded_artifact_roles": roles, "adapter_reloaded": True,
                 "native_reloaded": True, "optimizer_reloaded": True, "rng_reloaded": True,
                 "execution_contract_verified": True}
     manifest = cp.build_checkpoint_manifest(run, policy, groups, window, attempt, rewards,
-                                            artifact_roles=roles, file_sha256=inventory, kind=kind,
+                                            artifact_role_files=role_files, file_sha256=inventory, kind=kind,
                                             reload_evidence=evidence, cpu_fixture=True)
     return staging, manifest
 
@@ -189,7 +200,7 @@ def test_window_identity_tamper(context):
 
 @pytest.mark.parametrize("n", [2, 4])
 def test_grouped_rloo_and_fatal_order(tmp_path, n):
-    run, groups = fixture_run(n), []
+    run, groups = fixture_run(n, groups_per_window=2), []
     policy = fixture_policy(run)
     for i in range(2):
         draft = draft_group(run, policy, f"p{i}")
@@ -210,7 +221,7 @@ def test_grouped_rloo_and_fatal_order(tmp_path, n):
 
 
 def test_zero_signal_and_no_checkpoint(tmp_path):
-    run = fixture_run(4)
+    run = fixture_run(4, groups_per_window=1)
     policy = fixture_policy(run)
     draft = draft_group(run, policy)
     for member in draft["members"]:
@@ -225,7 +236,7 @@ def test_zero_signal_and_no_checkpoint(tmp_path):
         attempt = advance_update_attempt(attempt, phase)
     with pytest.raises(ValueError, match="zero-signal"):
         cp.build_checkpoint_manifest(run, policy, [group], window, attempt, rewards,
-                                     artifact_roles={}, file_sha256={}, kind="smoke_final", reload_evidence={})
+                                     artifact_role_files={}, file_sha256={}, kind="smoke_final", reload_evidence={})
 
 
 def test_no_silent_rloo_fallback(context, monkeypatch):
@@ -259,10 +270,10 @@ def test_cpu_end_to_end_and_index_rebuild(context):
     assert recovered["policy"]["policy_iteration"] == 1
     assert len(recovered["ledger"]["consumed_group_ids"]) == 4
     assert len(recovered["policy"]["cumulative_consumed_group_ids"]) == 4
-    next_group = commit_group(root, run, recovered["policy"], "p4")
-    next_window = build_training_window(run, recovered["policy"], [next_group], window_id="window-1")
+    next_groups = [commit_group(root, run, recovered["policy"], f"p{i}") for i in range(4, 8)]
+    next_window = build_training_window(run, recovered["policy"], next_groups, window_id="window-1")
     assert next_window["expected_optimizer_step"] == 2
-    with pytest.raises(ValueError): build_training_window(run, policy, [next_group], window_id="old")
+    with pytest.raises(ValueError): build_training_window(run, policy, next_groups, window_id="old")
     with pytest.raises(ValueError): build_training_window(run, recovered["policy"], groups, window_id="reuse")
     assert json.loads((root / "latest.json").read_text())["policy"] == recovered["policy"]
 
@@ -373,7 +384,7 @@ def test_artifact_reload_failure_closed(context, role):
 def test_artifact_tamper_and_failed_attempt_cannot_commit(context):
     root, run, policy, groups, window = context
     staging, manifest = prepare_checkpoint(root, run, policy, groups, window)
-    (staging / "rng.fixture").write_bytes(b"tampered")
+    (staging / "rng" / "extra_rank_1.fixture").write_bytes(b"tampered")
     with pytest.raises(ValueError, match="inventory"): cp.commit_verified_checkpoint(root, staging, manifest, cpu_fixture=True)
     failed = advance_update_attempt(manifest["update_attempt"], "failed", failure_reason="simulated crash")
     persist_update_attempt(root, failed, cpu_fixture=True)
@@ -404,7 +415,8 @@ def test_invalid_rank_inputs(ids, world):
 def test_run_identity_deterministic_locators_not_identity():
     run = fixture_run()
     other = cp.build_training_run_identity(run["run_id"], semantics=copy.deepcopy(run["semantics"]),
-                                           prompt_ids=run["prompt_ids"], locators={"adapter_path": "different-machine"})
+                                           prompt_ids=run["prompt_ids"], prompt_sources=run["prompt_sources"],
+                                           locators={"adapter_path": "different-machine"})
     cp.require_same_training_run(run, other)
     assert run["training_behavior_fingerprint"] == other["training_behavior_fingerprint"]
     assert run["run_identity_sha256"] == other["run_identity_sha256"]
@@ -419,10 +431,12 @@ def test_every_semantic_identity_change_blocks_resume(key):
     if isinstance(old, dict):
         if key == "integration_source_hashes": old["verl"] = digest("changed")
         else: old["changed_semantics"] = True
+    elif type(old) is bool: semantics[key] = not old
     elif type(old) is int: semantics[key] += 1
     else: semantics[key] += "-changed"
     try:
-        changed = cp.build_training_run_identity(run["run_id"], semantics=semantics, prompt_ids=run["prompt_ids"])
+        changed = cp.build_training_run_identity(run["run_id"], semantics=semantics, prompt_ids=run["prompt_ids"],
+                                                 prompt_sources=run["prompt_sources"])
     except ValueError:
         return  # unsupported semantics are also fail-closed
     with pytest.raises(ValueError, match="resume semantics"): cp.require_same_training_run(run, changed)
@@ -431,14 +445,17 @@ def test_every_semantic_identity_change_blocks_resume(key):
 def test_order_schema_and_behavior_are_bound():
     run = fixture_run()
     reordered = cp.build_training_run_identity(run["run_id"], semantics=run["semantics"],
-                                               prompt_ids=list(reversed(run["prompt_ids"])))
+                                               prompt_ids=list(reversed(run["prompt_ids"])),
+                                               prompt_sources=list(reversed(run["prompt_sources"])))
     with pytest.raises(ValueError): cp.require_same_training_run(run, reordered)
     for key in ("schema_version", "training_behavior_version"):
         bad = copy.deepcopy(run); bad[key] += 1
         with pytest.raises(ValueError): cp.validate_training_run_identity(bad)
     semantics = copy.deepcopy(run["semantics"])
     semantics["source_sft"]["adapter_path"] = "forbidden"
-    with pytest.raises(ValueError, match="paths"): cp.build_training_run_identity("x", semantics=semantics, prompt_ids=["p"])
+    with pytest.raises(ValueError, match="paths"):
+        cp.build_training_run_identity("x", semantics=semantics, prompt_ids=run["prompt_ids"],
+                                       prompt_sources=run["prompt_sources"])
 
 
 def test_gate_output_isolation_and_eligibility(tmp_path):
@@ -456,7 +473,7 @@ def test_gate_output_isolation_and_eligibility(tmp_path):
 
 @pytest.mark.parametrize("n,world", [(2, 2), (4, 3)])
 def test_two_iterations_consumption_is_cumulative(tmp_path, n, world):
-    root, run = tmp_path / "formal", fixture_run(n, world)
+    root, run = tmp_path / "formal", fixture_run(n, world, groups_per_window=2)
     initial = policy = fixture_policy(run)
     cp.initialize_formal_run(root, run, policy, cpu_fixture=True)
     all_groups, checkpoints = [], []
@@ -474,8 +491,9 @@ def test_two_iterations_consumption_is_cumulative(tmp_path, n, world):
         reconstruct_consumed_ledger(run, initial, all_groups, [checkpoints[0], checkpoints[0]],
                                      checkpoint_root=root / "checkpoints")
     # A newly collected group for an already consumed prompt must not become another update.
-    recollected = commit_group(root, run, policy, "p0")
-    window = build_training_window(run, policy, [recollected], window_id="illegal-reconsume")
+    recollected = [commit_group(root, run, policy, p) for p in ("p0", "p1")]
+    with pytest.raises(ValueError, match="ordered prompt slice"):
+        build_training_window(run, policy, recollected, window_id="illegal-reconsume")
     # Audit refuses the extra group even BEFORE checkpoint publication.
     with pytest.raises(ValueError, match="consumed prompt"):
         cp.recover_formal_run(root, run, cpu_fixture=True)
@@ -485,7 +503,7 @@ def test_committed_artifacts_rechecked_on_recovery(context):
     root, run, policy, groups, window = context
     staging, manifest = prepare_checkpoint(root, run, policy, groups, window)
     cp.commit_verified_checkpoint(root, staging, manifest, cpu_fixture=True)
-    (root / "checkpoints" / "policy-000001" / "optimizer.fixture").write_bytes(b"tampered")
+    (root / "checkpoints" / "policy-000001" / "optimizer" / "optim_rank_1.fixture").write_bytes(b"tampered")
     with pytest.raises(ValueError, match="inventory"):
         cp.recover_formal_run(root, run, cpu_fixture=True)
 
@@ -519,5 +537,223 @@ def test_cpu_evidence_cannot_be_relabeled_runtime(context):
     evidence["scope"] = "runtime"
     with pytest.raises(ValueError, match="CPU fixture"):
         cp.build_checkpoint_manifest(run, policy, groups, window, manifest["update_attempt"], manifest["reward_window"],
-                                     artifact_roles=manifest["artifact_roles"], file_sha256=manifest["file_sha256"],
+                                     artifact_role_files=manifest["artifact_role_files"], file_sha256=manifest["file_sha256"],
                                      kind="smoke_final", reload_evidence=evidence)
+
+
+def test_groups_per_window_changes_both_fingerprints_and_blocks_resume():
+    a = fixture_run(groups_per_window=2)
+    b = fixture_run(groups_per_window=4)
+    assert a["training_behavior_fingerprint"] != b["training_behavior_fingerprint"]
+    assert a["run_identity_sha256"] != b["run_identity_sha256"]
+    with pytest.raises(ValueError, match="resume semantics"):
+        cp.require_same_training_run(a, b)
+
+
+@pytest.mark.parametrize("k", [0, -1, True, 1.5, "4"])
+def test_k_is_positive_integer(k):
+    with pytest.raises(ValueError): fixture_run(groups_per_window=k)
+
+
+def test_incomplete_windows_rejected_without_dropping_prompts():
+    with pytest.raises(ValueError, match="complete K-sized"):
+        fixture_run(groups_per_window=4, prompt_count=7)
+    run = fixture_run()
+    semantics = {**run["semantics"], "require_complete_windows": False}
+    with pytest.raises(ValueError, match="must be true"):
+        cp.build_training_run_identity(run["run_id"], semantics=semantics,
+                                       prompt_ids=run["prompt_ids"], prompt_sources=run["prompt_sources"])
+
+
+@pytest.mark.parametrize("size", [3, 5])
+def test_window_group_count_must_be_exactly_k(context, size):
+    root, run, policy, groups, _ = context
+    values = groups[:size]
+    if size == 5: values = groups + [commit_group(root, run, policy, "p4")]
+    with pytest.raises(ValueError, match="group count"):
+        build_training_window(run, policy, values, window_id="wrong-count")
+
+
+@pytest.mark.parametrize("case", ["reverse", "skip", "future"])
+def test_window_order_is_enforced(context, case):
+    root, run, policy, groups, window = context
+    assert window["ordered_prompt_ids"] == ["p0", "p1", "p2", "p3"]
+    assert window["groups_per_window"] == run["semantics"]["groups_per_window"] == 4
+    assert window["require_complete_windows"] is True
+    if case == "reverse": values = list(reversed(groups))
+    if case == "skip": values = groups[:3] + [commit_group(root, run, policy, "p4")]
+    if case == "future": values = [commit_group(root, run, policy, f"p{i}") for i in range(4, 8)]
+    with pytest.raises(ValueError, match="ordered prompt slice"):
+        build_training_window(run, policy, values, window_id="bad-order")
+
+
+@pytest.mark.parametrize("count,k,n", [(20, 4, 2), (400, 4, 4), (12, 3, 2)])
+def test_ordered_slice_is_generic_and_exhaustion_fails(count, k, n):
+    run = fixture_run(n, groups_per_window=k, prompt_count=count)
+    actual = [p for iteration in range(count // k) for p in expected_window_prompts(run, iteration)]
+    assert actual == run["prompt_ids"]
+    assert expected_window_prompts(run, 1) == run["prompt_ids"][k:2 * k]
+    with pytest.raises(ValueError, match="no complete"):
+        expected_window_prompts(run, count // k)
+
+
+def test_authoritative_source_identity_required():
+    run = fixture_run()
+    policy = fixture_policy(run)
+    assert draft_group(run, policy)["identity"]["source_identity"] == run["prompt_sources"][0]["source_identity"]
+    with pytest.raises(ValueError, match="authoritative"):
+        formal_group_identity(run, policy, prompt_id="p0", source_identity=digest("wrong-but-valid-sha"),
+                              attempt_id=str(uuid.uuid4()), attempt_index=0)
+
+
+@pytest.mark.parametrize("case", ["missing", "duplicate", "reordered", "wrong_prompt", "bad_sha", "extra_field"])
+def test_source_membership_cannot_drift(case):
+    run = fixture_run()
+    sources = copy.deepcopy(run["prompt_sources"])
+    if case == "missing": sources.pop()
+    if case == "duplicate": sources[1] = sources[0]
+    if case == "reordered": sources.reverse()
+    if case == "wrong_prompt": sources[0]["prompt_id"] = "other"
+    if case == "bad_sha": sources[0]["source_identity"] = "not-sha"
+    if case == "extra_field": sources[0]["locator"] = "not-membership"
+    with pytest.raises(ValueError):
+        cp.build_training_run_identity(run["run_id"], semantics=run["semantics"],
+                                       prompt_ids=run["prompt_ids"], prompt_sources=sources)
+
+
+def test_source_change_is_a_behavior_and_run_identity_change():
+    run = fixture_run()
+    sources = copy.deepcopy(run["prompt_sources"])
+    sources[0]["source_identity"] = digest("different source record")
+    changed = cp.build_training_run_identity(run["run_id"], semantics=run["semantics"],
+                                            prompt_ids=run["prompt_ids"], prompt_sources=sources)
+    assert run["prompt_membership_sha256"] != changed["prompt_membership_sha256"]
+    assert run["training_behavior_fingerprint"] != changed["training_behavior_fingerprint"]
+    with pytest.raises(ValueError): cp.require_same_training_run(run, changed)
+
+
+def test_resealed_group_with_wrong_source_rejected_by_window_and_ledger(context):
+    _, run, policy, groups, _ = context
+    bad = copy.deepcopy(groups[0])
+    identity = bad["identity"]
+    identity["source_identity"] = digest("wrong source")
+    identity["trajectory_group_id"] = digest({k: v for k, v in identity.items() if k != "trajectory_group_id"})
+    for member in bad["members"]: member["identity"] = copy.deepcopy(identity)
+    bad = cp.seal({k: v for k, v in bad.items() if k != "group_payload_sha256"}, "group_payload_sha256")
+    with pytest.raises(ValueError, match="authoritative"):
+        build_training_window(run, policy, [bad] + groups[1:], window_id="forged")
+    with pytest.raises(ValueError, match="authoritative"):
+        reconstruct_consumed_ledger(run, policy, [bad], [])
+
+
+@pytest.mark.parametrize("role", ["adapter", "native", "optimizer", "rng"])
+def test_multifile_role_identity_is_canonical_and_used_by_policy(context, role):
+    root, run, policy, groups, window = context
+    _, manifest = prepare_checkpoint(root, run, policy, groups, window)
+    files = manifest["artifact_role_files"]
+    assert len(files[role]) == 2
+    reordered = {r: dict(reversed(list(v.items()))) for r, v in reversed(list(files.items()))}
+    identities = cp.artifact_role_identities(reordered, dict(reversed(list(manifest["file_sha256"].items()))))
+    assert identities == manifest["artifact_roles"]
+    assert identities[role] == digest(files[role])
+    assert identities[role] not in manifest["file_sha256"].values()
+    successor = checkpoint_policy(manifest)
+    field = {"adapter": "adapter_fingerprint", "native": "native_identity",
+             "optimizer": "optimizer_identity", "rng": "rng_identity"}[role]
+    assert successor[field] == identities[role]
+
+
+@pytest.mark.parametrize("role", ["adapter", "native", "optimizer", "rng"])
+def test_changing_any_rank_or_adapter_file_changes_whole_role_identity(context, role):
+    root, run, policy, groups, window = context
+    staging, manifest = prepare_checkpoint(root, run, policy, groups, window)
+    name = sorted(manifest["artifact_role_files"][role])[-1]
+    (staging / name).write_bytes(b"changed rank artifact")
+    with pytest.raises(ValueError, match="inventory"):
+        cp.commit_verified_checkpoint(root, staging, manifest, cpu_fixture=True)
+    inventory = cp.artifact_inventory(staging)
+    files = copy.deepcopy(manifest["artifact_role_files"])
+    files[role][name] = inventory[name]
+    identities = cp.artifact_role_identities(files, inventory)
+    assert identities[role] != manifest["artifact_roles"][role]
+    for other in set(identities) - {role}: assert identities[other] == manifest["artifact_roles"][other]
+
+
+@pytest.mark.parametrize("error", ["missing_rank", "missing_role", "unknown_role", "empty_role", "nonexistent_file",
+                                 "conflicting_owner", "hash_mismatch", "global_missing", "unowned_metadata"])
+def test_role_partition_fail_closed(context, error):
+    root, run, policy, groups, window = context
+    _, manifest = prepare_checkpoint(root, run, policy, groups, window)
+    files, inventory = copy.deepcopy(manifest["artifact_role_files"]), dict(manifest["file_sha256"])
+    name = "native/model_rank_1.fixture"
+    if error == "missing_rank": del files["native"][name]
+    if error == "missing_role": del files["native"]
+    if error == "unknown_role": files["unknown"] = {"other.fixture": digest("other")}
+    if error == "empty_role": files["rng"] = {}
+    if error == "nonexistent_file": files["native"]["native/missing.fixture"] = digest("missing")
+    if error == "conflicting_owner": files["optimizer"][name] = inventory[name]
+    if error == "hash_mismatch": files["native"][name] = digest("wrong")
+    if error == "global_missing": del inventory[name]
+    if error == "unowned_metadata": inventory["metadata.json.fixture"] = digest("metadata")
+    with pytest.raises(ValueError): cp.artifact_role_identities(files, inventory)
+
+
+def test_missing_physical_rank_file_fails_commit(context):
+    root, run, policy, groups, window = context
+    staging, manifest = prepare_checkpoint(root, run, policy, groups, window)
+    (staging / "native/model_rank_1.fixture").rename(root / "missing-rank.fixture")
+    with pytest.raises(ValueError, match="inventory"):
+        cp.commit_verified_checkpoint(root, staging, manifest, cpu_fixture=True)
+    assert not (root / "checkpoints" / "policy-000001").exists()
+
+
+def test_metadata_role_is_explicit(context):
+    root, run, policy, groups, window = context
+    _, manifest = prepare_checkpoint(root, run, policy, groups, window)
+    files, inventory = copy.deepcopy(manifest["artifact_role_files"]), dict(manifest["file_sha256"])
+    inventory["metadata.json.fixture"] = digest("metadata")
+    files["metadata"] = {"metadata.json.fixture": inventory["metadata.json.fixture"]}
+    assert cp.artifact_role_identities(files, inventory)["metadata"] == digest(files["metadata"])
+
+
+def test_resealed_checkpoint_cannot_claim_rank0_as_complete_role(context):
+    root, run, policy, groups, window = context
+    _, manifest = prepare_checkpoint(root, run, policy, groups, window)
+    bad = copy.deepcopy(manifest)
+    bad["artifact_roles"]["native"] = bad["file_sha256"]["native/model_rank_0.fixture"]
+    bad["reload_evidence"]["reloaded_artifact_roles"]["native"] = bad["artifact_roles"]["native"]
+    bad = cp.seal({k: v for k, v in bad.items() if k != "checkpoint_manifest_sha256"}, "checkpoint_manifest_sha256")
+    with pytest.raises(ValueError): cp.validate_checkpoint_manifest(bad)
+
+
+def test_formal_versions_changed_only_for_changed_contracts():
+    assert cp.RL_TRAINING_BEHAVIOR_VERSION == cp.RL_RUN_SCHEMA_VERSION == 2
+    assert cp.RL_CHECKPOINT_SCHEMA_VERSION == cp.RL_WINDOW_SCHEMA_VERSION == 2
+    assert cp.RL_GROUP_SCHEMA_VERSION == 1
+
+
+@pytest.mark.parametrize("name", ["../escape.fixture", "/absolute.fixture", "folder\\file", "C:/file",
+                                "./file", ".", "checkpoint.json"])
+def test_role_filenames_cannot_escape_or_include_final_receipt(context, name):
+    root, run, policy, groups, window = context
+    _, manifest = prepare_checkpoint(root, run, policy, groups, window)
+    files, inventory = copy.deepcopy(manifest["artifact_role_files"]), dict(manifest["file_sha256"])
+    files["metadata"] = {name: digest("file")}
+    inventory[name] = digest("file")
+    with pytest.raises(ValueError, match="relative artifact"):
+        cp.artifact_role_identities(files, inventory)
+
+
+def test_old_formal_run_and_checkpoint_schema_fail_closed(context):
+    root, run, policy, groups, window = context
+    old = copy.deepcopy(run)
+    old["schema_version"] = 1
+    del old["prompt_sources"]
+    with pytest.raises(ValueError, match="schema"):
+        cp.validate_training_run_identity(old)
+    _, manifest = prepare_checkpoint(root, run, policy, groups, window)
+    old = copy.deepcopy(manifest)
+    old["schema_version"] = 1
+    del old["artifact_role_files"]
+    with pytest.raises(ValueError, match="schema"):
+        cp.validate_checkpoint_manifest(old)

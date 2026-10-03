@@ -116,7 +116,7 @@ def run_lock(path: Path):
 
 def formal_group_identity(run, policy, *, prompt_id, source_identity, attempt_id, attempt_index):
     from .checkpoint import (RL_GROUP_SCHEMA_VERSION, require_counter, require_digest,
-                             require_uuid, validate_policy, validate_training_run_identity)
+                             require_uuid, source_identity_for_prompt, validate_policy, validate_training_run_identity)
     validate_training_run_identity(run)
     validate_policy(policy)
     require_uuid(attempt_id)
@@ -124,6 +124,8 @@ def formal_group_identity(run, policy, *, prompt_id, source_identity, attempt_id
     require_digest(source_identity)
     if prompt_id not in run["prompt_ids"] or policy["run_identity_sha256"] != run["run_identity_sha256"]:
         raise ValueError("prompt/policy outside formal run")
+    if source_identity != source_identity_for_prompt(run, prompt_id):
+        raise ValueError("source identity differs from authoritative run membership")
     identity = {"schema_version": RL_GROUP_SCHEMA_VERSION, "prompt_id": prompt_id,
                 "source_identity": source_identity, "run_identity_sha256": run["run_identity_sha256"],
                 "policy_iteration": policy["policy_iteration"],
@@ -135,9 +137,9 @@ def formal_group_identity(run, policy, *, prompt_id, source_identity, attempt_id
     return {**identity, "trajectory_group_id": canonical_json_sha256(identity)}
 
 
-def validate_formal_group(group, *, committed=False):
+def validate_formal_group(group, *, committed=False, run=None):
     from .checkpoint import (RL_GROUP_SCHEMA_VERSION, check_seal, require_counter,
-                             require_digest, require_uuid)
+                             require_digest, require_uuid, source_identity_for_prompt)
     identity = group["identity"]
     require_counter(identity["schema_version"], 1)
     if identity["schema_version"] != RL_GROUP_SCHEMA_VERSION:
@@ -151,6 +153,10 @@ def validate_formal_group(group, *, committed=False):
         require_digest(identity[key])
     if not isinstance(identity["prompt_id"], str) or not identity["prompt_id"]:
         raise ValueError("missing prompt identity")
+    if run is not None and (
+            identity["source_identity"] != source_identity_for_prompt(run, identity["prompt_id"])
+            or identity["run_identity_sha256"] != run["run_identity_sha256"]):
+        raise ValueError("group source identity differs from authoritative run membership")
     _validate_group_members(group, identity["expected_n"])
     members = group["members"]
     if any(type(m["rollout_index"]) is not int for m in members):

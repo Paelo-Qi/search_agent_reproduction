@@ -10,15 +10,30 @@ from .checkpoint import (FORMAL_WEIGHTING, RL_WINDOW_SCHEMA_VERSION, check_seal,
 from .group import validate_formal_group
 
 
+def expected_window_prompts(run, policy_iteration):
+    validate_training_run_identity(run)
+    require_counter(policy_iteration)
+    k = run["semantics"]["groups_per_window"]
+    begin = policy_iteration * k
+    expected = run["prompt_ids"][begin:begin + k]
+    if len(expected) != k:
+        raise ValueError("no complete ordered prompt slice at this policy iteration")
+    return expected
+
+
 def build_training_window(run, policy, groups, *, window_id):
     validate_training_run_identity(run)
     validate_policy(policy)
     if (not isinstance(window_id, str) or not window_id or not groups
             or policy["run_identity_sha256"] != run["run_identity_sha256"]):
         raise ValueError("window identity/groups required")
+    k = run["semantics"]["groups_per_window"]
+    if len(groups) != k:
+        raise ValueError("window group count must equal groups_per_window")
+    expected_prompts = expected_window_prompts(run, policy["policy_iteration"])
     ids, prompts, members = [], [], []
     for group in groups:
-        validate_formal_group(group, committed=True)
+        validate_formal_group(group, committed=True, run=run)
         identity = group["identity"]
         if (identity["policy_iteration"] != policy["policy_iteration"]
                 or identity["pre_update_policy_fingerprint"] != policy["effective_policy_fingerprint"]
@@ -35,12 +50,16 @@ def build_training_window(run, policy, groups, *, window_id):
             or set(ids) & set(policy["cumulative_consumed_group_ids"])
             or not set(prompts) <= set(run["prompt_ids"])):
         raise ValueError("duplicate/consumed/out-of-run window group/member/prompt")
+    if prompts != expected_prompts:
+        raise ValueError("window prompts must match the exact ordered prompt slice")
     return seal({"schema_version": RL_WINDOW_SCHEMA_VERSION, "window_id": window_id,
                  "policy_iteration": policy["policy_iteration"],
                  "parent_policy_fingerprint": policy["effective_policy_fingerprint"],
                  "parent_checkpoint_identity": policy["checkpoint_identity"],
                  "run_identity_sha256": run["run_identity_sha256"],
                  "ordered_group_ids": ids,
+                 "ordered_prompt_ids": prompts, "groups_per_window": k,
+                 "require_complete_windows": run["semantics"]["require_complete_windows"],
                  "group_hashes": [g["group_payload_sha256"] for g in groups],
                  "rollout_n": run["semantics"]["rollout_n"], "weighting": FORMAL_WEIGHTING,
                  "expected_optimizer_step": policy["global_optimizer_step"] + 1,

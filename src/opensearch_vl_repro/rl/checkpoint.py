@@ -7,7 +7,7 @@ import os
 import re
 import uuid
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from opensearch_vl_repro.agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
@@ -105,11 +105,11 @@ def build_rl_lineage(*, config: dict[str, Any], sft_config: dict[str, Any],
 
 
 # Formal control-plane versions are independent of all Gate schemas/versions.
-RL_TRAINING_BEHAVIOR_VERSION = 1
-RL_RUN_SCHEMA_VERSION = 1
-RL_CHECKPOINT_SCHEMA_VERSION = 1
+RL_TRAINING_BEHAVIOR_VERSION = 2
+RL_RUN_SCHEMA_VERSION = 2
+RL_CHECKPOINT_SCHEMA_VERSION = 2
 RL_GROUP_SCHEMA_VERSION = 1
-RL_WINDOW_SCHEMA_VERSION = 1
+RL_WINDOW_SCHEMA_VERSION = 2
 FORMAL_WEIGHTING = "per_generation_row_mean_v1"
 
 
@@ -141,15 +141,31 @@ def check_seal(value, field):
         raise ValueError(f"{field} mismatch")
 
 
-def build_training_run_identity(run_id, *, semantics, prompt_ids, locators=None):
+def build_training_run_identity(run_id, *, semantics, prompt_ids, prompt_sources, locators=None):
     required = {"dataset", "base_model", "source_sft", "execution_contract", "rollout",
                 "rollout_n", "weighting", "optimizer", "ppo", "world_size", "reward",
-                "tool_protocol_version", "image_protocol_version", "integration_source_hashes"}
+                "tool_protocol_version", "image_protocol_version", "integration_source_hashes",
+                "groups_per_window", "require_complete_windows"}
     if not isinstance(run_id, str) or not run_id or not required <= semantics.keys():
         raise ValueError("incomplete formal run semantics")
-    if (not prompt_ids or any(not isinstance(p, str) or not p for p in prompt_ids)
+    if (not isinstance(prompt_ids, list) or not prompt_ids
+            or any(not isinstance(p, str) or not p for p in prompt_ids)
             or len(set(prompt_ids)) != len(prompt_ids)):
         raise ValueError("ordered unique prompt membership required")
+    if (not isinstance(prompt_sources, list) or len(prompt_sources) != len(prompt_ids)
+            or any(not isinstance(item, dict) or set(item) != {"prompt_id", "source_identity"}
+                   for item in prompt_sources)
+            or [item["prompt_id"] for item in prompt_sources] != prompt_ids):
+        raise ValueError("ordered prompt/source membership must match prompt_ids exactly")
+    for item in prompt_sources:
+        require_digest(item["source_identity"])
+    require_counter(semantics["groups_per_window"], 1)
+    # No partial last window or silent dropping. A different future policy needs
+    # an explicit behavior/schema change rather than a runtime exception to K.
+    if semantics["require_complete_windows"] is not True:
+        raise ValueError("require_complete_windows must be true")
+    if len(prompt_ids) % semantics["groups_per_window"]:
+        raise ValueError("prompt membership must contain complete K-sized windows")
     require_digest(semantics["dataset"]["sha256"])
     require_digest(semantics["source_sft"]["adapter_sha256"])
     require_digest(semantics["source_sft"]["metadata_sha256"])
@@ -182,8 +198,8 @@ def build_training_run_identity(run_id, *, semantics, prompt_ids, locators=None)
     reject_paths(semantics)
     behavior = {"schema_version": RL_RUN_SCHEMA_VERSION,
                 "training_behavior_version": RL_TRAINING_BEHAVIOR_VERSION,
-                "semantics": semantics, "prompt_ids": prompt_ids,
-                "prompt_membership_sha256": canonical_json_sha256(prompt_ids)}
+                "semantics": semantics, "prompt_ids": prompt_ids, "prompt_sources": prompt_sources,
+                "prompt_membership_sha256": canonical_json_sha256(prompt_sources)}
     result = seal({**behavior, "training_behavior_fingerprint": canonical_json_sha256(behavior),
                    "run_id": run_id}, "run_identity_sha256")
     result["locators"] = json.loads(json.dumps(locators or {}))
@@ -193,8 +209,12 @@ def build_training_run_identity(run_id, *, semantics, prompt_ids, locators=None)
 def validate_training_run_identity(run):
     require_counter(run["schema_version"], 1)
     require_counter(run["training_behavior_version"], 1)
+    if (run["schema_version"] != RL_RUN_SCHEMA_VERSION
+            or run["training_behavior_version"] != RL_TRAINING_BEHAVIOR_VERSION):
+        raise ValueError("formal run identity/schema mismatch")
     expected = build_training_run_identity(run["run_id"], semantics=run["semantics"],
-                                          prompt_ids=run["prompt_ids"], locators=run.get("locators"))
+                                          prompt_ids=run["prompt_ids"], prompt_sources=run["prompt_sources"],
+                                          locators=run.get("locators"))
     if expected != run:
         raise ValueError("formal run identity/schema mismatch")
 
@@ -204,6 +224,14 @@ def require_same_training_run(expected, resumed):
     validate_training_run_identity(resumed)
     if expected["run_identity_sha256"] != resumed["run_identity_sha256"]:
         raise ValueError("resume semantics differ")
+
+
+def source_identity_for_prompt(run, prompt_id):
+    validate_training_run_identity(run)
+    for item in run["prompt_sources"]:
+        if item["prompt_id"] == prompt_id:
+            return item["source_identity"]
+    raise ValueError("prompt outside authoritative source membership")
 
 
 def initial_policy(run, *, optimizer_identity, rng_identity):
@@ -317,8 +345,43 @@ def checkpoint_eligibility(kind):
             "eligible_for_main_init": False}
 
 
+def artifact_role_identities(artifact_role_files, file_sha256):
+    """Exact, disjoint partition of the complete inventory; hash WHOLE role maps.
+
+    Optional metadata is explicit. checkpoint.json is the final sealed receipt,
+    not an artifact in its own recursively hashed inventory.
+    """
+    required = {"adapter", "native", "optimizer", "rng"}
+    if (not isinstance(artifact_role_files, dict) or not isinstance(file_sha256, dict)
+            or not required <= artifact_role_files.keys()
+            or not artifact_role_files.keys() <= required | {"metadata"} or not file_sha256):
+        raise ValueError("complete checkpoint artifact roles required")
+    partition = {}
+    for role, files in artifact_role_files.items():
+        if not isinstance(files, dict) or not files:
+            raise ValueError(f"nonempty complete artifact role required: {role}")
+        for name, digest in files.items():
+            if (not isinstance(name, str) or not name or "\\" in name or ":" in name
+                    or not PurePosixPath(name).parts or PurePosixPath(name).is_absolute()
+                    or ".." in PurePosixPath(name).parts
+                    or PurePosixPath(name).as_posix() != name or name == "checkpoint.json"):
+                raise ValueError("canonical relative artifact filename required")
+            require_digest(digest)
+            if name in partition:
+                raise ValueError("artifact file belongs to conflicting roles")
+            if file_sha256.get(name) != digest:
+                raise ValueError("role manifest disagrees with global file inventory")
+            partition[name] = digest
+    if partition != file_sha256:
+        raise ValueError("artifact roles omit required inventory files")
+    # The shared hash intentionally preserves insertion order (legacy Gate/data
+    # fingerprints depend on it). Canonicalize ONLY this new role-map contract.
+    return {role: canonical_json_sha256(dict(sorted(artifact_role_files[role].items())))
+            for role in sorted(artifact_role_files)}
+
+
 def build_checkpoint_manifest(run, parent_policy, groups, window, attempt, reward_window, *,
-                              artifact_roles, file_sha256, kind, reload_evidence, cpu_fixture=False):
+                              artifact_role_files, file_sha256, kind, reload_evidence, cpu_fixture=False):
     from .run_state import validate_update_attempt
     from .training_window import validate_training_window
     validate_training_window(window, run, parent_policy, groups)
@@ -334,12 +397,7 @@ def build_checkpoint_manifest(run, parent_policy, groups, window, attempt, rewar
         raise ValueError("zero-signal/foreign window cannot authorize an optimizer checkpoint")
     if kind == "gate_artifact":
         raise ValueError("Gate artifacts cannot enter formal checkpoint chain")
-    if set(artifact_roles) != {"adapter", "native", "optimizer", "rng"} or not file_sha256:
-        raise ValueError("complete checkpoint artifact roles required")
-    for digest in list(artifact_roles.values()) + list(file_sha256.values()):
-        require_digest(digest)
-    if not set(artifact_roles.values()) <= set(file_sha256.values()):
-        raise ValueError("checkpoint role hashes not bound to files")
+    artifact_roles = artifact_role_identities(artifact_role_files, file_sha256)
     scope = "cpu_fixture" if cpu_fixture else "runtime"
     if (reload_evidence.get("scope") != scope
             or reload_evidence.get("reloaded_artifact_roles") != artifact_roles
@@ -381,7 +439,8 @@ def build_checkpoint_manifest(run, parent_policy, groups, window, attempt, rewar
                  "source_lineage": run["semantics"]["source_sft"],
                  "execution_contract": run["semantics"]["execution_contract"],
                  "training_behavior_fingerprint": run["training_behavior_fingerprint"],
-                 "artifact_roles": artifact_roles, "file_sha256": file_sha256,
+                 "artifact_roles": artifact_roles, "artifact_role_files": artifact_role_files,
+                 "file_sha256": file_sha256,
                  "groups": groups, "consumed_group_ids": window["ordered_group_ids"],
                  "consumed_group_hashes": window["group_hashes"], "window": window,
                  "update_attempt": attempt, "reward_window": reward_window,
@@ -391,10 +450,12 @@ def build_checkpoint_manifest(run, parent_policy, groups, window, attempt, rewar
 
 def validate_checkpoint_manifest(manifest):
     require_counter(manifest["schema_version"], 1)
+    if manifest["schema_version"] != RL_CHECKPOINT_SCHEMA_VERSION:
+        raise ValueError("verified checkpoint schema mismatch")
     check_seal(manifest, "checkpoint_manifest_sha256")
     expected = build_checkpoint_manifest(
         manifest["run"], manifest["parent_policy"], manifest["groups"], manifest["window"],
-        manifest["update_attempt"], manifest["reward_window"], artifact_roles=manifest["artifact_roles"],
+        manifest["update_attempt"], manifest["reward_window"], artifact_role_files=manifest["artifact_role_files"],
         file_sha256=manifest["file_sha256"], kind=manifest["eligibility"]["kind"],
         reload_evidence=manifest["reload_evidence"], cpu_fixture=manifest["evidence_scope"] == "cpu_fixture")
     if expected != manifest:

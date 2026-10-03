@@ -1,6 +1,6 @@
-# Formal RL S1: CPU control-plane contracts
+# Formal RL S1 / S1.1: CPU control-plane contracts
 
-Status: **FORMAL RL S1 CPU CONTRACTS COMPLETE**. This is not Smoke20 ready,
+Status: **FORMAL RL S1.1 SCHEMA HARDENING COMPLETE**. This is not Smoke20 ready,
 not a formal training entry point, and not GPU verification. No collector,
 actor, optimizer update, model loading, provider/Judge request, or real weight
 checkpoint is implemented here. Gate A/B/C retain their existing paths and
@@ -13,17 +13,28 @@ Future Smoke20 uses 20 prompts, n=2, K=4 groups/window, five windows, one
 optimizer step/window, PPO epochs=1, `per_generation_row_mean_v1`. Main400
 must restart the original SFT checkpoint-3k, never the Smoke final adapter.
 No config or membership is changed. The APIs do not hardcode prompt count,
-rollout n, K or world size: n>=2, any nonempty window and any positive W are
-accepted. Main n=4 and four physical 100-prompt shards remain future inputs;
+rollout n, K or world size: n>=2, configured integer K>=1 and any positive W are
+accepted. `groups_per_window` and `require_complete_windows=True` are mandatory
+hashed run semantics. Prompt count must be divisible by K; partial last windows
+are rejected at run construction, never dropped or silently allowed. Main n=4
+and four physical 100-prompt shards remain future inputs;
 physical shard boundaries are not RLOO group boundaries.
 
-`checkpoint.py` owns independent formal version constants (all initially 1):
+`checkpoint.py` owns independent formal version constants. S1.1 upgrades
 `RL_TRAINING_BEHAVIOR_VERSION`, `RL_RUN_SCHEMA_VERSION`,
-`RL_CHECKPOINT_SCHEMA_VERSION`, `RL_GROUP_SCHEMA_VERSION`,
-`RL_WINDOW_SCHEMA_VERSION`. Attempt/state schemas also start at 1.
+`RL_CHECKPOINT_SCHEMA_VERSION` and `RL_WINDOW_SCHEMA_VERSION` to **2**: run
+membership/K/order semantics, checkpoint role-file schema and window order/K
+contract changed. `RL_GROUP_SCHEMA_VERSION` stays **1** because the group's
+serialized fields did not change; authority now comes from run schema v2.
+Attempt/state schemas stay 1, and Gate versions/schemas are unchanged.
+No migration of hypothetical Formal S1 runtime artifacts is implemented: old
+Formal schemas fail closed; legacy Gate artifacts remain readable.
 
 `build_training_run_identity` accepts explicit semantic metadata and ordered
-unique prompt IDs. It binds dataset checksum/split, pinned base/revision,
+unique prompt IDs plus required `prompt_sources` entries
+`{prompt_id, source_identity}`. Both lists must align exactly in length/order,
+with one entry per prompt and valid SHA256 source identities. The ordered source
+membership and its canonical hash enter both fingerprints. It binds dataset checksum/split, pinned base/revision,
 source SFT adapter/metadata/lineage, execution contract, rollout behavior/config,
 n, optimizer/PPO/world size, reward version/semantics, tool/image versions,
 integration source hashes and weighting. All semantic keys, including extra
@@ -48,9 +59,16 @@ parent checkpoint, rollout config, collection UUID/index and expected n.
 Members must be complete, uniquely identified, indices exactly 0..n-1, with
 finite composed rewards and unchanged actual token/logprob validation.
 Trajectory/multimodal artifact hashes are committed as a whole group.
+`formal_group_identity` rejects a source SHA that differs from the run's
+authoritative prompt mapping. Windows and ledger reconstruction recheck this
+binding even for resealed group metadata; merely looking like SHA256 is not enough.
 
 `build_training_window` binds ordered group IDs/hashes, parent policy/checkpoint,
 window ID, iteration, n, weighting, next optimizer step and behavior fingerprint.
+Exactly K groups are required in exactly `prompt_ids[i*K:(i+1)*K]` order for
+policy iteration i. `ordered_prompt_ids`, K and complete-window semantics are
+explicitly recorded. Reordering, skipping, future-window prompts and exhausted
+iterations fail closed. No prompt/window count is hardcoded.
 Duplicate prompt/group/member, mixed policy/iteration/rollout, uncommitted and
 already consumed groups fail closed.
 
@@ -89,6 +107,22 @@ or claim a real reload, and cannot start another update without S2 verification.
 Checkpoint metadata binds source lineage, parent, iteration/step, all four
 artifact roles (adapter/native/optimizer/RNG), execution/behavior, consumed
 group IDs/hashes, window/attempt/reward receipt and matching reload evidence.
+Each `artifact_role_files[role]` is a nonempty map of canonical relative filenames
+to SHA256. The four required roles (optionally explicit `metadata`) form an exact,
+disjoint partition of `file_sha256`; no unknown roles, unowned files, conflicting
+owners, missing files or hash discrepancies. `checkpoint.json` is the final
+receipt, excluded from its own artifact inventory. The staged/committed physical
+inventory must match that complete inventory. Native/optimizer/RNG can contain
+all per-rank FSDP files, and adapter config/weights can share the adapter role.
+No backend-specific filename layout is inferred; S2 owns validating real FSDP
+file contents/layout and loading them.
+
+`artifact_roles[role] = canonical_json_sha256(dict(sorted(role_files.items())))`
+hashes the complete filename/digest map, independent of insertion order, not just
+rank0. Sorting is local to this new contract; the shared hash function and all
+legacy Gate/data fingerprints remain unchanged.
+`checkpoint_policy` still takes adapter/native/optimizer/RNG identities from
+these role-level hashes; matching reload evidence binds the same full identities.
 Eligibility distinguishes Gate, Smoke continuation, Smoke final and Main.
 Formal checkpoints allow same-run resume; `eligible_for_main_init=false` keeps
 new Main runs anchored to original SFT rather than Smoke/other RL artifacts.
