@@ -1,4 +1,11 @@
-# v4.5.3 — Merge Precision Diagnostic
+# v4.5.4 — FP32 Merged Forward Diagnostic
+
+Current status: **READY FOR AUTODL FP32 MERGED FORWARD DIAGNOSTIC**.
+The new entry adds A2/B2 and writes `fp32_merged_forward_diagnostic/`.
+The historical v4.5.3 entry and reports remain compatible/read-only.
+See the v4.5.4 section below for the new command and interpretation limits.
+
+## Historical v4.5.3 mode
 
 Status: **READY FOR AUTODL MERGE PRECISION DIAGNOSTIC**.
 CPU tests are not real Qwen/AutoDL evidence. This tool cannot repair or pass Gate C.
@@ -200,8 +207,9 @@ LoRA and merged one-GEMM arithmetic remain different. CPU versus GPU delta
 calculation is another variable, and kernel/environment repeatability can affect
 logprobs. Without B2, do not claim arithmetic and final representation have been
 fully separated. True B2 would require a supported genuinely FP32 attention/
-forward path; BF16 autocast over FP32 weights is **not** B2. This round intentionally
-keeps the original FA2/BF16 forward and implements only mandatory B1.
+forward path; BF16 autocast over FP32 weights is **not** B2. The historical v4.5.3
+mode keeps the original FA2/BF16 forward and implements only B1; the new v4.5.4
+entry below adds separate true FP32 variants without changing that old mode.
 Even substantial A-B1 improvement is evidence for a subsequent decision, not
 proof that BF16 merge is the confirmed root cause, nor permission to change Gate C.
 
@@ -217,3 +225,217 @@ New CPU tests use actual tiny PEFT merge and actual safetensors save/reload/head
 inspection, known BF16 rounding, weighted statistics, lineage/tokens, serial
 orchestration, cleanup and failure injection. They do not load real model weights,
 use CUDA, run PPO or call external providers. No commit or push is performed.
+
+## v4.5.4 scope and reported AutoDL evidence
+
+The user's v4.5.3 evidence (not locally reproduced): A-B0 mean/max/clip
+0.0248931106 / 0.440624237 / 0.013137558; A-B1
+0.0229848835 / 0.443992615 / 0.0123647604. Mean improves ~7.7%, clip ~5.9%,
+maximum worsens slightly. This does not confirm production BF16 arithmetic as
+the main cause. The new mode separates additional variables where supported.
+Production merge, Gate thresholds/alignment/rollout, reward/RLOO/fatal, training
+batch and optimizer are unchanged. No collect, judge, search, vLLM or API calls.
+
+| Variant | Definition | Primary backend/autocast |
+| --- | --- | --- |
+| A0 | Original pinned BF16 base + formal dynamic PEFT | FA2 / original BF16 autocast |
+| B0 | Exact historical attempt1 static checkpoint; never regenerated | Same |
+| B1 | Original BF16 base + CPU FP32 target merge → BF16 save/fresh reload | Same |
+| A2 | Base explicitly loaded FP32 + formal PEFT, all base/LoRA floating params FP32, no merge | FA2 / autocast disabled |
+| B2 | Original BF16 base + CPU FP32 target merge → all floating weights FP32 → F32 save/fresh reload | FA2 / autocast disabled |
+
+A2 is implemented and requires no save. B2 is a separate FP32 checkpoint, never
+upcast from B1. The explicit FP32 loader uses `dtype=torch.float32`, local/offline
+files, the original revision/trust setting and original attention backend.
+Floating buffers are checked too. B2's serialized header and reload parameters
+must be F32/FP32 independently; a wrong BF16 checkpoint fails closed.
+
+To avoid cloning an entire 4B state, B1 and B2 each run the same CPU FP32 merge.
+Record `shared_fp32_merge_source=false`, `merge_repeat_count=2` and each
+`pre_cast_merge_source_fingerprint`. Stream a SHA256 over the entire pre-final-cast
+CPU state_dict (names/shapes/dtypes/tensor bytes); no tensor dump or full clone.
+If both variants complete, fingerprints must be identical, or the diagnostic
+fails. Before final casting that state contains FP32 merged targets plus untouched
+original BF16 non-target weights. B1 then casts the entire model to BF16; B2
+promotes the remaining untouched floating weights to FP32, never back to BF16.
+
+The execution order is A0 → destroy → B0 → destroy → B1 → destroy → A2 → destroy
+→ B2 → destroy. Each variant gets separate peak allocated/reserved bytes and
+weak-reference destruction checks. The CPU merge model is destroyed before fresh
+reload. Checkpoints are separate `tmp_fp32_merge_bf16` and `tmp_fp32_merge_fp32`
+direct children, staged and reload-validated before publication/use; default
+cleanup and `--keep-diagnostic-model` semantics apply to both.
+
+### True FP32 forward and support evidence
+
+`forward_rows_fp32` reuses original `load_row_inputs`, full prompt+response IDs,
+response mask, pixel/image-grid tensors, Qwen `get_rope_index`, temperature 0.7,
+previous-position slice and the pinned verl helper (`inplace_backward=False`).
+No re-tokenization and no full-vocabulary logit export. Historical floating vision
+inputs are promoted to FP32; integer input/position/grid/mask dtypes are retained.
+Actual saved/input dtypes are recorded per row for A2/B2. Observational hooks on
+BF16 variants record root inputs and vision tower inputs without altering the
+original forward. Qwen internally aligns pixel dtype with the visual model;
+the actual before/after observations are retained.
+
+FP32 forward disables autocast even if the caller has an ambient autocast context.
+Temporary module hooks reject non-FP32 floating inputs/outputs or nested enabled
+autocast. TF32 matmul/cuDNN flags are temporarily disabled and restored on exit;
+this prevents calling reduced-mantissa TF32 GEMM a true FP32 control.
+
+FA2 FP32 availability is NOT inferred from a version number. Probe the **original
+first multimodal row**, then forward remaining original rows if it succeeds.
+The pinned HF FA2 integration has dtype-selection logic which could cast QKV
+before the kernel; see the
+[official 4.57.1 implementation](https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/integrations/flash_attention.py).
+Therefore this diagnostic additionally wraps the real installed HF `_flash_fn` /
+`_flash_varlen_fn` entry points temporarily. It verifies FP32 QKV and output at the
+actual kernel boundary, records dtype counts, and restores original functions on
+every exit. Hooks/guards exist only in this diagnostic process, not in production
+files or formal execution. FA2 success requires an audited kernel call; parameter
+dtype alone is insufficient evidence.
+
+Recognized FA2 dtype-not-supported errors and detected implicit half downcasts
+produce `supported=false`, exception type/message/stage. They are **not** overall
+measurement failures. Missing/mismatched lineage/tokens, nonfinite baseline or
+FP32 results, source mutation, output corruption, OOM and unrelated runtime bugs
+remain real nonzero failures; they are not relabeled as FA2 support evidence.
+
+When A2/B2 are unsupported:
+
+```json
+{
+  "execution_succeeded": true,
+  "fp32_same_backend_supported": false,
+  "primary_fp32_forward_available": false
+}
+```
+
+Their support records preserve the errors. Corresponding unavailable token
+values/diffs and pair metrics are `null`, including in original top-N outliers.
+A0/B0/B1 and weight results are retained. Weight representation statistics remain
+available even if FP32 forward fails, provided B2 save/reload completed. If one
+variant succeeds and the other fails, report asymmetric support and refuse A2-B2.
+This is NOT a successful arithmetic-versus-representation separation.
+
+### Historical binding, repeated results and statistics
+
+Require the complete v4.5.2 and v4.5.3 summary/token artifacts before GPU work.
+Validate v4.5.3 successful diagnostic state, software, run/adapter/B0 lineage,
+collection attempt, count, original token IDs/order/positions and recomputed
+three pairwise metrics. Never trust a hardcoded 1294 alone; bind the actual mask
+count (1294 for the real attempt) to the existing artifacts.
+
+`repeat_delta_vs_v453` reports current-minus-old A0-B0/A0-B1/B0-B1 metrics. B1
+per-token repeated logprob differences are also reported. No bitwise equality is
+required. A conservative **diagnostic integrity** guard rejects gross B1 repeat
+changes: repeated mean > max(0.1, 4×old A0-B1 mean), or repeated maximum >
+max(1.0, 4×old A0-B1 maximum). These are transparent diagnostic sanity bounds,
+not Gate thresholds, not adjustable PASS criteria and not production changes.
+Smaller changes remain visible for human review, not silently ignored.
+
+Preserve A0-B0/A0-B1/B0-B1 metrics. Canonical new keys are
+`dynamic_vs_production_merge`, `dynamic_vs_fp32_merge_bf16`, and
+`production_vs_fp32_merge_bf16`; historical v4.5.3 compatibility keys remain too.
+When available add A0-B2, A2-B2, A0-A2,
+B1-B2 and B0-B2 using the original `pair_metrics`. Retain the original v4.5.2
+A0-B0 top50 ranking and enrich those SAME tokens with all new values/diffs,
+including A2-B2 and B1-B2; never rank a different token population.
+
+Weight analysis retains B0-B1 and adds B0.float()-B2, B1.float()-B2. The latter
+is final BF16 representation error, measured fully in streamed target-weight
+chunks, per layer/suffix and element-weighted suffix aggregates: absolute mean/max,
+nonzero fraction and mean/max error relative to the original FP32 LoRA delta.
+Only statistics are saved, never complete weight/delta/diff tensors.
+
+### New outputs and optional secondary
+
+All original outputs, pinned base, formal adapter/metadata/configs, v4.5.2,
+v4.5.3 and original Gate report retain before/after SHA256 protection.
+New output (existing directory refuses overwrite):
+
+```text
+reports/rl_gate_c/gate-c-v451-attempt1/fp32_merged_forward_diagnostic/
+  summary.json                    # successful summary published last
+  token_diagnostics.jsonl
+  module_merge_stats.json
+  weight_representation_stats.json
+  source_checksums.json
+```
+
+Metadata remains diagnostic/evidence-only, not for training/rollout, with
+`formal_rl_initialization_allowed=false`. No Gate manifest is written.
+
+An optional `--allow-sdpa-fp32-secondary` is implemented, **default off**. Only
+explicit opt-in loads A2/B2 under SDPA with the same FP32 forward checks.
+Results are under `secondary`, marked `secondary_backend_changed=true`,
+`exploratory_only=true`, `excluded_from_primary_metrics=true`; its A2-B2 metric
+is separately named. It cannot serve as a pure dtype control against FA2 A0/B1.
+Do NOT enable it for this first AutoDL run. If unsupported, first return the FA2
+evidence and decide whether a later secondary experiment is worthwhile.
+
+### v4.5.4 AutoDL command
+
+Use one A800 80GB and the unchanged historical pinned environment (actual run
+manifest takes precedence; torch 2.8.0 / transformers 4.57.1 / PEFT 0.21.1 /
+verl 0.6.1). Inspect CPU RAM/disk too: FP32 4B parameters are roughly 16 GB before
+activations/workspaces/logits; this is not a peak-VRAM guarantee. This entry does
+not automatically switch to CPU on GPU OOM or downgrade dtype.
+CPU merge promotes the target weights and needs the largest delta/safe-merge
+working buffers. Precise CPU peak RSS is not collected. Free-space checks account
+for FP32 save separately (4×source safetensors bytes + adapter bytes + 1 GiB free
+at that stage); B1 and B2 coexist on disk until analysis/cleanup. No GPU models
+coexist. Real FP32 GPU support and peak memory are not validated locally.
+
+```bash
+set -euo pipefail
+export PYTHONPATH=src
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export QWEN_BASE_SNAPSHOT=/root/autodl-tmp/hf_cache/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17
+
+CUDA_VISIBLE_DEVICES=0 python scripts/diagnose_rl_fp32_merged_forward.py \
+  --run-id gate-c-v451-attempt1 \
+  --base-model-path "$QWEN_BASE_SNAPSHOT" \
+  --top-n 50 \
+  --local-files-only \
+  2>&1 | tee logs_gate_c_v451_attempt1_fp32_merged_forward_diag.txt
+```
+
+Expect `TOKENS: 1294`, repeated BF16 comparison metrics, `FP32 SAME BACKEND
+SUPPORTED: true/false`, available FP32 comparisons or clear unsupported reasons,
+repeat deltas and report path. Numeric outcomes are not predetermined.
+
+If supported, return terminal summary, `summary.json`, A2-B2/A0-A2/B1-B2 metrics,
+representation suffix summary and original top20 token changes under A2/B2.
+If unsupported, return terminal summary, exception type/message and summary.
+Offline top20 extraction:
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+p = Path('reports/rl_gate_c/gate-c-v451-attempt1/fp32_merged_forward_diagnostic')
+s = json.loads((p / 'summary.json').read_text())
+for r in s['original_production_outliers'][:20]:
+    print(json.dumps({k: r[k] for k in (
+        'global_trainable_index', 'token_id', 'decoded_token',
+        'prior_dynamic_vs_production_diff', 'dynamic_peft_vs_fp32_merge_bf16_diff',
+        'dynamic_fp32_vs_merged_fp32_diff', 'fp32_merge_bf16_vs_fp32_merge_fp32_diff')}, ensure_ascii=True))
+PY
+```
+
+### Human interpretation only
+
+- A0-B2 far below A0-B1/B0: evidence implicating BF16 representation/forward,
+  but both parameter and computation dtype changed; do not claim weight rounding alone.
+- A2-B2 near zero, A0/B1 still different: stronger evidence of a BF16 numerical
+  path rather than a mathematical dynamic/merged mismatch.
+- Even A2-B2 remains large: investigate ordering/module/GEMM/backend numerical paths.
+- Small mixed improvements: mixed-cause evidence, not a single confirmed root cause.
+- Unsupported/asymmetric primary: no FP32 dtype-only conclusion. SDPA secondary
+  additionally changes backend, so keep it separate.
+
+No case automatically declares a root cause, modifies production merge, repairs
+Gate C, changes thresholds or grants Gate PASS. Current local readiness only:
+**READY FOR AUTODL FP32 MERGED FORWARD DIAGNOSTIC**.

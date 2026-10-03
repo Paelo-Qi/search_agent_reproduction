@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import hashlib
 import importlib.metadata
 import json
 import math
@@ -12,6 +13,7 @@ import shutil
 import tempfile
 import weakref
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 from opensearch_vl_repro.eval_subset import canonical_json_sha256
@@ -27,6 +29,19 @@ PAIRS = {
     "dynamic_peft_vs_production_merge": ("dynamic_peft_logprob", "production_merge_logprob"),
     "dynamic_peft_vs_fp32_merge_bf16": ("dynamic_peft_logprob", "fp32_merge_bf16_logprob"),
     "production_merge_vs_fp32_merge_bf16": ("production_merge_logprob", "fp32_merge_bf16_logprob"),
+}
+FP32_META = {**META, "diagnostic_version": "fp32-merged-forward-forensic-v1"}
+BF16_PAIR_ALIASES = {
+    "dynamic_vs_production_merge": "dynamic_peft_vs_production_merge",
+    "dynamic_vs_fp32_merge_bf16": "dynamic_peft_vs_fp32_merge_bf16",
+    "production_vs_fp32_merge_bf16": "production_merge_vs_fp32_merge_bf16",
+}
+FP32_PAIRS = {
+    "dynamic_vs_fp32_merge_fp32": ("dynamic_peft_logprob", "merged_fp32_logprob"),
+    "dynamic_fp32_vs_merged_fp32": ("dynamic_fp32_logprob", "merged_fp32_logprob"),
+    "dynamic_bf16_vs_dynamic_fp32": ("dynamic_peft_logprob", "dynamic_fp32_logprob"),
+    "fp32_merge_bf16_vs_fp32_merge_fp32": ("fp32_merge_bf16_logprob", "merged_fp32_logprob"),
+    "production_vs_fp32_merge_fp32": ("production_merge_logprob", "merged_fp32_logprob"),
 }
 
 
@@ -198,13 +213,13 @@ def fp32_merge_lora_model(wrapped, *, expected_layers=36):
             "base_target_weight_dtype_at_merge", "lora_A_dtype", "lora_B_dtype", "computed_delta_dtype")}}
 
 
-def disk_space_required(base_path, adapter, destination):
+def disk_space_required(base_path, adapter, destination, *, weight_multiplier=2):
     size = sum(p.stat().st_size for p in base_path.glob("model*.safetensors"))
     if not size:
         raise ValueError("offline base weights missing for disk estimate")
     # One BF16 checkpoint + at least 1GiB margin; 2x source weight bytes is
     # conservative for the same architecture. No FP32 model is serialized.
-    required = 2 * size + sum(p.stat().st_size for p in adapter.glob("*.safetensors")) + 1024 ** 3
+    required = weight_multiplier * size + sum(p.stat().st_size for p in adapter.glob("*.safetensors")) + 1024 ** 3
     if shutil.disk_usage(destination).free < required:
         raise OSError(f"insufficient diagnostic disk before model load/save: need {required} bytes")
     return required
@@ -218,7 +233,7 @@ def load_cpu_peft(ctx, base_path):
     return PeftModel.from_pretrained(base, str(ctx["adapter"]), is_trainable=False, local_files_only=True).eval().requires_grad_(False)
 
 
-def saved_dtype_counts(directory):
+def saved_dtype_counts(directory, *, expected="BF16"):
     """Inspect serialized safetensors headers, not a reload's forced load dtype."""
     from safetensors import safe_open
     counts, elements, names = Counter(), Counter(), set()
@@ -230,35 +245,62 @@ def saved_dtype_counts(directory):
                 names.add(name)
                 view = stream.get_slice(name)
                 dtype = view.get_dtype()
-                if dtype.startswith("F") and dtype != "BF16":
-                    raise ValueError("serialized diagnostic floating weights are not BF16")
+                if (dtype.startswith("F") or dtype == "BF16") and dtype != expected:
+                    raise ValueError(f"serialized diagnostic floating weights are not {expected}")
                 counts[dtype] += 1
                 elements[dtype] += math.prod(view.get_shape())
-    if not counts.get("BF16"):
-        raise ValueError("serialized diagnostic BF16 weights missing")
+    if not counts.get(expected):
+        raise ValueError(f"serialized diagnostic {expected} weights missing")
     return {"tensor_count_by_dtype": dict(counts), "element_count_by_dtype": dict(elements)}
 
 
-def diagnostic_fp32_merge(ctx, base_path, destination, device):
-    """Staged BF16 checkpoint; fresh CPU reload/hash BEFORE GPU diagnostic use."""
+def merge_state_fingerprint(model):
+    """Hash the pre-cast CPU merge state in chunks, no state clone/tensor export."""
+    import torch
+    digest = hashlib.sha256()
+    for name, value in sorted(model.state_dict().items()):
+        if value.device.type != "cpu": raise ValueError("merge source hashing requires CPU tensors")
+        header = json.dumps([name, list(value.shape), str(value.dtype)], separators=(",", ":")).encode()
+        digest.update(len(header).to_bytes(8, "big")); digest.update(header)
+        for chunk in value.detach().reshape(-1).split(1048576):
+            digest.update(memoryview(chunk.contiguous().view(torch.uint8).numpy()))
+    return digest.hexdigest()
+
+
+def diagnostic_fp32_merge(ctx, base_path, destination, device, *, serialized_dtype="bf16",
+                          checkpoint_name="tmp_fp32_merge", record_merge_source=False):
+    """Staged BF16 or FP32 checkpoint; fresh CPU reload BEFORE diagnostic use.
+
+    Defaults retain the v4.5.3 path. FP32 never passes through a BF16 checkpoint.
+    """
     import torch
     from peft import PeftModel
     from opensearch_vl_repro.model import load_base_model
     from opensearch_vl_repro.rl.rollout_sync import require_plain_merged_model, validate_merged_files
-    required = disk_space_required(base_path, ctx["adapter"], destination)
-    target = destination / "tmp_fp32_merge"
+    if serialized_dtype not in {"bf16", "fp32"} or checkpoint_name not in {
+        "tmp_fp32_merge", "tmp_fp32_merge_bf16", "tmp_fp32_merge_fp32"}:
+        raise ValueError("invalid diagnostic checkpoint dtype/name")
+    dtype = torch.bfloat16 if serialized_dtype == "bf16" else torch.float32
+    expected_header = "BF16" if serialized_dtype == "bf16" else "F32"
+    metadata = META if serialized_dtype == "bf16" and not record_merge_source else FP32_META
+    required = disk_space_required(base_path, ctx["adapter"], destination,
+                                    weight_multiplier=2 if serialized_dtype == "bf16" else 4)
+    target = destination / checkpoint_name
     if target.exists():
         raise FileExistsError("diagnostic model overwrite forbidden")
     staging = Path(tempfile.mkdtemp(prefix=".fp32-merge-", dir=destination))
     wrapped = load_cpu_peft(ctx, base_path)
     merged, stats, audit = fp32_merge_lora_model(wrapped)
     require_plain_merged_model(merged, PeftModel)
-    merged.to(dtype=torch.bfloat16)
-    audit.update(cast_target_dtype="torch.bfloat16", saved_parameter_dtypes=dtype_counts(merged),
-                 base_load_dtype="torch.bfloat16", forward_autocast_dtype="torch.bfloat16",
+    if record_merge_source:
+        audit["pre_cast_merge_source_fingerprint"] = merge_state_fingerprint(merged)
+    merged.to(dtype=dtype)
+    audit.update(cast_target_dtype=str(dtype), saved_parameter_dtypes=dtype_counts(merged),
+                 base_load_dtype="torch.bfloat16", forward_autocast_dtype="torch.bfloat16" if serialized_dtype == "bf16" else None,
+                 forward_autocast_enabled=serialized_dtype == "bf16",
                  required_free_disk_bytes=required)
-    if set(audit["saved_parameter_dtypes"]["tensor_count_by_dtype"]) != {"torch.bfloat16"}:
-        raise ValueError("explicit BF16 cast did not cover all model parameters")
+    if set(audit["saved_parameter_dtypes"]["tensor_count_by_dtype"]) != {str(dtype)}:
+        raise ValueError("explicit diagnostic dtype did not cover all model parameters")
     merged.config._name_or_path = BASE_MODEL
     merged.save_pretrained(str(staging), safe_serialization=True, max_shard_size="2GB")
     # Copy immutable processor/tokenizer assets, never invoke a processor.
@@ -271,18 +313,19 @@ def diagnostic_fp32_merge(ctx, base_path, destination, device):
     if model_ref() is not None or peft_ref() is not None:
         raise RuntimeError("CPU merge model still alive before fresh diagnostic reload")
     files = validate_merged_files(staging)
-    audit["serialized_tensor_dtypes"] = saved_dtype_counts(staging)
+    audit["serialized_tensor_dtypes"] = saved_dtype_counts(staging, expected=expected_header)
     config = copy.deepcopy(ctx["sft"]); config["model"]["name_or_path"] = str(staging)
-    fresh = load_base_model(config, for_training=False).cpu().eval().requires_grad_(False)
+    fresh = (load_base_model(config, for_training=False).cpu().eval().requires_grad_(False)
+             if serialized_dtype == "bf16" else load_fp32_merged_model(staging, ctx, device=torch.device("cpu")))
     require_plain_merged_model(fresh, PeftModel)
     audit["reload_parameter_dtypes"] = dtype_counts(fresh)
-    if set(audit["reload_parameter_dtypes"]["tensor_count_by_dtype"]) != {"torch.bfloat16"}:
-        raise ValueError("fresh diagnostic reload is not all BF16")
+    if set(audit["reload_parameter_dtypes"]["tensor_count_by_dtype"]) != {str(dtype)}:
+        raise ValueError("fresh diagnostic reload dtype mismatch")
     if fresh.config._attn_implementation != ctx["sft"]["model"]["attn_implementation"]:
         raise ValueError("fresh diagnostic attention differs from formal SFT")
     audit.update(cpu_merge_model_destroyed=True, fresh_reload_completed=True,
                  diagnostic_model_file_sha256=files, diagnostic_model_fingerprint=canonical_json_sha256(files))
-    atomic_json(staging / "diagnostic_metadata.json", {**META, "merge_complete": True,
+    atomic_json(staging / "diagnostic_metadata.json", {**metadata, "merge_complete": True,
         "source_adapter_fingerprint": ctx["identity"]["source_sft_actor"]["source_sft_adapter_fingerprint"],
         "base_model": BASE_MODEL, "base_revision": BASE_REVISION, "dtype_audit": audit})
     staging.rename(target)  # only a fully saved, reload-validated diagnostic model is published
@@ -292,7 +335,8 @@ def diagnostic_fp32_merge(ctx, base_path, destination, device):
 def cleanup_models(destination, *, keep=False):
     """Delete ONLY this invocation's exact direct-child temporary checkpoints."""
     deleted = []
-    for path in list(destination.glob(".fp32-merge-*")) + [destination / "tmp_fp32_merge"]:
+    for path in list(destination.glob(".fp32-merge-*")) + [destination / name for name in (
+        "tmp_fp32_merge", "tmp_fp32_merge_bf16", "tmp_fp32_merge_fp32")]:
         if not path.exists():
             continue
         if path.resolve().parent != destination.resolve() or path.is_symlink() or not path.is_dir():
@@ -303,7 +347,7 @@ def cleanup_models(destination, *, keep=False):
     return deleted
 
 
-def weight_compare_stats(production, diagnostic, *, expected_layers=36):
+def weight_compare_stats(production, diagnostic, *, expected_layers=36, dtypes=None):
     """Read one target at a time from safe tensor files, no resident HF models."""
     import torch
     from safetensors import safe_open
@@ -326,8 +370,9 @@ def weight_compare_stats(production, diagnostic, *, expected_layers=36):
     for key in sorted(expected):
         with safe_open(str(a[key][0]), framework="pt", device="cpu") as sa, safe_open(str(b[key][0]), framework="pt", device="cpu") as sb:
             wa, wb = sa.get_tensor(a[key][1]), sb.get_tensor(b[key][1])
-            if wa.shape != wb.shape or wa.dtype != torch.bfloat16 or wb.dtype != torch.bfloat16:
-                raise ValueError("B0/B1 target weights must be aligned BF16 tensors")
+            expected_dtypes = dtypes or (torch.bfloat16, torch.bfloat16)
+            if wa.shape != wb.shape or (wa.dtype, wb.dtype) != expected_dtypes:
+                raise ValueError("diagnostic target weights must have aligned shapes/expected dtypes")
             total = maximum = 0.; count = 0
             for ca, cb in zip(wa.flatten().split(1048576), wb.flatten().split(1048576), strict=True):
                 diff = (ca.float() - cb.float()).abs()
@@ -513,5 +558,433 @@ def run_diagnostic(args, root):
             unchanged = False; exc = RuntimeError(f"{exc}; source integrity failure: {error}")
         atomic_json(destination / "summary.json", {**META, "execution_succeeded": False, "gate_run_id": args.run_id,
             "stage": stage, "error": str(exc), "source_artifacts_unchanged": unchanged,
+            "deleted_temporary_model_directories": deleted, "cleanup_error": cleanup_error})
+        raise exc
+
+
+class FP32ForwardUnsupported(RuntimeError):
+    """An identical-backend FP32 path rejects dtype or attempts a half downcast."""
+
+
+def require_fp32_parameters(model):
+    import torch
+    parameters = [p for p in model.parameters() if p.is_floating_point()]
+    if not parameters or any(p.dtype != torch.float32 for p in parameters):
+        raise ValueError("FP32 diagnostic requires ALL floating parameters to be FP32")
+    if any(b.is_floating_point() and b.dtype != torch.float32 for b in model.buffers()):
+        raise ValueError("FP32 diagnostic floating buffers must remain FP32")
+
+
+def attention_backend_audit(model):
+    expected = model.config._attn_implementation
+    resolved = []
+    for name, module in model.named_modules():
+        if "attention" in type(module).__name__.lower() and hasattr(module, "config"):
+            actual = module.config._attn_implementation
+            resolved.append({"module": name, "backend": actual})
+            if actual != expected: raise ValueError("nested attention backend differs from the primary model")
+    return {"model": expected, "attention_modules": resolved}
+
+
+def load_fp32_merged_model(path, ctx, *, device, attention_backend=None):
+    """Explicit FP32 loader; never reads the formal BF16 load dtype."""
+    import torch
+    from transformers import Qwen3VLForConditionalGeneration
+    cfg = ctx["sft"]["model"]
+    backend = attention_backend or cfg["attn_implementation"]
+    model = Qwen3VLForConditionalGeneration.from_pretrained(str(path),
+        revision=cfg.get("revision"), dtype=torch.float32, attn_implementation=backend,
+        trust_remote_code=bool(cfg.get("trust_remote_code", False)),
+        local_files_only=True, low_cpu_mem_usage=True).to(device).eval().requires_grad_(False)
+    require_fp32_parameters(model)
+    if model.config._attn_implementation != backend:
+        raise ValueError("FP32 resolved attention backend mismatch")
+    attention_backend_audit(model)
+    return model
+
+
+def load_dynamic_fp32(ctx, base_path, *, device, attention_backend=None):
+    from peft import PeftModel
+    base = load_fp32_merged_model(base_path, ctx, device=device, attention_backend=attention_backend)
+    model = PeftModel.from_pretrained(base, str(ctx["adapter"]), is_trainable=False,
+                                      local_files_only=True).float().eval().requires_grad_(False)
+    require_fp32_parameters(model)
+    lora_roster(model)
+    return model
+
+
+def _floating_tensors(value):
+    import torch
+    if isinstance(value, torch.Tensor):
+        if value.is_floating_point(): yield value
+    elif isinstance(value, dict):
+        for child in value.values(): yield from _floating_tensors(child)
+    elif isinstance(value, (tuple, list)):
+        for child in value: yield from _floating_tensors(child)
+
+
+@contextmanager
+def fp32_execution_guard(model, *, device, backend, audit):
+    """Diagnostic-process-only guards; restore hooks/kernel refs/TF32 on exit."""
+    import torch
+    handles, flash, originals = [], None, {}
+    flags = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32)
+    seen = audit.setdefault("module_floating_dtypes", Counter())
+    kernel_calls = audit.setdefault("flash_kernel_qkv_dtypes", Counter())
+    def check(values, location):
+        if torch.is_autocast_enabled(device.type):
+            raise FP32ForwardUnsupported(f"implicit autocast enabled inside FP32 {location}")
+        for value in _floating_tensors(values):
+            seen[str(value.dtype)] += 1
+            if value.dtype != torch.float32:
+                raise FP32ForwardUnsupported(f"implicit half/non-FP32 tensor at {location}: {value.dtype}")
+    def pre(module, args, kwargs): check((args, kwargs), type(module).__name__ + ".input")
+    def post(module, args, output): check(output, type(module).__name__ + ".output")
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        audit["tf32_enabled"] = False
+        for module in model.modules():
+            handles.append(module.register_forward_pre_hook(pre, with_kwargs=True))
+            handles.append(module.register_forward_hook(post))
+        if device.type == "cuda" and backend == "flash_attention_2":
+            from transformers import modeling_flash_attention_utils as flash
+            # Use the real installed FA2 entry points, initialized before wrapping.
+            # The pinned HF helper resolves these globals on each attention call.
+            flash.lazy_import_flash_attention(backend)
+            for name in ("_flash_fn", "_flash_varlen_fn"):
+                original = getattr(flash, name)
+                originals[name] = original
+                def checked(*args, original=original, **kwargs):
+                    qkv = args[:3] if len(args) >= 3 else tuple(kwargs[k] for k in ("q", "k", "v"))
+                    kernel_calls["/".join(str(t.dtype) for t in qkv)] += 1
+                    check(qkv, "FA2 kernel QKV")
+                    output = original(*args, **kwargs)
+                    check(output, "FA2 kernel output")
+                    return output
+                setattr(flash, name, checked)
+        yield
+        if device.type == "cuda" and backend == "flash_attention_2" and not kernel_calls:
+            raise ValueError("FP32 FA2 forward did not execute an audited FA2 kernel")
+    finally:
+        for handle in handles: handle.remove()
+        if flash is not None:
+            for name, original in originals.items(): setattr(flash, name, original)
+        torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32 = flags
+
+
+def forward_rows_fp32(model, rows, directory, *, device, audit=None, logprob_function=None):
+    """Original IDs/M-RoPE/verl slice, but true FP32 with autocast DISABLED."""
+    import torch
+    audit = audit if audit is not None else {}
+    require_fp32_parameters(model)
+    model.eval().requires_grad_(False)
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    backend = model.config._attn_implementation
+    audit.update(parameter_dtypes=dtype_counts(model), forward_autocast_enabled=False,
+                 forward_autocast_dtype=None, forward_device=str(device), attention_backend=backend,
+                 resolved_attention=attention_backend_audit(model))
+    result = []
+    with torch.no_grad(), torch.autocast(device_type=device.type, enabled=False), fp32_execution_guard(
+            model, device=device, backend=backend, audit=audit):
+        for row in rows:
+            ids, attention, vision = handoff.load_row_inputs(directory, row, device=device)
+            input_before = {k: str(v.dtype) for k, v in vision.items()}
+            vision = {k: v.float() if v.is_floating_point() else v for k, v in vision.items()}
+            positions, _ = base.model.get_rope_index(input_ids=ids, image_grid_thw=vision["image_grid_thw"],
+                                                    attention_mask=attention)
+            audit.setdefault("rows", []).append(dict(rollout_index=row["rollout_index"], step_index=row["step_index"],
+                saved_vision_dtypes=input_before, model_input_dtypes={"input_ids": str(ids.dtype),
+                "attention_mask": str(attention.dtype), "position_ids": str(positions.dtype),
+                **{k: str(v.dtype) for k, v in vision.items()}}))
+            output = model(input_ids=ids, attention_mask=attention, position_ids=positions, **vision, use_cache=False)
+            if output.logits.dtype != torch.float32:
+                raise FP32ForwardUnsupported("FP32 forward returned non-FP32 logits")
+            response_ids = torch.tensor([row["responses"]], dtype=torch.long, device=device)
+            result.append(handoff.sampled_response_logprobs(output.logits, response_ids, logprob_function=logprob_function))
+            del output, response_ids, ids, attention, positions, vision
+    return result
+
+
+def fp32_backend_unsupported(exc):
+    """Do NOT turn OOM, nonfinite outputs or arbitrary runtime bugs into support evidence."""
+    import torch
+    if isinstance(exc, torch.OutOfMemoryError): return False
+    if isinstance(exc, FP32ForwardUnsupported): return True
+    message = str(exc).lower()
+    return (isinstance(exc, (RuntimeError, ValueError, NotImplementedError)) and "flash" in message
+        and ("only support" in message or "does not support" in message or "not support" in message)
+        and ("fp16" in message or "float16" in message or "float32" in message or "fp32" in message))
+
+
+def unsupported_status(exc, *, stage):
+    return {"supported": False, "error_type": type(exc).__name__, "error_message": str(exc),
+            "failure_stage": stage, "reason": "FP32 forward unsupported under identical attention backend"}
+
+
+def probe_fp32_attention_support(model, rows, directory, *, device, audit=None, logprob_function=None):
+    if not rows: raise ValueError("FP32 probe requires the original first row")
+    try:
+        first = forward_rows_fp32(model, rows[:1], directory, device=device,
+                                  audit=audit, logprob_function=logprob_function)
+        return {"supported": True, "probe": "original_first_multimodal_row"}, first
+    except Exception as exc:
+        if not fp32_backend_unsupported(exc): raise
+        return unsupported_status(exc, stage="first_row_forward"), None
+
+
+def load_previous_precision(ctx, prior_forensic):
+    directory = ctx["reports"] / "merge_precision_diagnostic"
+    summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
+    tokens = [json.loads(line) for line in (directory / "token_diagnostics.jsonl").read_text(encoding="utf-8").splitlines()]
+    if (summary.get("diagnostic_version") != VERSION or summary.get("execution_succeeded") is not True
+        or summary.get("diagnostic_only") is not True or summary.get("formal_rl_initialization_allowed") is not False
+        or summary.get("source_artifacts_unchanged") is not True or summary.get("gate_run_id") != ctx["identity"]["run_id"]
+        or summary.get("base_model") != BASE_MODEL or summary.get("base_revision") != BASE_REVISION
+        or summary.get("temperature") != .7
+        or summary.get("collection_attempt") != ctx["group"]["identity"]["collection_attempt"]
+        or summary.get("formal_sft_adapter_fingerprint") != ctx["group"]["identity"]["pre_update_policy_fingerprint"]
+        or summary.get("production_merged_checkpoint_fingerprint") != ctx["group"]["merged_checkpoint_fingerprint"]
+        or summary.get("software_versions") != {k: ctx["identity"]["software_versions"][k]
+                                                for k in ("torch", "transformers", "peft", "verl")}
+        or summary.get("token_count") != len(prior_forensic) or len(tokens) != len(prior_forensic)):
+        raise ValueError("v4.5.3 precision summary lineage/count/software mismatch")
+    keys = ("global_trainable_index", "rollout_index", "step_index", "response_token_position", "token_id")
+    for old, record in zip(prior_forensic, tokens, strict=True):
+        if (any(record.get(k) != old[k] for k in keys) or record.get("formal_rl_initialization_allowed") is not False
+            or any(not math.isfinite(record[k]) for k in ("dynamic_peft_logprob", "production_merge_logprob", "fp32_merge_bf16_logprob"))):
+            raise ValueError("v4.5.3 token order/IDs/finite values mismatch")
+    for name, (a, b) in PAIRS.items():
+        if summary["comparisons"].get(name) != handoff.pair_metrics([r[a] for r in tokens], [r[b] for r in tokens]):
+            raise ValueError("v4.5.3 metrics do not match token artifact")
+    return summary, tokens
+
+
+def analyze_fp32_tokens(rows, prior_forensic, prior_precision, dynamic, production, bf16, dynamic_fp32,
+                        merged_fp32, *, top_n):
+    tokens, analysis = analyze_tokens(rows, prior_forensic, dynamic, production, bf16, top_n=top_n)
+    for field, values in (("dynamic_fp32_logprob", dynamic_fp32), ("merged_fp32_logprob", merged_fp32)):
+        if values is None:
+            flat = [None] * len(tokens)
+        else:
+            if len(values) != len(rows) or any(len(v) != len(r["responses"]) for r, v in zip(rows, values, strict=True)):
+                raise ValueError("FP32 sampled-token row count/length mismatch")
+            flat = [v[pos] for r, v in zip(rows, values, strict=True) for pos, mask in enumerate(r["response_mask"]) if mask == 1]
+            if not all(math.isfinite(v) for v in flat): raise ValueError("nonfinite FP32 sampled logprobs")
+        for record, value in zip(tokens, flat, strict=True): record.update(FP32_META); record[field] = value
+    for name, (a, b) in FP32_PAIRS.items():
+        available = all(r[a] is not None and r[b] is not None for r in tokens)
+        analysis["comparisons"][name] = handoff.pair_metrics([r[a] for r in tokens], [r[b] for r in tokens]) if available else None
+        for r in tokens: r[name + "_diff"] = r[a] - r[b] if available else None
+    if len(prior_precision) != len(tokens): raise ValueError("v4.5.3 repeated token count mismatch")
+    repeats = {}
+    for name, (a, b) in PAIRS.items():
+        old = handoff.pair_metrics([r[a] for r in prior_precision], [r[b] for r in prior_precision])
+        current = analysis["comparisons"][name]
+        repeats[name] = {k: current[k] - old[k] for k in old}
+    bf16_repeat = handoff.pair_metrics([r["fp32_merge_bf16_logprob"] for r in tokens],
+                                      [r["fp32_merge_bf16_logprob"] for r in prior_precision])
+    old_pair = handoff.pair_metrics([r["dynamic_peft_logprob"] for r in prior_precision],
+                                   [r["fp32_merge_bf16_logprob"] for r in prior_precision])
+    # Diagnostic repeat-integrity guard, NOT a Gate threshold or PASS criterion.
+    limits = {"mean_abs": max(.1, 4 * old_pair["mean_abs_logprob_diff"]),
+              "max_abs": max(1., 4 * old_pair["max_abs_logprob_diff"])}
+    if bf16_repeat["mean_abs_logprob_diff"] > limits["mean_abs"] or bf16_repeat["max_abs_logprob_diff"] > limits["max_abs"]:
+        raise ValueError("gross B1 repeat regression versus v4.5.3; diagnostic cannot be interpreted")
+    analysis.update(repeat_delta_vs_v453=repeats, b1_repeat_logprob_delta=bf16_repeat, b1_gross_repeat_guard=limits)
+    analysis["comparisons"] = {**{alias: analysis["comparisons"][old] for alias, old in BF16_PAIR_ALIASES.items()},
+                               **analysis["comparisons"]}
+    for token in tokens:
+        for alias, old in BF16_PAIR_ALIASES.items(): token[alias + "_diff"] = token[old + "_diff"]
+    return tokens, analysis
+
+
+def weight_representation_stats(bf16_path, fp32_path, module_stats, *, expected_layers=36):
+    import torch
+    report = weight_compare_stats(bf16_path, fp32_path, expected_layers=expected_layers,
+                                 dtypes=(torch.bfloat16, torch.float32))
+    deltas = {(r["layer_index"], r["target_suffix"]): r for r in module_stats["per_module"]}
+    for row in report["per_module"]:
+        delta = deltas[(row["layer_index"], row["target_suffix"])]
+        row.update(mean_abs_representation_error=row["mean_abs_weight_diff"],
+                   max_abs_representation_error=row["max_abs_weight_diff"],
+                   mean_relative_to_lora_delta=row["mean_abs_weight_diff"] / delta["delta_abs_mean"] if delta["delta_abs_mean"] else None,
+                   max_relative_to_lora_delta=row["max_abs_weight_diff"] / delta["delta_abs_max"] if delta["delta_abs_max"] else None)
+    for suffix, row in report["by_suffix"].items():
+        delta = module_stats["by_suffix"][suffix]
+        row.update(mean_abs_representation_error=row["mean_abs_weight_diff"],
+                   max_abs_representation_error=row["max_abs_weight_diff"],
+                   mean_relative_to_lora_delta=row["mean_abs_weight_diff"] / delta["delta_mean_abs"] if delta["delta_mean_abs"] else None,
+                   max_relative_to_lora_delta=row["max_abs_weight_diff"] / delta["delta_max_abs"] if delta["delta_max_abs"] else None)
+    return report
+
+
+def bf16_forward_audit(model, rows, directory, *, device, audit):
+    """Observe real model/tower inputs without changing the v4.5.2 forward."""
+    import torch
+    audit.update(parameter_dtypes=dtype_counts(model), forward_autocast_enabled=device.type == "cuda",
+                 forward_autocast_dtype="torch.bfloat16" if device.type == "cuda" else None,
+                 forward_device=str(device), attention_backend=model.config._attn_implementation,
+                 resolved_attention=attention_backend_audit(model))
+    def pre(module, args, kwargs):
+        audit.setdefault("rows", []).append({k: str(v.dtype) for k, v in kwargs.items() if isinstance(v, torch.Tensor)})
+    handles = [model.register_forward_pre_hook(pre, with_kwargs=True)]
+    for name, module in model.named_modules():
+        if name.rsplit(".", 1)[-1] == "visual":
+            def tower_pre(module, args, kwargs):
+                audit.setdefault("vision_tower_input_dtypes", []).append([str(v.dtype) for v in _floating_tensors((args, kwargs))])
+            handles.append(module.register_forward_pre_hook(tower_pre, with_kwargs=True))
+    try: return handoff.forward_rows(model, rows, directory, device=device)
+    finally:
+        for handle in handles: handle.remove()
+
+
+def run_fp32_forward_diagnostic(args, root):
+    """v4.5.4 entry: original BF16 baselines plus explicit FP32 support evidence."""
+    os.environ["HF_HUB_OFFLINE"] = "1"; os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    output, reports = handoff.diagnostic_paths(root, args.run_id)
+    destination = reports / "fp32_merged_forward_diagnostic"
+    if not destination.resolve().is_relative_to((root / "reports/rl_gate_c").absolute()):
+        raise ValueError("FP32 report path escapes permitted tree")
+    if destination.exists(): raise FileExistsError("existing FP32 diagnostic protected; overwrite forbidden")
+    adapter = root / "outputs/sft_main_imageid_v3/checkpoint-3k/adapter"
+    trees = [output, args.base_model_path, adapter, root / "configs", reports / "policy_handoff_diagnostic", reports / "merge_precision_diagnostic"]
+    files = [reports / "gate_c_report.json", adapter.parent / "metadata.json", root / "configs/rl_main.yaml", root / "configs/sft_main_imageid_v3.yaml"]
+    before = handoff.source_checksums(trees, files)
+    destination.mkdir(parents=True, exist_ok=False)
+    stage, analysis, status, merge_audits = "artifact_validation", {}, {}, {}
+    try:
+        ctx = handoff.validate_attempt(root, args.run_id, args.base_model_path)
+        prior, _ = load_previous_forensic(ctx)
+        old_summary, old_tokens = load_previous_precision(ctx, prior)
+        import torch
+        if int(os.environ.get("WORLD_SIZE", "1")) != 1 or not torch.cuda.is_available() or torch.cuda.device_count() != 1 or not torch.cuda.is_bf16_supported():
+            raise RuntimeError("FP32 diagnostic requires one visible BF16 CUDA GPU, no distributed launch")
+        versions = {name: importlib.metadata.version(name) for name in ("torch", "transformers", "peft", "verl")}
+        if versions != {k: ctx["identity"]["software_versions"][k] for k in versions} or versions["verl"] != "0.6.1":
+            raise ValueError("FP32 diagnostic software differs from historical environment")
+        backend = ctx["sft"]["model"]["attn_implementation"]
+        if backend != "flash_attention_2": raise ValueError("primary FP32 diagnostic requires the original FA2 backend")
+        torch.cuda.set_device(0); device = torch.device("cuda", 0)
+        results, audits, memory, destroyed, paths = {}, {}, {}, {}, {}
+        module_stats = None
+        # Local model lifetime management: never retain one model while loading another.
+        for kind in ("A0", "B0", "B1", "A2", "B2"):
+            stage = kind + "_load_forward"
+            model, ref = None, None
+            torch.cuda.reset_peak_memory_stats(0)
+            audits[kind] = {}
+            try:
+                if kind in ("A0", "B0"):
+                    model = handoff.load_diagnostic_model("dynamic" if kind == "A0" else "merged", ctx, args.base_model_path, device)
+                elif kind == "B1":
+                    model, paths[kind], module_stats, merge_audits[kind] = diagnostic_fp32_merge(ctx, args.base_model_path,
+                        destination, device, checkpoint_name="tmp_fp32_merge_bf16", record_merge_source=True)
+                elif kind == "A2":
+                    model = load_dynamic_fp32(ctx, args.base_model_path, device=device)
+                else:
+                    # Reload on CPU is mandatory; GPU residency starts only after publication.
+                    model, paths[kind], _, merge_audits[kind] = diagnostic_fp32_merge(ctx, args.base_model_path,
+                        destination, device, serialized_dtype="fp32", checkpoint_name="tmp_fp32_merge_fp32", record_merge_source=True)
+                    if merge_audits["B1"]["pre_cast_merge_source_fingerprint"] != merge_audits[kind]["pre_cast_merge_source_fingerprint"]:
+                        raise ValueError("B1/B2 repeated CPU FP32 merge state differs")
+                ref = weakref.ref(model)
+                if kind == "A0": audits[kind]["lora_targets"] = lora_dtype_audit(model)
+                if kind in ("A0", "B0", "B1"):
+                    results[kind] = bf16_forward_audit(model, ctx["rows"], output / "group", device=device, audit=audits[kind])
+                else:
+                    if kind == "A2": audits[kind]["lora_targets"] = lora_dtype_audit(model)
+                    status[kind], first = probe_fp32_attention_support(model, ctx["rows"], output / "group", device=device, audit=audits[kind])
+                    results[kind] = None if first is None else first + forward_rows_fp32(model, ctx["rows"][1:], output / "group", device=device, audit=audits[kind])
+            except Exception as exc:
+                if kind not in ("A2", "B2") or not fp32_backend_unsupported(exc): raise
+                status[kind] = unsupported_status(exc, stage=stage); results[kind] = None
+            finally:
+                del model; gc.collect(); torch.cuda.empty_cache()
+            destroyed[kind] = ref is None or ref() is None
+            if not destroyed[kind]: raise RuntimeError(f"{kind} model still alive before next variant")
+            memory[kind] = {"peak_allocated_bytes": torch.cuda.max_memory_allocated(0), "peak_reserved_bytes": torch.cuda.max_memory_reserved(0)}
+        stage = "weight_token_analysis"
+        tokens, analysis = analyze_fp32_tokens(ctx["rows"], prior, old_tokens, results["A0"], results["B0"], results["B1"],
+                                               results["A2"], results["B2"], top_n=args.top_n)
+        if len(tokens) != ctx["alignment"]["masked_token_count"]: raise ValueError("FP32 diagnostic token selection changed")
+        weights = {"production_vs_fp32_merge_bf16": weight_compare_stats(ctx["merged"], paths["B1"]),
+                   "bf16_representation": None, "production_vs_fp32_merge_fp32": None}
+        if "B2" in paths:
+            weights["bf16_representation"] = weight_representation_stats(paths["B1"], paths["B2"], module_stats)
+            weights["production_vs_fp32_merge_fp32"] = weight_compare_stats(ctx["merged"], paths["B2"], dtypes=(torch.bfloat16, torch.float32))
+        secondary = None
+        if getattr(args, "allow_sdpa_fp32_secondary", False):
+            stage = "explicit_sdpa_secondary"
+            secondary = {"secondary_backend_changed": True, "exploratory_only": True, "excluded_from_primary_metrics": True,
+                         "attention_backend": "sdpa", "variants": {}, "comparisons": {}}
+            for kind in ("A2", "B2"):
+                if kind == "B2" and "B2" not in paths:
+                    secondary["variants"][kind] = {"supported": False, "reason": "no reload-validated FP32 checkpoint"}; continue
+                torch.cuda.reset_peak_memory_stats(0)
+                model = (load_dynamic_fp32(ctx, args.base_model_path, device=device, attention_backend="sdpa") if kind == "A2"
+                    else load_fp32_merged_model(paths[kind], ctx, device=device, attention_backend="sdpa"))
+                ref = weakref.ref(model); audit = {}
+                try:
+                    values = forward_rows_fp32(model, ctx["rows"], output / "group", device=device, audit=audit)
+                finally:
+                    del model; gc.collect(); torch.cuda.empty_cache()
+                if ref() is not None: raise RuntimeError("secondary model lifetime overlap")
+                secondary["variants"][kind] = {"supported": True, "dtype_audit": audit}
+                results[kind + "_secondary"] = values
+                memory[kind + "_sdpa_secondary"] = {"peak_allocated_bytes": torch.cuda.max_memory_allocated(0), "peak_reserved_bytes": torch.cuda.max_memory_reserved(0)}
+            if all(k + "_secondary" in results for k in ("A2", "B2")):
+                def flatten(values): return [v[p] for r, v in zip(ctx["rows"], values, strict=True) for p, mask in enumerate(r["response_mask"]) if mask == 1]
+                secondary["comparisons"]["dynamic_fp32_vs_merged_fp32_sdpa"] = handoff.pair_metrics(flatten(results["A2_secondary"]), flatten(results["B2_secondary"]))
+        stage = "report_publication"
+        deleted = cleanup_models(destination, keep=args.keep_diagnostic_model)
+        after = handoff.source_checksums(trees, files); handoff.assert_sources_unchanged(before, after)
+        supported = all(status[kind]["supported"] for kind in ("A2", "B2"))
+        summary = {**FP32_META, "execution_succeeded": True, "gate_run_id": args.run_id, "token_count": len(tokens),
+            "collection_attempt": ctx["group"]["identity"]["collection_attempt"], "software_versions": versions,
+            "formal_sft_adapter_fingerprint": ctx["group"]["identity"]["pre_update_policy_fingerprint"],
+            "production_merged_checkpoint_fingerprint": ctx["group"]["merged_checkpoint_fingerprint"],
+            "base_model": BASE_MODEL, "base_revision": BASE_REVISION, "temperature": .7,
+            "variants": {"A0": "dynamic_peft_bf16", "B0": str(ctx["merged"]), "B1": str(paths["B1"]),
+                         "A2": "dynamic_peft_fp32", "B2": str(paths.get("B2", "not published"))},
+            "fp32_same_backend_supported": supported, "primary_fp32_forward_available": supported,
+            "fp32_variant_support": status, "fp32_support_asymmetric": status["A2"]["supported"] != status["B2"]["supported"],
+            "variant_dtype_audits": audits, "merge_dtypes": merge_audits, "shared_fp32_merge_source": False,
+            "merge_repeat_count": 2, "merge_determinism": {"scope": "pre-final-cast entire CPU state_dict (names/shapes/dtypes/bytes)",
+                "equal": "B2" in merge_audits and merge_audits["B1"]["pre_cast_merge_source_fingerprint"] == merge_audits["B2"]["pre_cast_merge_source_fingerprint"]},
+            "models_destroyed": destroyed, "peak_gpu_memory": memory, **analysis,
+            "prior_v453_comparisons": old_summary["comparisons"], "secondary": secondary,
+            "module_merge_stats_summary": module_stats["by_suffix"], "source_artifacts_unchanged": True,
+            "diagnostic_model_kept": args.keep_diagnostic_model, "deleted_temporary_model_directories": deleted,
+            "interpretation": "Measurements only; unsupported FP32 is evidence, not arithmetic/representation separation or Gate PASS."}
+        atomic_json(destination / "weight_representation_stats.json", {**FP32_META, **weights})
+        atomic_json(destination / "module_merge_stats.json", {**FP32_META, **module_stats})
+        atomic_json(destination / "source_checksums.json", {**FP32_META, "before": before, "after": after})
+        with (destination / "token_diagnostics.jsonl").open("x", encoding="utf-8", newline="\n") as stream:
+            for token in tokens: stream.write(json.dumps(token, ensure_ascii=True, allow_nan=False) + "\n")
+            stream.flush(); os.fsync(stream.fileno())
+        atomic_json(destination / "summary.json", summary)
+        print(f"TOKENS: {len(tokens)}")
+        for name, metrics in analysis["comparisons"].items():
+            if name in BF16_PAIR_ALIASES.values(): continue  # print canonical names once, retain compatibility keys in JSON
+            if metrics is not None: print(f"{name}: mean_abs={metrics['mean_abs_logprob_diff']:.9g} max_abs={metrics['max_abs_logprob_diff']:.9g} clip={metrics['clip_fraction_0p8_1p28']:.9g}")
+        print(f"FP32 SAME BACKEND SUPPORTED: {str(supported).lower()}")
+        for kind, support in status.items():
+            if not support["supported"]: print(f"{kind} reason: {support['error_type']}: {support['error_message']}")
+        print("REPEAT DELTA VS V453: " + json.dumps(analysis["repeat_delta_vs_v453"]))
+        print(f"REPORT: {destination / 'summary.json'}")
+        if deleted: print("Deleted diagnostic-only temporary model directories: " + ", ".join(deleted))
+        return 0
+    except BaseException as exc:
+        cleanup_error = None
+        try: deleted = cleanup_models(destination, keep=args.keep_diagnostic_model)
+        except BaseException as error: deleted = []; cleanup_error = str(error)
+        try:
+            after = handoff.source_checksums(trees, files); handoff.assert_sources_unchanged(before, after); unchanged = True
+        except BaseException as error:
+            unchanged = False; exc = RuntimeError(f"{exc}; source integrity failure: {error}")
+        atomic_json(destination / "summary.json", {**FP32_META, "execution_succeeded": False, "gate_run_id": args.run_id,
+            "stage": stage, "error": str(exc), "source_artifacts_unchanged": unchanged,
+            "partial_comparisons": analysis.get("comparisons", {}), "fp32_variant_support": status,
             "deleted_temporary_model_directories": deleted, "cleanup_error": cleanup_error})
         raise exc
