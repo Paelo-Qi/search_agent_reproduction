@@ -9,6 +9,10 @@ LoRA execution versions are unchanged. Gate A/B/C retain their orchestration.
 The supplied AutoDL Gate C PASS is accepted as a runtime fact; without those
 artifacts we do not claim its memory, timing, stage details or JSON examples.
 
+The subsequent isolated [S2 GPU validation entrypoint](rl_formal_s2_gpu_validation.md)
+wraps these unchanged APIs for two diagnostic K=2/n=2 windows on two GPU ranks.
+It is not S3 or a Smoke20 trainer; CPU completion does not establish GPU PASS.
+
 ## Dataplane APIs, not a training entry point
 
 In `rl/formal_policy_update.py`:
