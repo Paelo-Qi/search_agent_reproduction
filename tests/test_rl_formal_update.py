@@ -647,18 +647,43 @@ def test_saved_attention_preserved_without_retokenization(ctx):
     assert data.batch["attention_mask"][0, :6].tolist() == [0, 0, 0, 0, 0, 1]
 
 
-def test_real_transformers_qwen_mrope_method_without_loading_model(ctx):
+def test_real_transformers_qwen_mrope_method_without_loading_model(monkeypatch):
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModel
-    from types import MethodType
-    # Real installed method, tiny metadata-only self; no Qwen weights constructed.
-    rope = SimpleNamespace(config=SimpleNamespace(vision_config=SimpleNamespace(spatial_merge_size=2)))
-    rope.get_vision_position_ids = MethodType(Qwen3VLModel.get_vision_position_ids, rope)
-    rope.get_rope_index = MethodType(Qwen3VLModel.get_rope_index, rope)
-    data, _ = batches.build_rank_local_dataproto(ctx.window, ctx.run, ctx.loaded.policy, ctx.groups, ctx.reward,
-        group_directories=ctx.directories, rank=0, model=SimpleNamespace(get_base_model=lambda: SimpleNamespace(model=rope)),
-        pad_id=0, temperature=.7)
-    assert data.batch["position_ids"].shape == (8, 3, 9)
-    assert data.batch["position_ids"].device.type == "cpu"
+
+    assert hasattr(Qwen3VLModel, "get_rope_index")
+    def forbid_weights(*args, **kwargs):
+        pytest.fail("M-RoPE regression must not initialize or load Qwen weights")
+    monkeypatch.setattr(Qwen3VLModel, "__init__", forbid_weights)
+    monkeypatch.setattr(Qwen3VLModel, "from_pretrained", forbid_weights)
+    # Metadata-only self: bypass Qwen __init__, retaining installed class methods.
+    # This needs no version-specific helper binding (4.57.1 computes M-RoPE inline).
+    rope = Qwen3VLModel.__new__(Qwen3VLModel)
+    torch.nn.Module.__init__(rope)
+    rope.config = SimpleNamespace(vision_config=SimpleNamespace(spatial_merge_size=2),
+        image_token_id=103, video_token_id=104, vision_start_token_id=101)
+    assert not list(rope.parameters()) and not list(rope.children())
+    assert rope.get_rope_index.__func__ is Qwen3VLModel.get_rope_index
+
+    # One image: 4x4 patches / merge_size=2 -> four image placeholders (2x2).
+    # Prefix and suffix include ordinary text and vision boundary tokens.
+    ids = torch.tensor([[11, 101, 103, 103, 103, 103, 102, 12]], dtype=torch.long)
+    kwargs = dict(input_ids=ids, image_grid_thw=torch.tensor([[1, 4, 4]], dtype=torch.long),
+                  attention_mask=torch.ones_like(ids))
+    # Same signature-aware modality handling as formal training_batch.py.
+    # Pinned 4.57.1 uses the special IDs above; newer installed APIs also need types.
+    if "mm_token_type_ids" in inspect.signature(rope.get_rope_index).parameters:
+        kwargs["mm_token_type_ids"] = torch.tensor([[0, 0, 1, 1, 1, 1, 0, 0]], dtype=torch.long)
+    positions, deltas = rope.get_rope_index(**kwargs)
+    assert isinstance(positions, torch.Tensor) and positions.shape == (3, 1, ids.shape[-1])
+    assert isinstance(deltas, torch.Tensor) and deltas.shape == (1, 1)
+    for tensor in (positions, deltas):
+        assert tensor.device.type == "cpu" and tensor.dtype == torch.long
+        assert bool(torch.isfinite(tensor).all())
+    assert bool((positions >= 0).all())
+    # Distinct height/width axes prove the real visual branch ran, not text arange.
+    assert positions[:, 0, 2:6].tolist() == [[2, 2, 2, 2], [2, 2, 3, 3], [2, 3, 2, 3]]
+    assert positions[:, 0, [0, 1, 6, 7]].tolist() == [[0, 1, 4, 5]] * 3
+    assert deltas.tolist() == [[-2]]
 
 
 @pytest.mark.parametrize("field", ["optimizer_state_sha256", "native_rng_sha256", "parameter_sha256"])
