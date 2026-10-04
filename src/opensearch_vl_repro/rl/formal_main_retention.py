@@ -229,7 +229,7 @@ def disk_accounting(root, *, previous_peak=0, report_root=None):
         return sum(p.stat().st_size for p in Path(path).rglob("*") if p.is_file())
     report_bytes = size(report_root) if report_root is not None else 0
     current = size(root) + report_bytes
-    checkpoints = [p for p in (root / "checkpoints").glob("policy-*") if p.is_dir()]
+    checkpoints = sorted(p for p in (root / "checkpoints").glob("policy-*") if p.is_dir())
     compacted = [p.name for p in checkpoints if receipt_path(root, "compact", int(p.name[7:])).exists()]
     return dict(current_run_bytes=current, report_bytes=report_bytes, free_filesystem_bytes=shutil.disk_usage(root).free,
         retained_full_checkpoints=[p.name for p in checkpoints if p.name not in compacted],

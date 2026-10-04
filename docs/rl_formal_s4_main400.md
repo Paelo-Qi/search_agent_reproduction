@@ -22,7 +22,7 @@ fatal semantics, live tools and judges are unchanged. The shared S2 production
 update method performs official verl RLOO, O/C, LoRA change/match, native
 model/AdamW/RNG save and destructive fresh multimodal reload.
 
-`formal-s4-main400-v2` binds ordered source identities, frozen data/manifest and
+`formal-s4-main400-v3` binds ordered source identities, frozen data/manifest and
 config hashes, SFT lineage, pinned offline base, software/source hashes,
 algorithm/rollout/reward/tool contracts, seed, retention contract/milestones and
 seed scheme. Every member's seed is `initial_seed + 4*global_position + index`.
@@ -33,12 +33,14 @@ verl 0.6.1, vLLM 0.11.0, rLLM 0.2.1, with installed FA2/source identities bound.
 ### Main-only context budget (no truncation)
 
 The rollout identity additionally binds `remaining-context-no-truncation-v1`.
-Frozen numeric settings stay `max_model_len=8192`, `max_new_tokens=512`.
+Main's independent `formal_main.MAIN_ROLLOUT` uses `max_model_len=16384`;
+`max_new_tokens=512` and all other rollout/training parameters stay unchanged.
 After FULL HF multimodal processing (`truncation=False`), each call gets
-`min(current_sampling.max_tokens, 8192 - processor_token_length)` tokens.
+`min(current_sampling.max_tokens, 16384 - processor_token_length)` tokens.
 Only a deep copy of that call's SamplingParams changes; all other fields,
 member seeds, exact prompt IDs and saved vision tensors remain unchanged.
-Gate B/C and S3 opt out by default and retain their strict fixed-budget check.
+Gate B/C and S3 remain at 8192, opt out by default and retain their strict
+fixed-budget check. CLI locators cannot override the frozen Main ceiling.
 
 If real generation ends with `finish_reason=length`, the unchanged pinned
 rLLM MultiTurnWorkflow produces `max_response_length_exceeded`. If a later
@@ -51,10 +53,19 @@ Generation receipts and captured Step info include requested/effective token
 budgets, remaining context, policy and context-limited flag. Exhaustion
 diagnostics are also persisted in episode/trajectory metadata.
 
-The first-window `formal-main400-s4-attempt1` failed under old v1 behavior;
-retain it as forensic evidence. Its sealed identity is incompatible with v2:
-do not resume, migrate or edit it. Start a NEW `formal-main400-s4-attempt2`.
-This patch is CPU/static validated only, NOT Main400 4xA800 GPU/API PASS.
+The user reports that `formal-main400-s4-attempt2` first-window runtime path
+completed, but 8k training-quality acceptance FAILED: 10/16 (62.5%) members
+were context-fatal (`max_response_length_exceeded`), versus six `env_done`.
+Observed processor prompt lengths were roughly 9k--12.3k (8968--12263).
+Nine of the ten fatal members had final advantage zero after the unchanged
+fatal clamp. These are supplied runtime/audit conclusions; AutoDL artifacts
+are not local, and no additional stage details, memory or timings are inferred.
+
+Retain attempt1 (v1) and attempt2 (v2/8k) as forensic evidence. Their sealed
+identities are incompatible with v3/16k: do not resume, migrate or edit them.
+Start a NEW `formal-main400-s4-attempt3` from the ORIGINAL SFT checkpoint-3k;
+never inherit attempt2 policy1. The context-budget policy version stays v1.
+This patch is CPU/static validated only, NOT attempt3 4xA800 GPU/API PASS.
 
 ## Exclusive process lifecycle and resume
 
@@ -112,6 +123,9 @@ floor, with 18 GiB merge and 32 GiB update staging headroom. Disk reports show
 current/free bytes (outputs plus this run's reports/logs), full/compacted checkpoints, active merges, groups and
 observed peak across resumes (phase-boundary observations, not continuous
 filesystem telemetry). Provision extra headroom if actual group sizes demand it.
+Disk-accounting full/compacted checkpoint lists are sorted by zero-padded
+policy name, independently of filesystem enumeration order; retention and
+compaction authorization rules are unchanged.
 
 ## Next AutoDL acceptance: REAL run, pause after window 1
 
@@ -128,7 +142,7 @@ export RL_SOURCE_PARQUET="$RL_SOURCE_ROOT/rl_data.parquet"
 export RL_BASE_SNAPSHOT=/absolute/path/to/pinned/Qwen3-VL-4B-Instruct
 
 MAIN_ARGS=(
-  --run-id formal-main400-s4-attempt2
+  --run-id formal-main400-s4-attempt3
   --config configs/rl_main.yaml --data data/rl/main400.json
   --source-root "$RL_SOURCE_ROOT" --source-parquet "$RL_SOURCE_PARQUET"
   --base-model-path "$RL_BASE_SNAPSHOT"
@@ -164,13 +178,10 @@ may claim Main400 runtime PASS.
 
 ```bash
 PYTHONPATH=src python -m pytest tests/test_rl_context_budget.py \
-  tests/test_rl_gate_b.py tests/test_rl_gate_c.py tests/test_rl_rollout_sync.py \
-  tests/test_rl_workflow_adapter.py tests/test_rl_formal_s4_main.py \
-  tests/test_rl_formal_s3_smoke.py tests/test_rl_formal_contracts.py \
-  tests/test_rl_formal_update.py tests/test_rl_formal_s2_validation.py \
-  tests/test_rl_run_state.py tests/test_rl_group.py tests/test_rl_rloo.py \
-  tests/test_rl_training_batch.py tests/test_rl_reward_judges.py \
+  tests/test_rl_formal_s4_main.py \
   -o addopts= -q -p no:cacheprovider
-PYTHONPATH=src python -m pytest -o addopts= -q -p no:cacheprovider
 git diff --check
 ```
+
+This 16k/ordering patch runs targeted tests ONLY. Full pytest is deferred until
+the user reviews the diff; it is not part of this development invocation.

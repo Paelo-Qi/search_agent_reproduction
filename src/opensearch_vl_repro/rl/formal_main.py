@@ -16,7 +16,9 @@ from .run_state import (advance_update_attempt, checkpoint_policy, persist_updat
 from .training_window import build_training_window, expected_window_prompts
 from .context_budget import CONTEXT_BUDGET_POLICY
 
-VERSION = "formal-s4-main400-v2"
+VERSION = "formal-s4-main400-v3"
+MAIN_ROLLOUT = copy.deepcopy(ROLLOUT)
+MAIN_ROLLOUT["max_model_len"] = 16384
 SEED_SCHEME = "initial_seed+n*global_prompt_position+rollout_index-v1"
 
 
@@ -31,7 +33,7 @@ def require_main_run(run):
             or s["require_complete_windows"] is not True or s["weighting"] != cp.FORMAL_WEIGHTING
             or s["dataset"]["split"] != "main" or s.get("diagnostic_version")
             or s.get("retention") != retention.CONTRACT or s.get("rollout_seed_scheme") != SEED_SCHEME
-            or s["rollout"] != dict(behavior_version=VERSION, context_budget_policy=CONTEXT_BUDGET_POLICY, config=ROLLOUT)
+            or s["rollout"] != dict(behavior_version=VERSION, context_budget_policy=CONTEXT_BUDGET_POLICY, config=MAIN_ROLLOUT)
             or s["optimizer"] != dict(name="AdamW", learning_rate=1e-6, weight_decay=0.)
             or s["ppo"] != dict(epochs=1, microbatch=1, clip_ratio_low=.2, clip_ratio_high=.28,
                                 entropy=0., loss_mode="vanilla")
@@ -143,7 +145,7 @@ def prepare_context(args, root):
         source_sft=dict(adapter_sha256=lineage.sft_adapter_fingerprint, metadata_sha256=lineage.sft_checkpoint_metadata_fingerprint,
                         stage=lineage.sft_stage, lineage=list(lineage.sft_lineage)),
         execution_contract=execution_contract(canonical), rollout=dict(behavior_version=VERSION,
-            context_budget_policy=CONTEXT_BUDGET_POLICY, config=copy.deepcopy(ROLLOUT)),
+            context_budget_policy=CONTEXT_BUDGET_POLICY, config=copy.deepcopy(MAIN_ROLLOUT)),
         rollout_n=4, groups_per_window=4, require_complete_windows=True, weighting=cp.FORMAL_WEIGHTING,
         optimizer=dict(name="AdamW", learning_rate=1e-6, weight_decay=0.),
         ppo=dict(epochs=1, microbatch=1, clip_ratio_low=.2, clip_ratio_high=.28, entropy=0., loss_mode="vanilla"),

@@ -41,7 +41,7 @@ def main_run():
     s["source_sft"]["stage"] = "main_b_2k"
     s["base_model"] = dict(name=BASE_MODEL, revision=BASE_REVISION, offline_snapshot_sha256=digest("snapshot"))
     s["rollout"] = dict(behavior_version=main.VERSION, context_budget_policy=main.CONTEXT_BUDGET_POLICY,
-                        config=copy.deepcopy(main.ROLLOUT))
+                        config=copy.deepcopy(main.MAIN_ROLLOUT))
     return cp.build_training_run_identity("main-cpu-fixture", semantics=s,
         prompt_ids=original["prompt_ids"], prompt_sources=original["prompt_sources"])
 
@@ -141,20 +141,36 @@ def test_exact_main_identity_and_cli():
 
 
 def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
-    assert main.VERSION == "formal-s4-main400-v2"
+    assert main.VERSION == "formal-s4-main400-v3"
     assert smoke.VERSION == "formal-s3-smoke20-v1"
+    assert smoke.ROLLOUT["max_model_len"] == 8192
+    assert main.MAIN_ROLLOUT is not smoke.ROLLOUT
+    assert main.MAIN_ROLLOUT == {**smoke.ROLLOUT, "max_model_len": 16384}
+    from opensearch_vl_repro.rl.rollout_gate import load_rollout_gate_config
+    from opensearch_vl_repro.rl.gate_c import load_gate_c_config
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    assert load_rollout_gate_config(config_root / "rl_gate_b.yaml")["vllm"]["max_model_len"] == 8192
+    assert load_gate_c_config(config_root / "rl_gate_c.yaml")["vllm"]["max_model_len"] == 8192
     rollout = ctx.run["semantics"]["rollout"]
     assert rollout["context_budget_policy"] == "remaining-context-no-truncation-v1"
-    assert rollout["config"]["max_model_len"] == 8192
-    assert rollout["config"]["max_new_tokens"] == 512
+    assert rollout["config"] == dict(temperature=.7, top_p=1., top_k=-1,
+        max_new_tokens=512, max_model_len=16384, tensor_parallel_size=1,
+        gpu_memory_utilization=.6, max_turns=16, logprobs_mode="processed_logprobs")
+    assert "config=copy.deepcopy(MAIN_ROLLOUT)" in inspect.getsource(main.prepare_context)
     assert "context_budget_policy=CONTEXT_BUDGET_POLICY" in inspect.getsource(collection.run_collection_worker)
     from opensearch_vl_repro.rl.formal_collection import run_collection
     assert "context_budget_policy=" not in inspect.getsource(run_collection)
-    for case in ("old", "missing", "changed"):
+    for case in ("v1", "v2", "8k", "missing", "changed"):
         semantics = copy.deepcopy(ctx.run["semantics"])
-        if case == "old":
+        if case == "v1":
             semantics["coordinator_version"] = "formal-s4-main400-v1"
             semantics["rollout"] = dict(behavior_version="formal-s4-main400-v1", config=copy.deepcopy(main.ROLLOUT))
+        elif case == "v2":
+            semantics["coordinator_version"] = "formal-s4-main400-v2"
+            semantics["rollout"] = dict(behavior_version="formal-s4-main400-v2",
+                context_budget_policy=main.CONTEXT_BUDGET_POLICY, config=copy.deepcopy(smoke.ROLLOUT))
+        elif case == "8k":
+            semantics["rollout"]["config"]["max_model_len"] = 8192
         elif case == "missing":
             del semantics["rollout"]["context_budget_policy"]
         else:
@@ -162,8 +178,63 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
         foreign = cp.build_training_run_identity(ctx.run["run_id"], semantics=semantics,
             prompt_ids=ctx.run["prompt_ids"], prompt_sources=ctx.run["prompt_sources"])
         assert foreign["run_identity_sha256"] != ctx.run["run_identity_sha256"]
+        assert digest(foreign["semantics"]["rollout"]) != digest(rollout)
         with pytest.raises(ValueError): main.require_main_run(foreign)
         with pytest.raises(ValueError): main.recover_main(ctx.output, foreign, cpu_fixture=True)
+
+
+@pytest.mark.parametrize("kind,ceiling", [("main", 16384), ("smoke", 8192)])
+def test_collection_backend_receives_its_frozen_context(ctx, monkeypatch, kind, ceiling):
+    """Exercise real worker setup, but stop at a mocked backend constructor."""
+    import torch
+    from PIL import Image
+    from opensearch_vl_repro.agent import phase3_registry
+    from opensearch_vl_repro.evaluation import judge
+    from opensearch_vl_repro.rl import formal_collection, rollout_gate
+    from test_rl_formal_s3_smoke import smoke_run
+    module = collection if kind == "main" else formal_collection
+    run = ctx.run if kind == "main" else smoke_run()
+    if kind == "smoke":
+        run = cp.build_training_run_identity(run["run_id"],
+            semantics={**run["semantics"], "initial_seed": 20260506},
+            prompt_ids=run["prompt_ids"], prompt_sources=run["prompt_sources"])
+    ctx.args.prompt_id = run["prompt_ids"][0]
+    row = dict(prompt_id=ctx.args.prompt_id, source_sample_id=ctx.args.prompt_id, question="CPU fixture")
+    config = dict(run=run, records=[row], canonical={}, versions={})
+    monkeypatch.setattr(module, "prepare_context", lambda *a: config)
+    recovery = dict(policy=fixture_policy(run), missing_prompts=[ctx.args.prompt_id])
+    monkeypatch.setattr(module, "recover_main" if kind == "main" else "recover_smoke", lambda *a, **kw: recovery)
+    monkeypatch.setattr(module, "main_paths" if kind == "main" else "smoke_paths", lambda *a: (ctx.output, ctx.reports))
+    merged = ctx.output / "merges" / "policy-000000"
+    merged.mkdir()
+    if kind == "main":
+        monkeypatch.setattr(module, "require_single_gpu", lambda: None)
+        monkeypatch.setattr(module, "read_shared_merge", lambda *a: (merged, {}))
+    else:
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+        monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+        monkeypatch.setattr(torch.cuda, "set_device", lambda *a: None)
+        monkeypatch.setattr(module, "validate_formal_handoff", lambda *a: (merged, dict(formal_binding={})))
+        monkeypatch.setattr(module, "verify_formal_merge", lambda *a: dict(identity={}))
+        monkeypatch.setattr(module, "load_source_images", lambda *a: [Image.new("RGB", (8, 6))])
+    monkeypatch.setattr(phase3_registry, "create_phase3_tool_registry", lambda **kw: rollout_gate.create_gate_tool_registry())
+    monkeypatch.setattr(judge, "load_judge_config", lambda *a: None)
+    monkeypatch.setattr(judge, "DeepSeekJudge", lambda *a: None)
+    durable_json = cp.durable_json
+    monkeypatch.setattr(cp, "durable_json", lambda path, value: durable_json(path, value, cpu_fixture=True))
+    received = []
+    def backend(**kwargs):
+        received.append(kwargs)
+        raise RuntimeError("CPU fixture: stop before backend/model initialization")
+    monkeypatch.setattr(rollout_gate, "VLLMStaticBackend", backend)
+    with pytest.raises(RuntimeError, match="CPU fixture: stop"):
+        (module.run_collection_worker if kind == "main" else module.run_collection)(ctx.args, ctx.root)
+    assert len(received) == 1
+    assert received[0]["gate"]["vllm"]["max_model_len"] == ceiling
+    assert received[0]["gate"]["vllm"]["max_new_tokens"] == 512
+    assert received[0]["gate"]["agent"]["max_turns"] == 16
+    assert received[0].get("context_budget_policy") == (main.CONTEXT_BUDGET_POLICY if kind == "main" else None)
 
 
 @pytest.mark.parametrize("field,value", [("rollout_n", 2), ("world_size", 2), ("groups_per_window", 2),
@@ -498,6 +569,26 @@ def test_disk_accounting_and_limit_floor(ctx):
     with_reports = retention.disk_accounting(ctx.output, report_root=ctx.reports)
     assert with_reports["current_run_bytes"] == disk["current_run_bytes"] + len(b"audit log")
     assert with_reports["report_bytes"] == len(b"audit log")
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_disk_accounting_sorts_full_and_compacted_checkpoints(ctx, monkeypatch, reverse):
+    order = [50, 2, 25, 1, 75, 100]
+    paths = [ctx.output / "checkpoints" / f"policy-{i:06d}" for i in order]
+    for path in paths: path.mkdir()
+    for i in (2, 1):
+        receipt = retention.receipt_path(ctx.output, "compact", i)
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text("CPU disk-accounting fixture only", encoding="utf-8")
+    glob = Path.glob
+    def scrambled_glob(path, pattern, **kwargs):
+        if path == ctx.output / "checkpoints" and pattern == "policy-*":
+            return iter(reversed(paths) if reverse else paths)
+        return glob(path, pattern, **kwargs)
+    monkeypatch.setattr(Path, "glob", scrambled_glob)
+    disk = retention.disk_accounting(ctx.output)
+    assert disk["retained_full_checkpoints"] == [f"policy-{i:06d}" for i in (25, 50, 75, 100)]
+    assert disk["compacted_checkpoints"] == ["policy-000001", "policy-000002"]
 
 
 def fixture_runners(ctx, *, provider_failure=False):
