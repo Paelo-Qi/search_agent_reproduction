@@ -495,6 +495,21 @@ def fixture_runners(ctx, *, provider_failure=False):
     return single, parallel, calls
 
 
+def test_successful_collection_event_records_elapsed_timing(ctx):
+    ctx.args.stop_after_window = 1
+    single, parallel, _ = fixture_runners(ctx)
+    report = coordinator.orchestrate(ctx.args, ctx.root, dict(run=ctx.run), single, parallel, cpu_fixture=True)
+    events = [event for event in report["subprocesses"] if event["phase"] == "collect"]
+    assert len(events) == 1
+    event = events[0]
+    assert event["phase"] == "collect"
+    assert type(event["elapsed_seconds"]) is float and event["elapsed_seconds"] >= 0
+    assert event["prompts"] == ctx.run["prompt_ids"][:4]
+    assert event["exit_codes"] == [0, 0, 0, 0]
+    persisted = json.loads((ctx.reports / "report.json").read_text())
+    assert event in persisted["subprocesses"]
+
+
 def test_first_real_boundary_fixture_pause_resume_same_run(ctx):
     ctx.args.stop_after_window = 1
     single, parallel, calls = fixture_runners(ctx)

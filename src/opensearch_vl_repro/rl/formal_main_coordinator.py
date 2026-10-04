@@ -136,8 +136,10 @@ def orchestrate(args, root, ctx, single=None, parallel=None, *, cpu_fixture=Fals
                         write("running")
                         jobs = [dict(command=worker_command(args, root, "collect", prompt=p), env=worker_environment(gpu),
                                      log=reports / f"{len(events):04d}-collect-{run['prompt_ids'].index(p):04d}.log") for p, gpu in wave]
+                        before = time.monotonic()
                         codes = parallel(jobs, cwd=root)
-                        events.append(dict(phase="collect", prompts=[p for p, _ in wave], exit_codes=codes))
+                        events.append(dict(phase="collect", prompts=[p for p, _ in wave], exit_codes=codes,
+                                           elapsed_seconds=time.monotonic() - before))
                         if len(codes) != len(jobs) or any(code != 0 for code in codes) or getattr(parallel, "active", False):
                             raise RuntimeError("Main collection wave failed; peers reaped; update forbidden")
                     recovered = recover_main(output, run, cpu_fixture=cpu_fixture)
