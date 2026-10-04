@@ -165,7 +165,8 @@ def require_plain_merged_model(model: Any, peft_class: Any) -> None:
 def merge_actor_adapter(*, base_snapshot: Path, adapter: Path, actor: dict[str, Any],
                         sft_config: dict[str, Any], output: Path, versions: dict[str, str],
                         validation_messages: list[dict[str, Any]], tools: list[dict[str, Any]],
-                        on_stage: Callable[[str], None] | None = None) -> dict[str, Any]:
+                        on_stage: Callable[[str], None] | None = None,
+                        identity_builder: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
     """Reusable static handoff; publish a complete merged folder only after reload."""
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -237,7 +238,9 @@ def merge_actor_adapter(*, base_snapshot: Path, adapter: Path, actor: dict[str, 
         raise RuntimeError("fresh validation HF model was not destroyed before vLLM")
     if adapter_file_identity(adapter)["adapter_fingerprint"] != actor["actor_adapter_fingerprint"]:
         raise ValueError("source actor adapter was modified during merge")
-    identity = merge_identity(actor=actor, versions=versions, file_hashes=file_hashes)
+    # Gate callers retain their exact provenance. Formal S3 supplies its own
+    # verified-checkpoint-aware identity builder, sharing ONLY the weight merge.
+    identity = (identity_builder or merge_identity)(actor=actor, versions=versions, file_hashes=file_hashes)
     manifest = {"identity": identity, "actor_provenance": actor, "created_at_unix": time.time(),
                 "merge_complete": True, "fresh_hf_forward_finite": True, "no_active_peft": True,
                 "merge_hf_destroyed": True, "reload_hf_destroyed": True}

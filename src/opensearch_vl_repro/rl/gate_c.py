@@ -31,6 +31,7 @@ from opensearch_vl_repro.rl.rollout_gate import (
 from opensearch_vl_repro.rl.rollout_sync import merge_actor_adapter, validate_actor_adapter
 from opensearch_vl_repro.rl.offline_snapshot import offline_snapshot_files
 from opensearch_vl_repro.rl.workflow_adapter import build_rllm_workflow
+from opensearch_vl_repro.rl.rollout_inputs import model_task, load_source_images
 from opensearch_vl_repro.rl.data import safe_image_relpath, question_sha256
 from opensearch_vl_repro.rl.workflow_types import RLInfrastructureError
 from opensearch_vl_repro.sft_tool_audit import sha256_file
@@ -96,32 +97,6 @@ def validate_gate_b(path, source_fingerprint):
         raise ValueError("Gate B prerequisite/source lineage PASS missing or inconsistent")
     return {"manifest_sha256": sha256_file(path), "merged_checkpoint_fingerprint": value["merged_checkpoint_fingerprint"],
             "source_sft_adapter_fingerprint": source_fingerprint, "evidence_only_not_rl_initialization": True}
-
-
-def model_task(row, images):
-    if "trajectory_group_id" in row or row.get("prompt_id") != row.get("source_sample_id"):
-        raise ValueError("prepared data must contain source identity, not runtime group identity")
-    # Explicit allowlist, never a copy of the reward/source record.
-    return {"sample_id": row["source_sample_id"], "question": row["question"], "images": images}
-
-
-def load_source_images(row, root):
-    root = root.resolve()
-    if row.get("question_hash") != question_sha256(row["question"]):
-        raise ValueError("frozen question identity mismatch")
-    if len(row["image_relpaths"]) != len(row["image_hashes"]) or not row["image_relpaths"]:
-        raise ValueError("source image identities missing")
-    images = []
-    for name, digest in zip(row["image_relpaths"], row["image_hashes"], strict=True):
-        path = (root / safe_image_relpath(name)).resolve()
-        if not path.is_relative_to(root) or not path.is_file():
-            raise FileNotFoundError("source image missing/escaping root")
-        with Image.open(path) as loaded:
-            image = loaded.convert("RGB").copy()
-        if image_sha256(image) != digest:
-            raise ValueError("source image fingerprint mismatch")
-        images.append(image)
-    return images
 
 
 def prepare_context(args, root):
