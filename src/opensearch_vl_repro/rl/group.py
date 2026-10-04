@@ -90,8 +90,38 @@ def read_group(directory: Path):
 
 
 @contextmanager
-def run_lock(path: Path):
-    """OS advisory lock, released on process death; no stale-lock bypass."""
+def _windows_blocking_lock(stream):
+    """True OS wait, unlike CRT LK_LOCK's bounded one-second retries."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class Overlapped(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
+                    ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
+                    ("hEvent", wintypes.HANDLE)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                 wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(Overlapped)]
+    kernel.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.DWORD, ctypes.POINTER(Overlapped)]
+    kernel.LockFileEx.restype = kernel.UnlockFileEx.restype = wintypes.BOOL
+    handle, offset = msvcrt.get_osfhandle(stream.fileno()), Overlapped()
+    # Exclusive byte-zero lock, without LOCKFILE_FAIL_IMMEDIATELY. The stream's
+    # synchronous handle waits in the kernel; file close/process death releases it.
+    if not kernel.LockFileEx(handle, 2, 0, 1, 0, ctypes.byref(offset)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        yield
+    finally:
+        if not kernel.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(offset)):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
+@contextmanager
+def run_lock(path: Path, *, blocking=False):
+    """Fail-fast OS advisory lock by default; publication can explicitly wait."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as stream:
         if os.name == "nt":
@@ -100,10 +130,15 @@ def run_lock(path: Path):
                 stream.write(b"0")
                 stream.flush()
             stream.seek(0)
+            if blocking:
+                with _windows_blocking_lock(stream):
+                    yield
+                return
             msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+            fcntl.flock(stream.fileno(), flags)
         try:
             yield
         finally:
@@ -187,7 +222,7 @@ def publish_formal_group(staging, destination, group, *, cpu_fixture=False):
     validate_formal_group(group)
     if destination.name != group["identity"]["trajectory_group_id"]:
         raise ValueError("formal group destination must match immutable identity")
-    with run_lock(destination.parent / ".publication.lock"):
+    with run_lock(destination.parent / ".publication.lock", blocking=True):
         payload = seal({**group, "committed": True, "file_sha256": artifact_inventory(staging),
                         "evidence_scope": "cpu_fixture" if cpu_fixture else "runtime"}, "group_payload_sha256")
         validate_formal_group(payload, committed=True)

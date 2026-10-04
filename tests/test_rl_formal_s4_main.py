@@ -141,7 +141,7 @@ def test_exact_main_identity_and_cli():
 
 
 def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
-    assert main.VERSION == "formal-s4-main400-v3"
+    assert main.VERSION == "formal-s4-main400-v4"
     assert smoke.VERSION == "formal-s3-smoke20-v1"
     assert smoke.ROLLOUT["max_model_len"] == 8192
     assert main.MAIN_ROLLOUT is not smoke.ROLLOUT
@@ -160,7 +160,7 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
     assert "context_budget_policy=CONTEXT_BUDGET_POLICY" in inspect.getsource(collection.run_collection_worker)
     from opensearch_vl_repro.rl.formal_collection import run_collection
     assert "context_budget_policy=" not in inspect.getsource(run_collection)
-    for case in ("v1", "v2", "8k", "missing", "changed"):
+    for case in ("v1", "v2", "v3", "8k", "missing", "changed"):
         semantics = copy.deepcopy(ctx.run["semantics"])
         if case == "v1":
             semantics["coordinator_version"] = "formal-s4-main400-v1"
@@ -169,6 +169,9 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
             semantics["coordinator_version"] = "formal-s4-main400-v2"
             semantics["rollout"] = dict(behavior_version="formal-s4-main400-v2",
                 context_budget_policy=main.CONTEXT_BUDGET_POLICY, config=copy.deepcopy(smoke.ROLLOUT))
+        elif case == "v3":
+            semantics["coordinator_version"] = "formal-s4-main400-v3"
+            semantics["rollout"]["behavior_version"] = "formal-s4-main400-v3"
         elif case == "8k":
             semantics["rollout"]["config"]["max_model_len"] = 8192
         elif case == "missing":

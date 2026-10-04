@@ -22,7 +22,7 @@ fatal semantics, live tools and judges are unchanged. The shared S2 production
 update method performs official verl RLOO, O/C, LoRA change/match, native
 model/AdamW/RNG save and destructive fresh multimodal reload.
 
-`formal-s4-main400-v3` binds ordered source identities, frozen data/manifest and
+`formal-s4-main400-v4` binds ordered source identities, frozen data/manifest and
 config hashes, SFT lineage, pinned offline base, software/source hashes,
 algorithm/rollout/reward/tool contracts, seed, retention contract/milestones and
 seed scheme. Every member's seed is `initial_seed + 4*global_position + index`.
@@ -61,11 +61,21 @@ Nine of the ten fatal members had final advantage zero after the unchanged
 fatal clamp. These are supplied runtime/audit conclusions; AutoDL artifacts
 are not local, and no additional stage details, memory or timings are inferred.
 
-Retain attempt1 (v1) and attempt2 (v2/8k) as forensic evidence. Their sealed
-identities are incompatible with v3/16k: do not resume, migrate or edit them.
-Start a NEW `formal-main400-s4-attempt3` from the ORIGINAL SFT checkpoint-3k;
-never inherit attempt2 policy1. The context-budget policy version stays v1.
-This patch is CPU/static validated only, NOT attempt3 4xA800 GPU/API PASS.
+The user reports that attempt3 (v3) successfully initialized Main 16k vLLM
+(`max_model_len=max_seq_len=16384`) and ran four collectors in parallel.
+Three groups committed; one collector failed at publication lock acquisition:
+the shared `groups/.publication.lock` used non-blocking `LOCK_NB` and rejected
+benign contention between different immutable group destinations. Coordinator
+correctly reaped peers and forbade update. This was NOT a 16k context failure;
+16k context remains unchanged. These are supplied forensic facts, not locally
+inspected AutoDL artifacts.
+
+Retain attempt1 (v1), attempt2 (v2/8k) and attempt3 (v3/16k) as forensic evidence.
+Their sealed identities are incompatible with v4: do not resume, migrate or edit
+them, including attempt3's three committed groups. Start a NEW
+`formal-main400-s4-attempt4` from the ORIGINAL SFT checkpoint-3k; never inherit
+an earlier attempt's policy. The context-budget policy version stays v1.
+This patch is CPU/static validated only, NOT attempt4 4xA800 GPU/API PASS.
 
 ## Exclusive process lifecycle and resume
 
@@ -77,6 +87,15 @@ and exact deletion -> fresh four-rank update -> immutable verified successor
 and verified attempt -> retention -> next window. No resident GPU actor crosses
 a phase boundary. Linux subreaper supervision tracks PID birth identities,
 reaps detached descendants and forbids the next phase if cleanup fails.
+
+Only formal group publication uses `run_lock(..., blocking=True)` to serialize
+the short inventory/seal/atomic-publication critical section. Default
+`run_lock(..., blocking=False)` remains fail-fast for coordinator, formal
+authority and Gate C locks. Linux uses blocking `flock`; Windows publication
+uses synchronous native `LockFileEx` (no sleep polling or CRT retry timeout).
+OS advisory locks release on context exit/file close/process death; stale lock
+files are never deleted. Immutable group identity, inventory, seal, atomic
+publication and resume contracts are unchanged.
 
 On any worker/provider failure, peer workers are killed/reaped and update is
 forbidden. Whole committed groups survive. Partial `.collect-UUID` forensic
@@ -142,7 +161,7 @@ export RL_SOURCE_PARQUET="$RL_SOURCE_ROOT/rl_data.parquet"
 export RL_BASE_SNAPSHOT=/absolute/path/to/pinned/Qwen3-VL-4B-Instruct
 
 MAIN_ARGS=(
-  --run-id formal-main400-s4-attempt3
+  --run-id formal-main400-s4-attempt4
   --config configs/rl_main.yaml --data data/rl/main400.json
   --source-root "$RL_SOURCE_ROOT" --source-parquet "$RL_SOURCE_PARQUET"
   --base-model-path "$RL_BASE_SNAPSHOT"
@@ -177,11 +196,11 @@ may claim Main400 runtime PASS.
 ## CPU acceptance (no model/API initialization)
 
 ```bash
-PYTHONPATH=src python -m pytest tests/test_rl_context_budget.py \
+PYTHONPATH=src python -m pytest tests/test_rl_group.py \
   tests/test_rl_formal_s4_main.py \
   -o addopts= -q -p no:cacheprovider
 git diff --check
 ```
 
-This 16k/ordering patch runs targeted tests ONLY. Full pytest is deferred until
+This publication-lock patch runs targeted tests ONLY. Full pytest is deferred until
 the user reviews the diff; it is not part of this development invocation.

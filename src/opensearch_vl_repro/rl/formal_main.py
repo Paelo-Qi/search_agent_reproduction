@@ -16,7 +16,7 @@ from .run_state import (advance_update_attempt, checkpoint_policy, persist_updat
 from .training_window import build_training_window, expected_window_prompts
 from .context_budget import CONTEXT_BUDGET_POLICY
 
-VERSION = "formal-s4-main400-v3"
+VERSION = "formal-s4-main400-v4"
 MAIN_ROLLOUT = copy.deepcopy(ROLLOUT)
 MAIN_ROLLOUT["max_model_len"] = 16384
 SEED_SCHEME = "initial_seed+n*global_prompt_position+rollout_index-v1"
