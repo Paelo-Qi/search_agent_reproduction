@@ -3,9 +3,10 @@ import copy
 import inspect
 import json
 import random
+import shutil
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +22,8 @@ from opensearch_vl_repro.rl import formal_policy_update as formal
 from opensearch_vl_repro.rl import training_batch as batches
 from opensearch_vl_repro.rl import old_logprob as old
 from opensearch_vl_repro.rl import policy_alignment as alignment
-from opensearch_vl_repro.rl.actor_gate import trainable_policy
+from opensearch_vl_repro.rl.actor_gate import BASE_MODEL, BASE_REVISION, trainable_policy
+from opensearch_vl_repro.rl.offline_snapshot import offline_snapshot_files
 from opensearch_vl_repro.rl.group import publish_formal_group
 from opensearch_vl_repro.rl.rloo import assemble_window_rloo
 from opensearch_vl_repro.rl.rl_actor_semantics import configure_rl_lora_dropout_runtime, execution_contract
@@ -64,12 +66,13 @@ class ActorConfig:
     use_rollout_log_probs: bool = True
     loss_agg_mode: str = "seq-mean-token-mean"
     use_dynamic_bsz: bool = False
+    policy_loss: dict = field(default_factory=lambda: {"loss_mode": "vanilla"})
 
 
 def export_adapter(actor, directory):
     directory.mkdir(parents=True)
     (directory / "adapter_config.json").write_text(json.dumps({"lora_dropout": .05,
-        "base_model_name_or_path": "pinned-base", "peft_type": "LORA", "r": 16,
+        "base_model_name_or_path": BASE_MODEL, "peft_type": "LORA", "r": 16,
         "lora_alpha": 32, "target_modules": sft_config()["lora"]["target_modules"]}), encoding="utf-8")
     save_file({n: p.detach().clone() for n, p in actor.actor_module.named_parameters() if p.requires_grad},
               str(directory / "adapter_model.safetensors"))
@@ -78,6 +81,7 @@ def export_adapter(actor, directory):
 class CPUActor:
     """PEFT-shaped 252-target torch model; fake actor never substitutes a production loss."""
     def __init__(self, *, config, gate, adapter, mesh):
+        self.runtime_locator = config["model"]["name_or_path"]
         torch.manual_seed(111)
         self.actor_module = model()
         params = dict(self.actor_module.named_parameters())
@@ -218,24 +222,36 @@ def publish_groups(root, run, policy, prompts, *, fatal=False, extreme_rollout=F
 @pytest.fixture
 def ctx(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "verl", SimpleNamespace(DataProto=CPUProto))
-    config = {**sft_config(), "model": dict(name_or_path="pinned-base", revision="pinned-revision",
-        freeze_vision_tower=True, freeze_multimodal_projector=True)}
+    config = {**sft_config(), "model": dict(name_or_path=BASE_MODEL, revision=BASE_REVISION,
+        freeze_vision_tower=True, freeze_multimodal_projector=True,
+        attn_implementation="flash_attention_2", dtype="bfloat16", image_max_pixels=262144)}
+    snapshot = tmp_path / "offline-snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text(json.dumps(dict(model_type="qwen3_vl",
+        text_config=dict(num_hidden_layers=36), _commit_hash=BASE_REVISION)), encoding="utf-8")
+    (snapshot / "tokenizer_config.json").write_text('{"cpu_fixture": true}', encoding="utf-8")
+    (snapshot / "model.safetensors").write_bytes(b"CPU snapshot identity fixture; not Qwen weights")
+    runtime_config = copy.deepcopy(config)
+    runtime_config["model"]["name_or_path"] = str(snapshot)
     source = tmp_path / "sft_main_imageid_v3" / "checkpoint-3k" / "adapter"
     torch.manual_seed(111)
     export_adapter(SimpleNamespace(actor_module=model()), source)
-    metadata = dict(checkpoint_complete=True, stage_complete=True, model="pinned-base", model_revision="pinned-revision",
+    metadata = dict(checkpoint_complete=True, stage_complete=True, model=BASE_MODEL, model_revision=BASE_REVISION,
         sft_input_message_version=SFT_INPUT_MESSAGE_VERSION, runtime_tool_protocol_version=RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION,
         stage="main_b_2k", lineage=["main_a_1k", "main_b_2k"],
         file_sha256={"adapter/" + k: v for k, v in adapter_file_identity(source)["file_sha256"].items()})
     (source.parent / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     template = fixture_run(world_size=1, groups_per_window=2, prompt_count=4)
     semantics = copy.deepcopy(template["semantics"])
+    semantics["base_model"] = dict(name=BASE_MODEL, revision=BASE_REVISION,
+        offline_snapshot_sha256=cp.canonical_json_sha256(offline_snapshot_files(snapshot, revision=BASE_REVISION)))
     semantics["execution_contract"] = execution_contract(config)
     semantics["source_sft"].update(adapter_sha256=adapter_file_identity(source)["adapter_fingerprint"],
         metadata_sha256=sha256_file(source.parent / "metadata.json"), lineage=metadata["lineage"], stage=metadata["stage"])
     run = cp.build_training_run_identity("s2-cpu-fixture", semantics=semantics, prompt_ids=template["prompt_ids"],
                                          prompt_sources=template["prompt_sources"])
-    loaded = formal.load_formal_actor(run, config=config, source_adapter=source, processor=None, mesh=None,
+    loaded = formal.load_formal_actor(run, canonical_config=config, runtime_config=runtime_config,
+        source_adapter=source, processor=None, mesh=None,
         initial_seed=7, construct=cpu_construct, manager_factory=CPUManager, cpu_fixture=True)
     root = tmp_path / "formal-fixture"
     cp.initialize_formal_run(root, run, loaded.policy, cpu_fixture=True)
@@ -244,7 +260,8 @@ def ctx(tmp_path, monkeypatch):
     reward = assemble_window_rloo(window, run, loaded.policy, groups, estimator=cpu_estimator)
     data, batch_receipt = batches.build_rank_local_dataproto(window, run, loaded.policy, groups, reward,
         group_directories=directories, rank=0, model=ROPE_MODEL, pad_id=0, temperature=.7)
-    return SimpleNamespace(root=root, run=run, config=config, source=source, loaded=loaded, groups=groups,
+    return SimpleNamespace(root=root, run=run, config=config, runtime_config=runtime_config, snapshot=snapshot,
+                           source=source, loaded=loaded, groups=groups,
                            directories=directories, window=window, reward=reward, data=data, batch=batch_receipt)
 
 
@@ -481,7 +498,8 @@ def test_generic_alignment_allows_unequal_tokens_and_requires_all_ranks(ctx):
 
 def test_saved_staging_roles_complete_and_fresh_native_reload_evidence(ctx):
     directory, description, result = staged(ctx)
-    fresh, evidence = formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description, config=ctx.config,
+    fresh, evidence = formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description,
+        canonical_config=ctx.config, runtime_config=ctx.runtime_config,
         processor=None, mesh=None, construct=cpu_construct, manager_factory=CPUManager)
     assert ctx.loaded.actor is None and bool(fresh.actor_optimizer.state)
     assert evidence["original_actor_destroyed"] and evidence["fresh_multimodal_forward_finite"]
@@ -493,7 +511,8 @@ def test_saved_staging_roles_complete_and_fresh_native_reload_evidence(ctx):
     cp.commit_verified_checkpoint(ctx.root, directory, manifest, cpu_fixture=True)
     successor = checkpoint_policy(manifest)
     del fresh
-    loaded = formal.load_formal_actor(ctx.run, config=ctx.config, source_adapter=ctx.source, processor=None, mesh=None,
+    loaded = formal.load_formal_actor(ctx.run, canonical_config=ctx.config, runtime_config=ctx.runtime_config,
+        source_adapter=ctx.source, processor=None, mesh=None,
         policy=successor, checkpoint_directory=ctx.root / "checkpoints/policy-000001", cpu_fixture=True,
         construct=cpu_construct, manager_factory=CPUManager)
     assert loaded.policy["global_optimizer_step"] == 1 and loaded.actor.actor_optimizer.state
@@ -512,7 +531,8 @@ def test_saved_staging_roles_complete_and_fresh_native_reload_evidence(ctx):
 @pytest.mark.parametrize("field", ["adapter_reloaded", "native_reloaded", "optimizer_reloaded", "rng_reloaded", "execution_contract_verified"])
 def test_missing_fresh_reload_evidence_cannot_commit(ctx, field):
     directory, description, result = staged(ctx)
-    fresh, evidence = formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description, config=ctx.config,
+    fresh, evidence = formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description,
+        canonical_config=ctx.config, runtime_config=ctx.runtime_config,
         processor=None, mesh=None, construct=cpu_construct, manager_factory=CPUManager)
     del evidence[field]
     with pytest.raises(ValueError, match="reload verification"):
@@ -525,7 +545,8 @@ def test_fresh_reload_requires_old_actor_destruction(ctx):
     directory, description, _ = staged(ctx)
     retained = ctx.loaded.actor
     with pytest.raises(ValueError, match="still alive"):
-        formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description, config=ctx.config,
+        formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description,
+            canonical_config=ctx.config, runtime_config=ctx.runtime_config,
             processor=None, mesh=None, construct=cpu_construct, manager_factory=CPUManager)
     assert retained.actor_optimizer.state
 
@@ -561,7 +582,8 @@ def test_updated_policy_cannot_load_adapter_without_native_checkpoint(ctx):
         "policy_iteration": 1, "global_optimizer_step": 1, "parent_checkpoint_identity": "f" * 64,
         "cumulative_consumed_group_ids": ["g"]}, "effective_policy_fingerprint")
     with pytest.raises(ValueError, match="native checkpoint"):
-        formal.load_formal_actor(ctx.run, config=ctx.config, source_adapter=ctx.source, processor=None, mesh=None,
+        formal.load_formal_actor(ctx.run, canonical_config=ctx.config, runtime_config=ctx.runtime_config,
+            source_adapter=ctx.source, processor=None, mesh=None,
             policy=bad, cpu_fixture=True, initial_seed=7, construct=cpu_construct, manager_factory=CPUManager)
 
 
@@ -572,7 +594,8 @@ def test_policy_optimizer_and_rng_identity_mismatch(ctx, identity):
     with pytest.raises(ValueError, match="policy identity"):
         formal.require_formal_reload(ctx.loaded.actor, bad, ctx.loaded.reload_receipt)
     with pytest.raises(ValueError, match="optimizer/RNG PolicyIdentity"):
-        formal.load_formal_actor(ctx.run, config=ctx.config, source_adapter=ctx.source, processor=None, mesh=None,
+        formal.load_formal_actor(ctx.run, canonical_config=ctx.config, runtime_config=ctx.runtime_config,
+            source_adapter=ctx.source, processor=None, mesh=None,
             policy=bad, initial_seed=7, cpu_fixture=True, construct=cpu_construct, manager_factory=CPUManager)
 
 
@@ -649,7 +672,8 @@ def test_fresh_reload_actual_state_mismatch_rejected(ctx, field):
     description = cp.seal({**{k: v for k, v in description.items() if k != "staging_sha256"},
         "artifact_role_files": roles, "file_sha256": files, "artifact_roles": cp.artifact_role_identities(roles, files)}, "staging_sha256")
     with pytest.raises(ValueError, match="state mismatch"):
-        formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description, config=ctx.config,
+        formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description,
+            canonical_config=ctx.config, runtime_config=ctx.runtime_config,
             processor=None, mesh=None, construct=cpu_construct, manager_factory=CPUManager)
 
 
@@ -672,3 +696,239 @@ def test_save_default_keeps_gate_global_step_one():
     from opensearch_vl_repro.rl.verl_actor_gate import save_checkpoint
     assert inspect.signature(save_checkpoint).parameters["global_step"].default == 1
     assert "global_step=global_step" in inspect.getsource(save_checkpoint)
+
+
+def initial_reload(ctx, **kwargs):
+    args = dict(canonical_config=ctx.config, runtime_config=ctx.runtime_config,
+        source_adapter=ctx.source, processor=None, mesh=None, initial_seed=7, cpu_fixture=True,
+        construct=cpu_construct, manager_factory=CPUManager)
+    args.update(kwargs)
+    return formal.load_formal_actor(ctx.run, **args)
+
+
+def relocated_runtime(ctx):
+    destination = ctx.snapshot.parent / "another-machine-snapshot"
+    shutil.copytree(ctx.snapshot, destination)
+    config = copy.deepcopy(ctx.runtime_config)
+    config["model"]["name_or_path"] = str(destination)
+    return config
+
+
+def test_canonical_identity_and_actual_runtime_locator_are_separate(ctx):
+    assert ctx.config["model"]["name_or_path"] == BASE_MODEL
+    assert ctx.loaded.actor.runtime_locator == str(ctx.snapshot)
+    assert ctx.loaded.reload_receipt.artifact["base_model"]["name"] == BASE_MODEL
+    assert ctx.loaded.reload_receipt.artifact["base_model"]["revision"] == BASE_REVISION
+    formal.require_formal_reload(ctx.loaded.actor, ctx.loaded.policy, ctx.loaded.reload_receipt)
+    assert str(ctx.snapshot) not in json.dumps(ctx.run["semantics"])
+    assert str(ctx.snapshot) not in json.dumps(ctx.loaded.policy)
+    # Runtime config is never an acceptable canonical identity, even when run is unchanged.
+    with pytest.raises(ValueError, match="canonical"):
+        initial_reload(ctx, canonical_config=ctx.runtime_config)
+
+
+def test_relocated_identical_snapshot_preserves_run_behavior_and_policy_identities(ctx):
+    runtime_config = relocated_runtime(ctx)
+    run = cp.build_training_run_identity(ctx.run["run_id"], semantics=ctx.run["semantics"],
+        prompt_ids=ctx.run["prompt_ids"], prompt_sources=ctx.run["prompt_sources"],
+        locators={"base_snapshot": runtime_config["model"]["name_or_path"]})
+    cp.require_same_training_run(ctx.run, run)
+    assert run["run_identity_sha256"] == ctx.run["run_identity_sha256"]
+    assert run["training_behavior_fingerprint"] == ctx.run["training_behavior_fingerprint"]
+    loaded = formal.load_formal_actor(run, canonical_config=ctx.config, runtime_config=runtime_config,
+        source_adapter=ctx.source, processor=None, mesh=None, initial_seed=7, cpu_fixture=True,
+        construct=cpu_construct, manager_factory=CPUManager)
+    assert loaded.policy == ctx.loaded.policy
+    assert loaded.actor.runtime_locator == runtime_config["model"]["name_or_path"]
+    formal.require_formal_reload(loaded.actor, loaded.policy, loaded.reload_receipt)
+
+
+@pytest.mark.parametrize("file", ["model.safetensors", "tokenizer_config.json", "new_config.json"])
+def test_snapshot_content_mutation_fails_before_construction(ctx, file):
+    (ctx.snapshot / file).write_bytes(b'{}')
+    constructed = []
+    with pytest.raises(ValueError, match="snapshot content identity"):
+        initial_reload(ctx, construct=lambda **kw: constructed.append(kw))
+    assert not constructed
+
+
+def test_snapshot_mutation_after_load_revokes_live_update_capability(ctx):
+    (ctx.snapshot / "model.safetensors").write_bytes(b"changed snapshot")
+    with pytest.raises(ValueError, match="files/execution identity changed"):
+        update(ctx)
+    assert ctx.loaded.actor.update_calls == 0 and not ctx.loaded.actor.actor_optimizer.state
+
+
+@pytest.mark.parametrize("case", ["model_type", "layers", "commit", "null_commit", "weights", "empty_weights",
+                                  "missing_config", "missing_directory"])
+def test_invalid_offline_snapshot_fails_closed(ctx, case):
+    config_path = ctx.snapshot / "config.json"
+    value = json.loads(config_path.read_text())
+    if case == "model_type":
+        value["model_type"] = "qwen3"
+    elif case == "layers":
+        value["text_config"]["num_hidden_layers"] = 32
+    elif case == "commit":
+        value["_commit_hash"] = "different-revision"
+    elif case == "null_commit":
+        value["_commit_hash"] = None
+    if case in {"model_type", "layers", "commit", "null_commit"}:
+        config_path.write_text(json.dumps(value))
+    elif case == "weights":
+        (ctx.snapshot / "model.safetensors").unlink()
+    elif case == "empty_weights":
+        (ctx.snapshot / "model.safetensors").write_bytes(b"")
+    elif case == "missing_config":
+        config_path.unlink()
+    else:
+        ctx.runtime_config["model"]["name_or_path"] = str(ctx.snapshot / "does-not-exist")
+    with pytest.raises(ValueError, match="offline|snapshot|revision"):
+        initial_reload(ctx)
+
+
+def test_snapshot_without_declared_commit_is_content_bound_not_directory_name(ctx):
+    path = ctx.snapshot / "config.json"
+    value = json.loads(path.read_text())
+    del value["_commit_hash"]
+    path.write_text(json.dumps(value))
+    semantics = copy.deepcopy(ctx.run["semantics"])
+    semantics["base_model"]["offline_snapshot_sha256"] = cp.canonical_json_sha256(
+        offline_snapshot_files(ctx.snapshot, revision=BASE_REVISION, strict=True))
+    run = cp.build_training_run_identity(ctx.run["run_id"], semantics=semantics,
+        prompt_ids=ctx.run["prompt_ids"], prompt_sources=ctx.run["prompt_sources"])
+    loaded = formal.load_formal_actor(run, canonical_config=ctx.config, runtime_config=ctx.runtime_config,
+        source_adapter=ctx.source, processor=None, mesh=None, initial_seed=7, cpu_fixture=True,
+        construct=cpu_construct, manager_factory=CPUManager)
+    assert loaded.policy["effective_policy_fingerprint"] != ctx.loaded.policy["effective_policy_fingerprint"]
+    assert run["run_identity_sha256"] != ctx.run["run_identity_sha256"]
+    assert run["training_behavior_fingerprint"] != ctx.run["training_behavior_fingerprint"]
+
+
+@pytest.mark.parametrize("field,value", [("revision", "wrong"), ("attn_implementation", "sdpa"),
+    ("image_max_pixels", 524288), ("dtype", "float32"), ("freeze_vision_tower", False),
+    ("freeze_multimodal_projector", False), ("lora.rank", 8), ("lora.dropout", .0),
+    ("other_training_semantic", "changed")])
+def test_runtime_semantics_cannot_drift_except_locator(ctx, field, value):
+    runtime = copy.deepcopy(ctx.runtime_config)
+    if field.startswith("lora."):
+        runtime["lora"][field.split(".")[1]] = value
+    else:
+        runtime["model"][field] = value
+    with pytest.raises(ValueError, match="beyond snapshot locator"):
+        initial_reload(ctx, runtime_config=runtime)
+
+
+def test_runtime_semantic_comparison_is_order_independent_but_typed(ctx):
+    runtime = dict(reversed(list(ctx.runtime_config.items())))
+    runtime["model"] = dict(reversed(list(runtime["model"].items())))
+    loaded = initial_reload(ctx, runtime_config=runtime)
+    assert loaded.policy == ctx.loaded.policy
+    runtime["model"]["freeze_vision_tower"] = 1  # int is not the frozen boolean.
+    with pytest.raises(ValueError, match="beyond snapshot locator"):
+        initial_reload(ctx, runtime_config=runtime)
+
+
+def test_iteration_zero_lineage_uses_canonical_config_and_rejects_gate_source(ctx, monkeypatch):
+    observed = []
+    original = cp.build_rl_lineage
+    def lineage(**kwargs):
+        observed.append(copy.deepcopy(kwargs["sft_config"]))
+        return original(**kwargs)
+    monkeypatch.setattr(cp, "build_rl_lineage", lineage)
+    initial_reload(ctx)
+    assert observed == [ctx.config]
+    gate_source = ctx.snapshot.parent / "gate-adapter-copy" / "adapter"
+    shutil.copytree(ctx.source.parent, gate_source.parent)
+    with pytest.raises(ValueError, match="Gate artifacts forbidden"):
+        initial_reload(ctx, source_adapter=gate_source)
+
+
+def test_unbound_snapshot_run_cannot_be_silently_upgraded(ctx):
+    semantics = copy.deepcopy(ctx.run["semantics"])
+    del semantics["base_model"]["offline_snapshot_sha256"]
+    run = cp.build_training_run_identity(ctx.run["run_id"], semantics=semantics,
+        prompt_ids=ctx.run["prompt_ids"], prompt_sources=ctx.run["prompt_sources"])
+    cp.validate_training_run_identity(run)  # S1 backwards compatibility unchanged.
+    with pytest.raises(ValueError, match="SHA256 identity required"):
+        formal.load_formal_actor(run, canonical_config=ctx.config, runtime_config=ctx.runtime_config,
+            source_adapter=ctx.source, processor=None, mesh=None, initial_seed=7, cpu_fixture=True,
+            construct=cpu_construct, manager_factory=CPUManager)
+
+
+def test_fresh_reload_and_native_continuation_use_validated_relocated_snapshot(ctx):
+    directory, description, result = staged(ctx)
+    runtime = relocated_runtime(ctx)
+    canonical = copy.deepcopy(ctx.config)
+    canonical["model"]["revision"] = "wrong"
+    with pytest.raises(ValueError, match="canonical"):
+        formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description,
+            canonical_config=canonical, runtime_config=runtime, processor=None, mesh=None,
+            construct=cpu_construct, manager_factory=CPUManager)
+    assert ctx.loaded.actor is not None  # fail BEFORE destruction/construction.
+    fresh, evidence = formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description,
+        canonical_config=ctx.config, runtime_config=runtime, processor=None, mesh=None,
+        construct=cpu_construct, manager_factory=CPUManager)
+    assert fresh.runtime_locator == runtime["model"]["name_or_path"]
+    assert evidence["offline_snapshot_sha256"] == ctx.run["semantics"]["base_model"]["offline_snapshot_sha256"]
+    assert "another-machine-snapshot" not in json.dumps(evidence)
+    del fresh
+    manifest = cp.build_checkpoint_manifest(ctx.run, ctx.loaded.policy, ctx.groups, ctx.window,
+        result["attempt"], ctx.reward, artifact_role_files=description["artifact_role_files"],
+        file_sha256=description["file_sha256"], kind="smoke_continuation", reload_evidence=evidence, cpu_fixture=True)
+    cp.commit_verified_checkpoint(ctx.root, directory, manifest, cpu_fixture=True)
+    successor = checkpoint_policy(manifest)
+    options = dict(source_adapter=ctx.source, processor=None, mesh=None, policy=successor,
+        checkpoint_directory=ctx.root / "checkpoints/policy-000001", cpu_fixture=True,
+        construct=cpu_construct, manager_factory=CPUManager)
+    with pytest.raises(ValueError, match="canonical"):
+        formal.load_formal_actor(ctx.run, canonical_config=canonical, runtime_config=runtime, **options)
+    run = cp.build_training_run_identity(ctx.run["run_id"], semantics=ctx.run["semantics"],
+        prompt_ids=ctx.run["prompt_ids"], prompt_sources=ctx.run["prompt_sources"],
+        locators={"base_snapshot": runtime["model"]["name_or_path"]})
+    loaded = formal.load_formal_actor(run, canonical_config=ctx.config, runtime_config=runtime, **options)
+    assert loaded.policy == successor and loaded.actor.runtime_locator == runtime["model"]["name_or_path"]
+    formal.require_formal_reload(loaded.actor, successor, loaded.reload_receipt)
+    (Path(runtime["model"]["name_or_path"]) / "model.safetensors").write_bytes(b"changed continuation base")
+    with pytest.raises(ValueError, match="snapshot content identity"):
+        formal.load_formal_actor(run, canonical_config=ctx.config, runtime_config=runtime, **options)
+
+
+def test_fresh_reload_rejects_changed_snapshot_before_destroying_old_actor(ctx):
+    directory, description, _ = staged(ctx)
+    (ctx.snapshot / "model.safetensors").write_bytes(b"changed snapshot")
+    with pytest.raises(ValueError, match="snapshot content identity"):
+        formal.fresh_reload_staging(ctx.loaded, ctx.data, directory, description,
+            canonical_config=ctx.config, runtime_config=ctx.runtime_config, processor=None, mesh=None,
+            construct=cpu_construct, manager_factory=CPUManager)
+    assert ctx.loaded.actor is not None
+
+
+def test_vanilla_loss_explicitly_allowed(ctx):
+    formal._require_update_config(SimpleNamespace(config=ActorConfig()), 1)
+    result = update(ctx)
+    assert result["after_step"] == 1 and ctx.loaded.actor.update_calls == 1
+
+
+@pytest.mark.parametrize("mode", ["gpg", "rollout_correction", "clip_cov", "other", None])
+def test_nonvanilla_or_implicit_loss_fails_before_optimizer(ctx, mode):
+    actor = ctx.loaded.actor
+    actor.config.policy_loss = {} if mode is None else {"loss_mode": mode}
+    with pytest.raises(ValueError, match="explicitly be vanilla"):
+        update(ctx)
+    assert actor.update_calls == actor.calls == 0
+    assert not actor.actor_optimizer.state and not list((ctx.root / "attempts").glob("*/*started.json"))
+
+
+@pytest.mark.parametrize("policy_loss", [None, "vanilla", SimpleNamespace(loss_mode="vanilla")])
+def test_missing_or_wrong_type_loss_config_fails_closed(policy_loss):
+    config = ActorConfig(policy_loss=policy_loss)
+    with pytest.raises(ValueError, match="explicitly be vanilla"):
+        formal._require_update_config(SimpleNamespace(config=config), 1)
+
+
+def test_shared_snapshot_validator_preserves_gate_file_identity(ctx):
+    from opensearch_vl_repro.rl import gate_c
+    assert gate_c.offline_snapshot_files is offline_snapshot_files
+    assert offline_snapshot_files(ctx.snapshot, revision=BASE_REVISION) == {
+        path.name: sha256_file(path) for path in sorted(ctx.snapshot.iterdir())
+        if path.is_file() and path.suffix in {".json", ".safetensors"}}

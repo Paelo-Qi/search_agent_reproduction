@@ -1,6 +1,7 @@
 # Formal RL S2: production update primitives
 
 Status: **FORMAL RL S2 UPDATE PRIMITIVES COMPLETE** (CPU contracts only).
+S2.1: **FORMAL RL S2.1 OFFLINE LOCATOR HARDENING COMPLETE** (CPU contracts only).
 Not Smoke20 ready, not GPU verified, not formal training PASS. No coordinator,
 collector, run CLI, rollout/API/Judge execution, scheduler or final PASS manifest
 is introduced. Frozen configs, data, reward/RLOO/fatal semantics, membership and
@@ -112,6 +113,72 @@ actual distributed FSDP2 gradient equivalence is still an AutoDL requirement.
 
 ## Continuation and reload authority
 
+### S2.1 canonical identity vs offline runtime locator
+
+Both `load_formal_actor` and `fresh_reload_staging` require explicit
+`canonical_config` and `runtime_config`. Canonical identity is always
+`Qwen/Qwen3-VL-4B-Instruct` at revision
+`ebb281ec70b05090aa6165b016eac8ec08e71b17`; it is used for execution-contract,
+original SFT/adapter lineage and run/policy validation. Actual actor construction
+receives the runtime config, whose `model.name_or_path` is a local snapshot.
+Every other config field must equal the canonical config, including revision,
+LoRA, FA2, image limits, freeze flags and other training settings. No config or
+source adapter is rewritten by these primitives.
+
+`offline_snapshot_files` is the CPU-only validator extracted from Gate C, whose
+existing checks and relative file-map identity remain unchanged. Formal callers
+use `strict=True`: directory and `config.json` must exist, model type must be
+`qwen3_vl`, text layers must be 36, a present `_commit_hash` must equal the pinned
+revision, and `model*.safetensors` must exist and be nonempty. All root-level
+JSON and safetensors files are hashed in deterministic filename order. An
+absent `_commit_hash` is not guessed from the directory name: canonical revision
+and the already-frozen content digest remain mandatory.
+
+Before creating the S1 run/policy anchor or collecting any groups, the caller
+binds the validated file-map digest in the existing extensible S1 semantics:
+
+```python
+from copy import deepcopy
+from opensearch_vl_repro.eval_subset import canonical_json_sha256
+from opensearch_vl_repro.rl.offline_snapshot import offline_snapshot_files
+
+# canonical_config is the unchanged formal SFT configuration.
+files = offline_snapshot_files(local_snapshot, revision=canonical_config["model"]["revision"], strict=True)
+semantics["base_model"] = {
+    "name": canonical_config["model"]["name_or_path"],
+    "revision": canonical_config["model"]["revision"],
+    "offline_snapshot_sha256": canonical_json_sha256(files),
+}
+# Build the S1 run with these semantics; absolute paths may live in locators only.
+runtime_config = deepcopy(canonical_config)
+runtime_config["model"]["name_or_path"] = str(local_snapshot)
+# load_formal_actor(run, canonical_config=canonical_config,
+#                   runtime_config=runtime_config, ...)
+# fresh_reload_staging(..., canonical_config=canonical_config,
+#                      runtime_config=runtime_config, ...)
+```
+
+No S1 schema/version change is needed: all semantic fields already participate
+in `training_behavior_fingerprint` and `run_identity_sha256`; the base content
+digest also reaches initial native and policy identity. Identical snapshot
+contents in two directories therefore preserve logical identities. Different
+contents, missing binding, noncanonical base/revision, or non-locator runtime
+drift fail closed before construction. Previously unbound S1 run identities
+remain schema-valid for historical/control-plane use, but S2.1 refuses to load
+them; it never silently reseals/upgrades an existing run anchor. Bind the content
+in a new authoritative run before collecting groups.
+
+The in-process reload receipt includes snapshot files in its live, local source
+inventory, so later file mutation also invalidates update authority. Its local
+inventory digest is **not** a run, training-behavior or policy fingerprint.
+Fresh verification revalidates the content binding before destroying the old
+actor and again before issuing evidence; it also checks the original canonical
+config hash. N>0 reload validates the same canonical/base-content binding and
+uses the same validated runtime locator. Verified checkpoint run comparison uses
+the existing S1 semantic identity check, not machine-specific locator equality.
+Only original complete formal checkpoint-3k SFT is valid at iteration zero;
+relocating a base snapshot does not authorize a Gate/diagnostic adapter.
+
 Iteration zero loads the original complete checkpoint-3k SFT adapter using the
 existing full RL/SFT lineage validator: base/revision, exact source adapter and
 metadata hashes, stage completion, LoRA and lineage must match run semantics.
@@ -169,6 +236,12 @@ and actual AdamW step `before+1` are required; no scheduler is constructed.
 Any ambiguous failure leaves no consumption/policy advancement and requires
 S1 rollback from the verified parent, never reuse of uncertain memory.
 
+S2.1 additionally requires explicit `actor.config.policy_loss.loss_mode ==
+"vanilla"`, using pinned verl 0.6.1's `policy_loss.get` field. Missing/implicit
+mode, `gpg`, `rollout_correction`, `clip_cov` and any other mode fail before O/C
+or optimizer execution. The guard runs again at the final update boundary; it
+does not change PPO loss implementation, frozen clipping or reduction semantics.
+
 Source and exported `adapter_config.json` keep dropout **0.05**; only live RL
 Dropout modules use **0.0**. Both existing execution-version constants stay
 unchanged. Gate empty-optimizer/source-SFT/two-identical-rank contracts remain.
@@ -206,6 +279,9 @@ equivalence, capability and transaction failures, and the installed real Qwen
 M-RoPE method on metadata-only self (no Qwen model construction). Installed
 PEFT tiny-model regressions are included in existing actor-semantics tests.
 Local verl is absent; production imports/execution are not claimed tested.
+S2.1 tests additionally cover canonical/local separation, content-bound directory
+relocation, changed/missing/invalid snapshots, original canonical SFT lineage,
+native continuation/fresh reload, non-locator drift and explicit vanilla loss.
 
 Pending AutoDL: real FSDP2 distributed gradients, real multi-rank native
 optimizer/RNG reload, actual Qwen multimodal residency/VRAM, GPU O/C numerics.

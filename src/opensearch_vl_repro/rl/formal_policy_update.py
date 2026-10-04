@@ -5,6 +5,7 @@ manager. Explicit CPU fixtures cannot issue runtime checkpoint evidence.
 """
 from __future__ import annotations
 
+import copy
 import gc
 import json
 import math
@@ -16,9 +17,11 @@ from pathlib import Path
 from opensearch_vl_repro.eval_subset import canonical_json_sha256
 from .checkpoint import (
     artifact_inventory, artifact_role_identities, check_seal, durable_json, initial_policy,
-    read_verified_checkpoint, seal, validate_policy, validate_training_run_identity, verify_artifacts,
+    read_verified_checkpoint, require_digest, require_same_training_run, seal, validate_policy,
+    validate_training_run_identity, verify_artifacts,
 )
 from .old_logprob import fingerprint, parameter_fingerprint, rng_fingerprint
+from .offline_snapshot import offline_snapshot_files
 from .rl_actor_semantics import (
     configure_rl_lora_dropout_runtime, contract_sft_config, execution_contract,
     require_rl_lora_dropout_runtime, require_saved_source_dropout,
@@ -139,6 +142,41 @@ def _require_update_config(actor, local_row_count):
         use_kl_loss=False, use_rollout_log_probs=True, loss_agg_mode="seq-mean-token-mean", use_dynamic_bsz=False)
     if any(getattr(actor.config, k, None) != v for k, v in expected.items()):
         raise ValueError("formal one-window actor reduction/update configuration changed")
+    # Pinned verl 0.6.1 dispatches via policy_loss.get("loss_mode", "vanilla").
+    # Require the explicit mode, not its implicit fallback or another loss family.
+    policy_loss = getattr(actor.config, "policy_loss", None)
+    get_mode = getattr(policy_loss, "get", None)
+    if not callable(get_mode) or get_mode("loss_mode") != "vanilla":
+        raise ValueError("formal policy_loss.loss_mode must explicitly be vanilla")
+
+
+def validated_runtime_snapshot(*, canonical_config, runtime_config, base_model, contract):
+    """Only name_or_path may differ; bind offline bytes to existing S1 semantics.
+
+    Does not mutate/reseal a run. The caller MUST bind the validated content hash
+    before establishing its run/policy anchor or collecting any rollout groups.
+    """
+    from .actor_gate import BASE_MODEL, BASE_REVISION
+    if (base_model.get("name") != BASE_MODEL or base_model.get("revision") != BASE_REVISION
+            or canonical_config["model"]["name_or_path"] != base_model["name"]
+            or canonical_config["model"]["revision"] != base_model["revision"]
+            or execution_contract(canonical_config) != contract):
+        raise ValueError("formal canonical base/revision/execution config identity mismatch")
+    normalized = copy.deepcopy(runtime_config)
+    locator = normalized["model"]["name_or_path"]
+    normalized["model"]["name_or_path"] = canonical_config["model"]["name_or_path"]
+    if fingerprint(normalized) != fingerprint(canonical_config):
+        raise ValueError("runtime config semantics differ from canonical config beyond snapshot locator")
+    if not isinstance(locator, str) or not locator:
+        raise ValueError("explicit local offline snapshot locator required")
+    directory = Path(locator).resolve()
+    files = offline_snapshot_files(directory, revision=base_model["revision"], strict=True)
+    # The S1 builder already hashes all base_model fields; no schema/version bump.
+    digest = base_model.get("offline_snapshot_sha256")
+    require_digest(digest)
+    if canonical_json_sha256(files) != digest:
+        raise ValueError("offline snapshot content identity differs from frozen run")
+    return directory, files
 
 
 def _defaults(construct, manager_factory, cpu_fixture):
@@ -152,9 +190,10 @@ def _defaults(construct, manager_factory, cpu_fixture):
     return construct or construct_rl_actor, manager_factory or checkpoint_manager
 
 
-def _issue_reload(actor, policy, snapshot, runtime, source_files, *, run, rank, world_size, scope):
+def _issue_reload(actor, policy, snapshot, runtime, source_files, *, run, canonical_config, rank, world_size, scope):
     artifact = seal(dict(schema_version=1, scope=scope, rank=rank, world_size=world_size,
         policy=policy, base_model=run["semantics"]["base_model"], actor_options=_options(run),
+        canonical_config_sha256=fingerprint(canonical_config),
         source_files_sha256=fingerprint(source_files),
         **{k: v for k, v in snapshot.items() if k != "rank"},
         live_rng_sha256=rng_fingerprint(), lora_dropout_runtime_sha256=runtime["lora_dropout_runtime_sha256"],
@@ -204,7 +243,7 @@ def require_formal_reload(actor, policy, receipt, *, window=None):
     return a
 
 
-def load_formal_actor(run, *, config, source_adapter, processor, mesh, policy=None,
+def load_formal_actor(run, *, canonical_config, runtime_config, source_adapter, processor, mesh, policy=None,
                       checkpoint_directory=None, initial_seed=None, cpu_fixture=False,
                       construct=None, manager_factory=None):
     """Iteration zero binds original SFT; N>0 requires S1 immutable native checkpoint.
@@ -222,9 +261,9 @@ def load_formal_actor(run, *, config, source_adapter, processor, mesh, policy=No
     rank = _rank(world, cpu_fixture)
     options = _options(run)
     base, source = run["semantics"]["base_model"], run["semantics"]["source_sft"]
-    if (config["model"]["name_or_path"] != base["name"] or config["model"]["revision"] != base["revision"]
-            or execution_contract(config) != run["semantics"]["execution_contract"]):
-        raise ValueError("formal base/revision/execution config identity mismatch")
+    snapshot_directory, snapshot_files = _boundary(lambda: validated_runtime_snapshot(
+        canonical_config=canonical_config, runtime_config=runtime_config, base_model=base,
+        contract=run["semantics"]["execution_contract"]), world, cpu_fixture)
     files, expected, manifest = {}, None, None
     if checkpoint_directory is None:
         if policy is not None and policy["policy_iteration"] != 0:
@@ -232,7 +271,7 @@ def load_formal_actor(run, *, config, source_adapter, processor, mesh, policy=No
         adapter = Path(source_adapter).resolve()
         def source_checks():
             actual = build_rl_lineage(config={"model": {"continue_from_sft_adapter": True, "sft_stage": source["stage"]}},
-                                     sft_config=config, adapter_path=adapter, run_id=run["run_id"])
+                                     sft_config=canonical_config, adapter_path=adapter, run_id=run["run_id"])
             if (actual.sft_adapter_fingerprint != source["adapter_sha256"]
                     or actual.sft_checkpoint_metadata_fingerprint != source["metadata_sha256"]
                     or actual.sft_stage != source["stage"] or adapter.parent.name != "checkpoint-3k"
@@ -249,7 +288,8 @@ def load_formal_actor(run, *, config, source_adapter, processor, mesh, policy=No
         directory = Path(checkpoint_directory).resolve()
         def native_checks():
             value = read_verified_checkpoint(directory)
-            if value["run"] != run or value["evidence_scope"] != ("cpu_fixture" if cpu_fixture else "runtime"):
+            require_same_training_run(run, value["run"])
+            if value["evidence_scope"] != ("cpu_fixture" if cpu_fixture else "runtime"):
                 raise ValueError("foreign run/scope native checkpoint")
             roles, inventory = checkpoint_staging_roles(directory, world, exclude=("checkpoint.json",))
             if roles != value["artifact_role_files"] or inventory != value["file_sha256"]:
@@ -269,7 +309,9 @@ def load_formal_actor(run, *, config, source_adapter, processor, mesh, policy=No
                 or expected["rank"] != rank or expected["execution_contract"] != policy["execution_contract"]
                 or expected["window_sha256"] != manifest["window"]["window_sha256"]):
             raise ValueError("native extra metadata/global step mismatch")
-    actor, _ = construct(config=config, gate=options, adapter=adapter, mesh=mesh)
+    # Absolute paths stay ONLY in this live receipt inventory, never policy/run identity.
+    files.update({str(snapshot_directory / name): sha for name, sha in snapshot_files.items()})
+    actor, _ = construct(config=runtime_config, gate=options, adapter=adapter, mesh=mesh)
     manager = manager_factory(actor, processor)
     if manifest is None:
         random.seed(initial_seed)
@@ -288,7 +330,7 @@ def load_formal_actor(run, *, config, source_adapter, processor, mesh, policy=No
         from .actor_gate import lora_snapshot, reload_matches
         adapter_weights = lora_snapshot(actor.actor_module)
         manager.load_checkpoint(str(directory / "distributed"), del_local_after_load=False)
-        configure_rl_lora_dropout_runtime(actor.actor_module, config)
+        configure_rl_lora_dropout_runtime(actor.actor_module, canonical_config)
         snap = _snapshot(actor, manager, rank, policy["global_optimizer_step"])
         if (not reload_matches(adapter_weights, lora_snapshot(actor.actor_module))
                 or any(snap[k] != expected.get(k) for k in snap)):
@@ -297,8 +339,9 @@ def load_formal_actor(run, *, config, source_adapter, processor, mesh, policy=No
     if any(g["lr"] != options["optimizer"]["learning_rate"] or g["weight_decay"] != options["optimizer"]["weight_decay"]
            for g in actor.actor_optimizer.param_groups):
         raise ValueError("loaded optimizer hyperparameters differ from frozen run")
-    runtime = require_rl_lora_dropout_runtime(actor.actor_module, config)
-    receipt = _issue_reload(actor, policy, snap, runtime, files, run=run, rank=rank, world_size=world,
+    runtime = require_rl_lora_dropout_runtime(actor.actor_module, canonical_config)
+    receipt = _issue_reload(actor, policy, snap, runtime, files, run=run, canonical_config=canonical_config,
+                            rank=rank, world_size=world,
                             scope="cpu_fixture" if cpu_fixture else "runtime")
     del manager
     return LoadedFormalActor(actor, policy, receipt, rank, world, cpu_fixture)
@@ -460,7 +503,7 @@ def save_formal_staging(loaded, processor, staging, *, window, update_evidence, 
                      scope="cpu_fixture" if loaded.cpu_fixture else "runtime"), "staging_sha256")
 
 
-def fresh_reload_staging(loaded, data, staging, description, *, config, processor, mesh,
+def fresh_reload_staging(loaded, data, staging, description, *, canonical_config, runtime_config, processor, mesh,
                          construct=None, manager_factory=None):
     """Destroy old actor -> fresh PEFT/native/AdamW/RNG -> finite MM forward.
 
@@ -474,11 +517,13 @@ def fresh_reload_staging(loaded, data, staging, description, *, config, processo
     check_seal(description, "staging_sha256")
     staging = Path(staging)
     verify_artifacts(staging, description["file_sha256"])
+    receipt = require_reload_capability(loaded.reload_receipt, loaded.policy)
+    _, snapshot_files = _boundary(lambda: validated_runtime_snapshot(
+        canonical_config=canonical_config, runtime_config=runtime_config, base_model=receipt["base_model"],
+        contract=loaded.policy["execution_contract"]), loaded.world_size, loaded.cpu_fixture)
     if (description["scope"] != ("cpu_fixture" if loaded.cpu_fixture else "runtime")
             or artifact_role_identities(description["artifact_role_files"], description["file_sha256"]) != description["artifact_roles"]
-            or execution_contract(config) != loaded.policy["execution_contract"]
-            or config["model"]["name_or_path"] != loaded.reload_receipt.artifact["base_model"]["name"]
-            or config["model"]["revision"] != loaded.reload_receipt.artifact["base_model"]["revision"]
+            or fingerprint(canonical_config) != receipt["canonical_config_sha256"]
             or description["global_optimizer_step"] != loaded.policy["global_optimizer_step"] + 1):
         raise ValueError("fresh reload staging identity mismatch")
     expected = json.loads((staging / f"runtime_state_rank_{loaded.rank}.json").read_text(encoding="utf-8"))
@@ -501,17 +546,17 @@ def fresh_reload_staging(loaded, data, staging, description, *, config, processo
     options = loaded.reload_receipt.artifact["actor_options"]
     if (opt["lr"] != options["optimizer"]["learning_rate"] or opt["weight_decay"] != options["optimizer"]["weight_decay"]):
         raise ValueError("staged optimizer hyperparameters differ from frozen run")
-    actor, _ = construct(config=config, gate=options,
+    actor, _ = construct(config=runtime_config, gate=options,
                          adapter=staging / "adapter", mesh=mesh)
     manager = manager_factory(actor, processor)
     adapter_weights = lora_snapshot(actor.actor_module)
     manager.load_checkpoint(str(staging / "distributed"), del_local_after_load=False)
-    configure_rl_lora_dropout_runtime(actor.actor_module, config)
+    configure_rl_lora_dropout_runtime(actor.actor_module, canonical_config)
     actor._formal_global_optimizer_step = expected["global_optimizer_step"]
     snap = _snapshot(actor, manager, loaded.rank, expected["global_optimizer_step"])
     _boundary(lambda: _require_reloaded(snap, expected, reload_matches(adapter_weights, lora_snapshot(actor.actor_module))),
               loaded.world_size, loaded.cpu_fixture)
-    runtime = require_rl_lora_dropout_runtime(actor.actor_module, config)
+    runtime = require_rl_lora_dropout_runtime(actor.actor_module, canonical_config)
     # Exactly one active microbatch per rank; no old-policy denominator comparison after update.
     micro = data.split(1)[0]
     rng = rng_fingerprint()
@@ -522,8 +567,13 @@ def fresh_reload_staging(loaded, data, staging, description, *, config, processo
     if any(_snapshot(actor, manager, loaded.rank, expected["global_optimizer_step"])[k] != expected[k]
            for k in ("parameter_sha256", "optimizer_state_sha256", "native_rng_sha256")):
         raise ValueError("fresh verification forward changed saved state")
+    # A fresh reload cannot issue evidence for bytes changed during construction.
+    _boundary(lambda: validated_runtime_snapshot(canonical_config=canonical_config,
+        runtime_config=runtime_config, base_model=receipt["base_model"], contract=loaded.policy["execution_contract"]),
+        loaded.world_size, loaded.cpu_fixture)
     _collect(True, loaded.world_size, cpu_fixture=loaded.cpu_fixture)
     evidence = dict(scope=description["scope"], reloaded_artifact_roles=description["artifact_roles"],
+        offline_snapshot_sha256=canonical_json_sha256(snapshot_files),
         adapter_reloaded=True, native_reloaded=True, optimizer_reloaded=True, rng_reloaded=True,
         execution_contract_verified=True, original_actor_destroyed=True, fresh_multimodal_forward_finite=True,
         global_optimizer_step=expected["global_optimizer_step"],

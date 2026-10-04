@@ -29,6 +29,7 @@ from opensearch_vl_repro.rl.rollout_gate import (
     GATE_B_CHECKS, VLLMStaticBackend, validate_rollout_versions,
 )
 from opensearch_vl_repro.rl.rollout_sync import merge_actor_adapter, validate_actor_adapter
+from opensearch_vl_repro.rl.offline_snapshot import offline_snapshot_files
 from opensearch_vl_repro.rl.workflow_adapter import build_rllm_workflow
 from opensearch_vl_repro.rl.data import safe_image_relpath, question_sha256
 from opensearch_vl_repro.rl.workflow_types import RLInfrastructureError
@@ -149,20 +150,9 @@ def prepare_context(args, root):
     a22 = load_gate_config(root / "configs/rl_gate_a22.yaml")
     validate_software(versions, a22)
     validate_rollout_versions(versions)
-    if not args.base_model_path.is_dir():
-        raise FileNotFoundError("pinned offline base snapshot required")
     # Family/shape check. Revision identity comes from formal lineage; bind the
     # actual supplied offline snapshot files as well (do not trust its directory name).
-    base_config = json.loads((args.base_model_path / "config.json").read_text(encoding="utf-8"))
-    if base_config.get("model_type") != "qwen3_vl" or base_config.get("text_config", {}).get("num_hidden_layers") != 36:
-        raise ValueError("offline snapshot is not Qwen3-VL-4B")
-    if base_config.get("_commit_hash") not in {None, BASE_REVISION}:
-        raise ValueError("offline snapshot declares a different pinned revision")
-    weights = sorted(args.base_model_path.glob("model*.safetensors"))
-    if not weights:
-        raise ValueError("pinned offline base snapshot weights missing")
-    base_files = {path.name: sha256_file(path) for path in
-                  sorted(args.base_model_path.iterdir()) if path.is_file() and path.suffix in {".json", ".safetensors"}}
+    base_files = offline_snapshot_files(args.base_model_path, revision=BASE_REVISION)
     from opensearch_vl_repro.evaluation.judge import load_judge_config
     from dataclasses import asdict
     judge = load_judge_config(args.judge_config)
