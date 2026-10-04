@@ -304,10 +304,10 @@ def actor_contract(actor, canonical):
         dropout=require_rl_lora_dropout_runtime(model, canonical))
 
 
-def strict_oc_summary(alignment):
+def strict_oc_summary(alignment, *, world_size=2):
     from .policy_alignment import formal_alignment_artifact
     try:
-        derived = formal_alignment_artifact(alignment["per_rank"], world_size=2,
+        derived = formal_alignment_artifact(alignment["per_rank"], world_size=world_size,
                                              window_sha256=alignment["window_sha256"])
     except (ValueError, KeyError, TypeError):
         return False

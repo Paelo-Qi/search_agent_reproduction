@@ -289,12 +289,12 @@ def recover_smoke(root, run, *, cpu_fixture=False):
             "missing_prompts": [p for p in expected if p not in current_groups]}
 
 
-def require_runtime_update_evidence(directory, checkpoint):
+def require_runtime_update_evidence(directory, checkpoint, *, world_size=2):
     """Rank evidence is itself hashed inside the verified native checkpoint."""
     from .formal_s2_validation import strict_oc_summary
     from .training_window import deterministic_rank_plan
     import math
-    rows = [json.loads((directory / f"formal_update_rank_{rank}.json").read_text(encoding="utf-8")) for rank in range(2)]
+    rows = [json.loads((directory / f"formal_update_rank_{rank}.json").read_text(encoding="utf-8")) for rank in range(world_size)]
     step = checkpoint["global_optimizer_step"]
     for rank, evidence in enumerate(rows):
         update = evidence["update"]
@@ -304,7 +304,7 @@ def require_runtime_update_evidence(directory, checkpoint):
                 or update["update_audit"]["optimizer_step_count"] != 1
                 or update["attempt"] != checkpoint["update_attempt"]
                 or update["window_sha256"] != checkpoint["window"]["window_sha256"]
-                or not strict_oc_summary(update["alignment"])
+                or not strict_oc_summary(update["alignment"], world_size=world_size)
                 or not losses or not all(math.isfinite(float(loss)) for loss in losses)
                 or evidence["loaded_parent"]["policy"] != checkpoint["parent_policy"]
                 or evidence["actor_contract"].get("passed") is not True
@@ -314,14 +314,14 @@ def require_runtime_update_evidence(directory, checkpoint):
                     "native_reloaded", "optimizer_reloaded", "rng_reloaded", "execution_contract_verified"))):
             raise ValueError("incomplete/foreign native one-step rank update evidence")
         plan = evidence["deterministic_plan"]
-        if plan != deterministic_rank_plan(list(plan["multiplicity"]), 2):
+        if plan != deterministic_rank_plan(list(plan["multiplicity"]), world_size):
             raise ValueError("non-deterministic runtime rank plan")
         saved = json.loads((directory / f"runtime_state_rank_{rank}.json").read_text(encoding="utf-8"))
         reloaded = [v for v in evidence["fresh_reload"]["per_rank"] if v["rank"] == rank]
         if len(reloaded) != 1 or reloaded[0]["state"] != {k: v for k, v in saved.items()
                 if k not in {"runtime_state_sha256", "window_sha256", "execution_contract"}}:
             raise ValueError("native saved/fresh-reloaded model/optimizer/RNG mismatch")
-    if rows[0]["full_lora_sha256"] != rows[1]["full_lora_sha256"]:
+    if len({row["full_lora_sha256"] for row in rows}) != 1:
         raise ValueError("post-update full LoRA differs across ranks")
 
 

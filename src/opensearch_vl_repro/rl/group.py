@@ -195,8 +195,8 @@ def publish_formal_group(staging, destination, group, *, cpu_fixture=False):
     return payload
 
 
-def read_formal_group(directory):
-    from .checkpoint import verify_artifacts
+def read_formal_group_manifest_only(directory):
+    """Sealed metadata only; never sufficient to authorize a current update."""
     directory = Path(directory)
     if directory.name.startswith(".") or directory.is_symlink():
         raise ValueError("staging is not a committed group")
@@ -204,5 +204,11 @@ def read_formal_group(directory):
     validate_formal_group(value, committed=True)
     if directory.name != value["identity"]["trajectory_group_id"]:
         raise ValueError("committed group directory identity mismatch")
+    return value
+
+
+def read_formal_group(directory):
+    from .checkpoint import verify_artifacts
+    value = read_formal_group_manifest_only(directory)
     verify_artifacts(directory, value["file_sha256"], exclude=("group.json",))
     return value

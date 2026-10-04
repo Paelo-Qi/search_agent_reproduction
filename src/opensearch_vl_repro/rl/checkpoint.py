@@ -499,7 +499,12 @@ def _load_anchor(root, run):
     return value
 
 
-def read_verified_checkpoint(directory):
+def read_checkpoint_manifest_only(directory):
+    """Validate immutable metadata, NOT artifact bytes or resume eligibility.
+
+    Historical S4 recovery adds receipt/chain checks; all existing callers still
+    use read_verified_checkpoint for full byte verification.
+    """
     directory = Path(directory)
     if directory.name.startswith(".") or directory.is_symlink():
         raise ValueError("staging is not a verified checkpoint")
@@ -507,6 +512,11 @@ def read_verified_checkpoint(directory):
     validate_checkpoint_manifest(value)
     if directory.name != f"policy-{value['policy_iteration']:06d}":
         raise ValueError("checkpoint directory/iteration mismatch")
+    return value
+
+
+def read_verified_checkpoint(directory):
+    value = read_checkpoint_manifest_only(directory)
     verify_artifacts(directory, value["file_sha256"], exclude=("checkpoint.json",))
     return value
 

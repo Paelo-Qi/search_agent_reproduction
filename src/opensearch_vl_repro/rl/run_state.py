@@ -399,7 +399,8 @@ def retry_update_plan(attempt, window, policy, *, verified_checkpoints):
             "new_attempt": fresh, "previous_attempt_id": attempt["attempt_id"]}
 
 
-def reconstruct_consumed_ledger(run, initial, groups, verified_checkpoints, *, window=None, checkpoint_root=None):
+def reconstruct_consumed_ledger(run, initial, groups, verified_checkpoints, *, window=None, checkpoint_root=None,
+                                checkpoint_reader=None):
     from pathlib import Path
     from .checkpoint import read_verified_checkpoint, validate_checkpoint_manifest, validate_policy, validate_training_run_identity
     from .group import validate_formal_group
@@ -412,7 +413,7 @@ def reconstruct_consumed_ledger(run, initial, groups, verified_checkpoints, *, w
     consumed, current = set(), initial
     for checkpoint in verified_checkpoints:
         validate_checkpoint_manifest(checkpoint)
-        if (checkpoint_root is None or read_verified_checkpoint(
+        if (checkpoint_root is None or (checkpoint_reader or read_verified_checkpoint)(
                 Path(checkpoint_root) / f"policy-{checkpoint['policy_iteration']:06d}") != checkpoint):
             raise ValueError("consumption requires immutable published checkpoint, not an attempt/index")
         if checkpoint["parent_policy"] != current or checkpoint["run"]["run_identity_sha256"] != run["run_identity_sha256"]:
