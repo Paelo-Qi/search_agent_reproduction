@@ -22,13 +22,39 @@ fatal semantics, live tools and judges are unchanged. The shared S2 production
 update method performs official verl RLOO, O/C, LoRA change/match, native
 model/AdamW/RNG save and destructive fresh multimodal reload.
 
-`formal-s4-main400-v1` binds ordered source identities, frozen data/manifest and
+`formal-s4-main400-v2` binds ordered source identities, frozen data/manifest and
 config hashes, SFT lineage, pinned offline base, software/source hashes,
 algorithm/rollout/reward/tool contracts, seed, retention contract/milestones and
 seed scheme. Every member's seed is `initial_seed + 4*global_position + index`.
 GPU locators, collection parallelism, pause and disk controls are operational.
 The validated stack remains torch 2.8.x, transformers 4.57.1, PEFT 0.21.1,
 verl 0.6.1, vLLM 0.11.0, rLLM 0.2.1, with installed FA2/source identities bound.
+
+### Main-only context budget (no truncation)
+
+The rollout identity additionally binds `remaining-context-no-truncation-v1`.
+Frozen numeric settings stay `max_model_len=8192`, `max_new_tokens=512`.
+After FULL HF multimodal processing (`truncation=False`), each call gets
+`min(current_sampling.max_tokens, 8192 - processor_token_length)` tokens.
+Only a deep copy of that call's SamplingParams changes; all other fields,
+member seeds, exact prompt IDs and saved vision tensors remain unchanged.
+Gate B/C and S3 opt out by default and retain their strict fixed-budget check.
+
+If real generation ends with `finish_reason=length`, the unchanged pinned
+rLLM MultiTurnWorkflow produces `max_response_length_exceeded`. If a later
+prompt has no context space, LocalEngine emits the same upstream termination
+without generating or adding a phantom processor capture. Existing actual
+Steps/prefix, fatal cutoff, reward and advantage rules remain authoritative.
+An initial zero-step overflow instead fails closed with prompt ID, processor
+length, model limit and remaining-token diagnostics; no member is fabricated.
+Generation receipts and captured Step info include requested/effective token
+budgets, remaining context, policy and context-limited flag. Exhaustion
+diagnostics are also persisted in episode/trajectory metadata.
+
+The first-window `formal-main400-s4-attempt1` failed under old v1 behavior;
+retain it as forensic evidence. Its sealed identity is incompatible with v2:
+do not resume, migrate or edit it. Start a NEW `formal-main400-s4-attempt2`.
+This patch is CPU/static validated only, NOT Main400 4xA800 GPU/API PASS.
 
 ## Exclusive process lifecycle and resume
 
@@ -102,7 +128,7 @@ export RL_SOURCE_PARQUET="$RL_SOURCE_ROOT/rl_data.parquet"
 export RL_BASE_SNAPSHOT=/absolute/path/to/pinned/Qwen3-VL-4B-Instruct
 
 MAIN_ARGS=(
-  --run-id formal-main400-s4-attempt1
+  --run-id formal-main400-s4-attempt2
   --config configs/rl_main.yaml --data data/rl/main400.json
   --source-root "$RL_SOURCE_ROOT" --source-parquet "$RL_SOURCE_PARQUET"
   --base-model-path "$RL_BASE_SNAPSHOT"
@@ -137,7 +163,9 @@ may claim Main400 runtime PASS.
 ## CPU acceptance (no model/API initialization)
 
 ```bash
-PYTHONPATH=src python -m pytest tests/test_rl_formal_s4_main.py \
+PYTHONPATH=src python -m pytest tests/test_rl_context_budget.py \
+  tests/test_rl_gate_b.py tests/test_rl_gate_c.py tests/test_rl_rollout_sync.py \
+  tests/test_rl_workflow_adapter.py tests/test_rl_formal_s4_main.py \
   tests/test_rl_formal_s3_smoke.py tests/test_rl_formal_contracts.py \
   tests/test_rl_formal_update.py tests/test_rl_formal_s2_validation.py \
   tests/test_rl_run_state.py tests/test_rl_group.py tests/test_rl_rloo.py \

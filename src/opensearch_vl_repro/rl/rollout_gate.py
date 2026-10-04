@@ -30,6 +30,7 @@ from opensearch_vl_repro.rl.rollout_sync import (
     GATE_B_VERSION, merge_actor_adapter, prepare_qwen_vl_processor_inputs, validate_actor_adapter,
 )
 from opensearch_vl_repro.rl.workflow_adapter import RLWorkflowAdapter, build_rllm_workflow
+from .context_budget import CONTEXT_BUDGET_POLICY, ResponseContextBudgetExhausted
 
 GATE_B_CHECKS = (
     "software_versions", "base_identity", "actor_adapter_verified", "actor_provenance_verified",
@@ -126,9 +127,13 @@ def select_probe_image(records: list[dict[str, Any]], index: int, root: Path) ->
 class VLLMStaticBackend:
     """Synchronous local vLLM compatibility bridge; does not own a turn loop."""
     capture_tokens = False  # Preserve default for existing injected Gate B backends.
+    context_budget_policy = None  # Gate B/C and S3 keep their strict fixed budget.
 
     def __init__(self, *, checkpoint: Path, sft_config: dict[str, Any], gate: dict[str, Any], seed: int,
-                 capture_tokens: bool = False):
+                 capture_tokens: bool = False, context_budget_policy: str | None = None):
+        if context_budget_policy not in (None, CONTEXT_BUDGET_POLICY):
+            raise ValueError("unsupported rollout context budget policy")
+        self.context_budget_policy = context_budget_policy
         from vllm import LLM, SamplingParams
         from opensearch_vl_repro.model import load_processor
         import torch
@@ -159,19 +164,35 @@ class VLLMStaticBackend:
         prompt, images, batch = prepare_qwen_vl_processor_inputs(
             self.processor, messages, tools, max_images=self.max_images)
         length = int(batch["input_ids"].shape[-1])
+        sampling = self.sampling
+        budget = None
+        if self.context_budget_policy == CONTEXT_BUDGET_POLICY:
+            requested = self.sampling.max_tokens
+            remaining = self.settings["max_model_len"] - length
+            budget = dict(processor_token_length=length, max_model_len=self.settings["max_model_len"],
+                          requested_max_tokens=requested, effective_max_tokens=max(0, min(requested, remaining)),
+                          remaining_context_tokens=remaining, context_budget_policy=self.context_budget_policy,
+                          context_limited=remaining < requested)
+            if remaining <= 0:
+                # No generation, receipt or phantom processor capture for this call.
+                raise ResponseContextBudgetExhausted(budget)
+            sampling = copy.deepcopy(self.sampling)
+            sampling.max_tokens = budget["effective_max_tokens"]
         if self.capture_tokens:
             # Preserve actual processor vision tensors, never re-tokenize a response.
             self.training_inputs.append({key: value.detach().cpu() for key, value in batch.items()})
         del batch
-        if length + self.settings["max_new_tokens"] > self.settings["max_model_len"]:
+        if self.context_budget_policy is None and length + self.settings["max_new_tokens"] > self.settings["max_model_len"]:
             raise RuntimeError("real multimodal probe does not fit Gate max_model_len; no truncation allowed")
         receipt = {"generation_index": len(self.receipts) + 1, "multimodal_image_count": len(images),
                    "actual_pil_inputs": True, "images": [{"sha256": image_sha256(image), "size": list(image.size)} for image in images],
                    "processor_token_length": length, "succeeded": False}
+        if budget is not None:
+            receipt.update(budget)
         self.receipts.append(receipt)
         # These exact PIL objects, not paths/URLs/base64 strings, cross generate.
         output = self.llm.generate([{"prompt": prompt, "multi_modal_data": {"image": images}}],
-                                   sampling_params=self.sampling, use_tqdm=False)
+                                   sampling_params=sampling, use_tqdm=False)
         if len(output) != 1 or len(output[0].outputs) != 1:
             raise RuntimeError("unexpected vLLM generation output count")
         result = output[0].outputs[0]
@@ -181,6 +202,8 @@ class VLLMStaticBackend:
         receipt["completion_token_count"] = len(result.token_ids)
         value = {"text": result.text, "prompt_ids": list(output[0].prompt_token_ids),
                  "completion_ids": list(result.token_ids), "finish_reason": result.finish_reason}
+        if budget is not None:
+            value["context_budget"] = budget
         if self.capture_tokens:
             from opensearch_vl_repro.rl.training_batch import sampled_logprobs
             value["logprobs"] = sampled_logprobs(result.token_ids, result.logprobs)

@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 from . import checkpoint as cp
-from .formal_main import VERSION, prepare_context, recover_main, main_paths, member_seed
+from .formal_main import VERSION, CONTEXT_BUDGET_POLICY, prepare_context, recover_main, main_paths, member_seed
 from .formal_collection import (formal_merge_identity, verify_formal_merge, reserve_collection,
                                 commit_collection, collect_member, model_task, load_source_images)
 from .run_state import checkpoint_policy
@@ -131,7 +131,8 @@ def run_collection_worker(args, root):
                         agent=dict(max_turns=rollout["max_turns"]))
         stage = "vllm_init"
         backend = VLLMStaticBackend(checkpoint=merged, sft_config=ctx["canonical"], gate=settings,
-                                   seed=member_seed(run, args.prompt_id, 0), capture_tokens=True)
+                                   seed=member_seed(run, args.prompt_id, 0), capture_tokens=True,
+                                   context_budget_policy=CONTEXT_BUDGET_POLICY)
         staging, identity = reserve_collection(output, run, policy, row)
         images, members = load_source_images(row, args.source_root), []
         stage = "collecting_and_rewarding"

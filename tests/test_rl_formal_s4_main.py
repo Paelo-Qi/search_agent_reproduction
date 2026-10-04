@@ -40,7 +40,8 @@ def main_run():
     s["dataset"]["split"] = "main"
     s["source_sft"]["stage"] = "main_b_2k"
     s["base_model"] = dict(name=BASE_MODEL, revision=BASE_REVISION, offline_snapshot_sha256=digest("snapshot"))
-    s["rollout"] = dict(behavior_version=main.VERSION, config=copy.deepcopy(main.ROLLOUT))
+    s["rollout"] = dict(behavior_version=main.VERSION, context_budget_policy=main.CONTEXT_BUDGET_POLICY,
+                        config=copy.deepcopy(main.ROLLOUT))
     return cp.build_training_run_identity("main-cpu-fixture", semantics=s,
         prompt_ids=original["prompt_ids"], prompt_sources=original["prompt_sources"])
 
@@ -137,6 +138,32 @@ def test_exact_main_identity_and_cli():
     assert args.config.name == "rl_main.yaml" and args.data.name == "main400.json"
     assert args.collection_parallelism == 4 and args.stop_after_window == 1
     assert args.max_run_gib == 250 and args.min_free_gib == 30
+
+
+def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
+    assert main.VERSION == "formal-s4-main400-v2"
+    assert smoke.VERSION == "formal-s3-smoke20-v1"
+    rollout = ctx.run["semantics"]["rollout"]
+    assert rollout["context_budget_policy"] == "remaining-context-no-truncation-v1"
+    assert rollout["config"]["max_model_len"] == 8192
+    assert rollout["config"]["max_new_tokens"] == 512
+    assert "context_budget_policy=CONTEXT_BUDGET_POLICY" in inspect.getsource(collection.run_collection_worker)
+    from opensearch_vl_repro.rl.formal_collection import run_collection
+    assert "context_budget_policy=" not in inspect.getsource(run_collection)
+    for case in ("old", "missing", "changed"):
+        semantics = copy.deepcopy(ctx.run["semantics"])
+        if case == "old":
+            semantics["coordinator_version"] = "formal-s4-main400-v1"
+            semantics["rollout"] = dict(behavior_version="formal-s4-main400-v1", config=copy.deepcopy(main.ROLLOUT))
+        elif case == "missing":
+            del semantics["rollout"]["context_budget_policy"]
+        else:
+            semantics["rollout"]["context_budget_policy"] = "truncate"
+        foreign = cp.build_training_run_identity(ctx.run["run_id"], semantics=semantics,
+            prompt_ids=ctx.run["prompt_ids"], prompt_sources=ctx.run["prompt_sources"])
+        assert foreign["run_identity_sha256"] != ctx.run["run_identity_sha256"]
+        with pytest.raises(ValueError): main.require_main_run(foreign)
+        with pytest.raises(ValueError): main.recover_main(ctx.output, foreign, cpu_fixture=True)
 
 
 @pytest.mark.parametrize("field,value", [("rollout_n", 2), ("world_size", 2), ("groups_per_window", 2),

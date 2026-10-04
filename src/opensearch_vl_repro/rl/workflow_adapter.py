@@ -18,6 +18,7 @@ from opensearch_vl_repro.agent.tool_parser import ParsedAssistantOutput, ToolCal
 from opensearch_vl_repro.agent.tool_registry import ToolContext, ToolRegistry
 from opensearch_vl_repro.agent.reliability import redact_secrets
 from opensearch_vl_repro.data import messages_to_json_safe
+from .context_budget import ResponseContextBudgetExhausted
 
 RLLM_SOURCE_COMMIT = "c5c02a49780e26ae9cb6f1fb56731d1e594d59f0"
 
@@ -33,6 +34,7 @@ class InteractionEpisode:
     status: str = "running"
     error: str | None = None
     error_origin: str | None = None
+    context_budget_exhaustion: dict[str, Any] | None = None
 
 
 class RLWorkflowAdapter(AgentInteraction):
@@ -118,7 +120,9 @@ class RLWorkflowAdapter(AgentInteraction):
                                state.turns, state.final_answer, state.status,
                                [entry.image_id for entry in registry.list_images()], error=state.error,
                                metadata={"error_origin": state.error_origin,
-                                         "model_turn_count": len(state.assistant_outputs)},
+                                         "model_turn_count": len(state.assistant_outputs),
+                                         **({"context_budget_exhaustion": state.context_budget_exhaustion}
+                                            if state.context_budget_exhaustion is not None else {})},
                                images=self._image_summaries(registry))
 
 
@@ -129,7 +133,7 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
     from rllm.engine.rollout.rollout_engine import ModelOutput, RolloutEngine
     from rllm.environments.base.base_env import BaseEnv
     from rllm.workflows.multi_turn_workflow import MultiTurnWorkflow
-    from rllm.workflows.workflow import Workflow
+    from rllm.workflows.workflow import Workflow, TerminationEvent, TerminationReason
     from opensearch_vl_repro.sft_tool_audit import sha256_file
 
     if not inspect.iscoroutinefunction(MultiTurnWorkflow.run) or not inspect.iscoroutinefunction(RolloutEngine.get_model_response):
@@ -171,6 +175,8 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
                 step.info = {"token_count": len(step.response_ids), "parsed_kind": parsed.kind,
                              "finish_reason": output.finish_reason, "token_origin": "vllm.RequestOutput",
                              "logprobs_mode": pending.pop("logprobs_mode")}
+                if "context_budget" in pending:
+                    step.info["context_budget"] = pending.pop("context_budget")
             return action
 
         def update_from_env(self, observation, reward, done, info, **kwargs):
@@ -199,6 +205,16 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
             prompt_messages = messages_to_json_safe(messages) if capture_tokens else None
             try:
                 output = backend.generate(messages=messages, tools=adapter.tool_registry.declarations_for_model())
+            except ResponseContextBudgetExhausted as exc:
+                state = adapter.state()
+                diagnostics = {**exc.diagnostics, "prompt_id": state.context.sample_id}
+                state.context_budget_exhaustion = diagnostics
+                if not state.assistant_outputs:
+                    from .workflow_types import RLInfrastructureError
+                    raise RLInfrastructureError(
+                        "initial Main prompt exceeds usable model context; "
+                        f"zero-step member cannot enter Formal training: {diagnostics}") from exc
+                raise TerminationEvent(TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED) from exc
             except Exception as exc:
                 adapter.record_failure(origin="model_generation_error", message=f"{type(exc).__name__}: {exc}")
                 raise
@@ -212,6 +228,8 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
                 result.logprobs = output["logprobs"]
                 pending.update(output=result, prompt_messages=prompt_messages,
                                logprobs_mode=output["logprobs_mode"])
+                if "context_budget" in output:
+                    pending["context_budget"] = output["context_budget"]
             return result
 
     class NoRewardWorkflow(MultiTurnWorkflow):
@@ -221,6 +239,8 @@ def build_rllm_workflow(*, adapter: RLWorkflowAdapter, backend: Any, executor: A
             episode.id, episode.task = self.uid, {"sample_id": self.task["sample_id"], "question": self.task["question"]}
             episode.termination_reason = termination_reason
             episode.info = {"reward_computed": False, "timing": self.finalize_timing()}
+            if adapter.episode is not None and adapter.episode.context_budget_exhaustion is not None:
+                episode.info["context_budget_exhaustion"] = adapter.episode.context_budget_exhaustion
             if error is not None:
                 episode.info["error"] = redact_secrets(error)
             return episode
