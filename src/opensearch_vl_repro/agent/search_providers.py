@@ -13,7 +13,7 @@ import requests
 import yaml
 from PIL import Image
 
-from .reliability import RetryPolicy
+from .reliability import RetryPolicy, serpapi_retry_policy
 
 
 class SearchBackendError(RuntimeError):
@@ -44,6 +44,8 @@ class LensSearchResponse:
     matches: tuple[ImageSearchResult, ...]
     upload_metadata: dict[str, int | bool]
     attempt_count: int = 1
+    upload_attempt_count: int = 1
+    lens_attempt_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -236,8 +238,22 @@ class SerpApiLensBackend:
                  retry: RetryPolicy | None = None) -> None:
         self.config = config
         self.session = session if session is not None else requests.Session()
-        self.retry = retry or RetryPolicy()
+        self.retry = retry or serpapi_retry_policy()
         self.last_attempt_count = 1
+
+    def _stage_error(self, exc: SearchBackendError, stage: str, upload_attempts: int,
+                     lens_attempts: int = 0) -> None:
+        # Only controlled fields: never HTTP payloads, request kwargs or credentials.
+        self.last_attempt_count = max(1, upload_attempts, lens_attempts)
+        exc.provider = "serpapi_google_lens"
+        exc.failure_stage = stage
+        exc.attempt_count = self.last_attempt_count
+        exc.upload_attempt_count = upload_attempts
+        exc.lens_attempt_count = lens_attempts
+        # Formal ProviderInterruption carries the observation as its detail;
+        # preserve safe stage diagnostics there too, without changing its contract.
+        exc.args = (f"{exc} (stage={stage}, upload_attempt_count={upload_attempts}, "
+                    f"lens_attempt_count={lens_attempts})",)
 
     @staticmethod
     def _encoded_image(image: Image.Image) -> EncodedUpload:
@@ -279,21 +295,30 @@ class SerpApiLensBackend:
 
     def search(self, image: Image.Image, *, limit: int) -> LensSearchResponse:
         self.last_attempt_count = 1
-        key = _credential(self.config["api_key_env"])
-        encoded = self._encoded_image(image)
+        upload_attempts = 0
         try:
+            key = _credential(self.config["api_key_env"])
+            if not isinstance(image, Image.Image) or min(image.size) <= 0:
+                raise SearchBackendError("invalid_argument", "invalid local image")
+            if type(limit) is not int or limit < 1:
+                raise SearchBackendError("invalid_argument", "image search limit must be positive")
+            try:
+                encoded = self._encoded_image(image)
+            except (OSError, ValueError):
+                raise SearchBackendError("invalid_argument", "local image cannot be encoded") from None
             upload_raw, upload_attempts = self.retry.run(lambda: _serpapi_json(_request(
                 self.session.post, self.config["upload_endpoint"],
                 data={"api_key": key}, files={"image": encoded.multipart_file()},
                 timeout=self.config["timeout_seconds"],
             )))
             self.last_attempt_count = upload_attempts
+            image_id = upload_raw.get("image_id")
+            if not isinstance(image_id, str) or not image_id.strip():
+                raise SearchBackendError("invalid_response", "upload response is missing image_id")
         except SearchBackendError as exc:
-            self.last_attempt_count = getattr(exc, "attempt_count", 1)
+            self._stage_error(exc, "upload", max(upload_attempts, getattr(exc, "attempt_count", 0)))
             raise
-        image_id = upload_raw.get("image_id")
-        if not isinstance(image_id, str) or not image_id.strip():
-            raise SearchBackendError("invalid_response", "upload response is missing image_id")
+        lens_attempts = 0
         try:
             raw, lens_attempts = self.retry.run(lambda: _serpapi_json(_request(
                 self.session.get, self.config["lens_endpoint"],
@@ -302,15 +327,15 @@ class SerpApiLensBackend:
                 timeout=self.config["timeout_seconds"],
             )))
             self.last_attempt_count = max(upload_attempts, lens_attempts)
+            matches = raw.get("visual_matches")
+            metadata = raw.get("search_metadata")
+            if matches is None and isinstance(metadata, dict) and metadata.get("status") == "Success":
+                matches = []
+            if not isinstance(matches, list):
+                raise SearchBackendError("invalid_response", "Lens response is missing visual_matches")
         except SearchBackendError as exc:
-            self.last_attempt_count = max(upload_attempts, getattr(exc, "attempt_count", 1))
+            self._stage_error(exc, "lens", upload_attempts, max(lens_attempts, getattr(exc, "attempt_count", 0)))
             raise
-        matches = raw.get("visual_matches")
-        metadata = raw.get("search_metadata")
-        if matches is None and isinstance(metadata, dict) and metadata.get("status") == "Success":
-            matches = []
-        if not isinstance(matches, list):
-            raise SearchBackendError("invalid_response", "Lens response is missing visual_matches")
         results = []
         for item in matches:
             if not isinstance(item, dict):
@@ -321,4 +346,5 @@ class SerpApiLensBackend:
                                                  link, _field(item.get("thumbnail")) or None))
         return LensSearchResponse(
             image_id, tuple(results[:limit]), encoded.metadata, self.last_attempt_count,
+            upload_attempts, lens_attempts,
         )

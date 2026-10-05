@@ -38,6 +38,28 @@ def _context(image=None, *, sample_id="sample"):
     return ToolContext(images, sample_id=sample_id, metadata={"previous_observation": "ignored"})
 
 
+def test_search_v3_cache_separates_v2_and_does_not_replay_stage_attempts(tmp_path):
+    calls = []
+
+    def backend(arguments, context):
+        calls.append(1)
+        return ToolResult(status="success", observation="safe result", metadata={
+            "provider": "serpapi_google_lens", "attempt_count": 5,
+            "upload_attempt_count": 2, "lens_attempt_count": 5})
+
+    cache = FileSystemToolCache(tmp_path)
+    old = cached_tool_backend(tool="image_search", backend=backend, cache=cache, behavior_version="search-2")
+    new = cached_tool_backend(tool="image_search", backend=backend, cache=cache, behavior_version="search-3")
+    args, context = {"image_id": "img_1"}, _context()
+    assert old(args, context).metadata["cache_hit"] is False
+    first, second = new(args, context), new(args, context)
+    assert calls == [1, 1]
+    assert first.metadata["cache_hit"] is False
+    assert first.metadata["upload_attempt_count"] == 2 and first.metadata["lens_attempt_count"] == 5
+    assert second.metadata["cache_hit"] is True and second.metadata["attempt_count"] == 0
+    assert "upload_attempt_count" not in second.metadata and "lens_attempt_count" not in second.metadata
+
+
 def test_text_cache_miss_then_hit_skips_provider_and_ignores_history(tmp_path):
     calls = []
 

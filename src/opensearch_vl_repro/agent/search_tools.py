@@ -42,7 +42,9 @@ def _error(tool: str, exc: SearchBackendError, *, attempt_count: int = 1,
         status="error", error_type=exc.error_type,
         observation=_redact(f"<observation>\n{tool} failed ({exc.error_type}): {str(exc)[:180]}.\n</observation>"),
         metadata={"error_type": exc.error_type, "attempt_count": attempt_count,
-                  **({"provider": provider} if provider is not None else {})},
+                  **({"provider": provider} if provider is not None else {}),
+                  **{key: getattr(exc, key) for key in (
+                      "failure_stage", "upload_attempt_count", "lens_attempt_count") if hasattr(exc, key)}},
     )
 
 
@@ -200,6 +202,8 @@ class SearchTools:
                 metadata=_redact({"provider": "serpapi_google_lens", "source_image_id": reference,
                                   "provider_image_id": image_id, "result_count": len(matches),
                                   "attempt_count": search.attempt_count,
+                                  "upload_attempt_count": search.upload_attempt_count,
+                                  "lens_attempt_count": search.lens_attempt_count,
                                   **search.upload_metadata,
                                   "thumbnails": [match.thumbnail for match in matches if match.thumbnail]}),
             )

@@ -15,8 +15,9 @@ from .run_state import (advance_update_attempt, checkpoint_policy, persist_updat
                         read_update_attempt, reconstruct_consumed_ledger)
 from .training_window import build_training_window, expected_window_prompts
 from .context_budget import CONTEXT_BUDGET_POLICY
+from opensearch_vl_repro.agent.reliability import SEARCH_BEHAVIOR_VERSION, provider_reliability_semantics
 
-VERSION = "formal-s4-main400-v4"
+VERSION = "formal-s4-main400-v5"
 MAIN_ROLLOUT = copy.deepcopy(ROLLOUT)
 MAIN_ROLLOUT["max_model_len"] = 16384
 SEED_SCHEME = "initial_seed+n*global_prompt_position+rollout_index-v1"
@@ -33,6 +34,8 @@ def require_main_run(run):
             or s["require_complete_windows"] is not True or s["weighting"] != cp.FORMAL_WEIGHTING
             or s["dataset"]["split"] != "main" or s.get("diagnostic_version")
             or s.get("retention") != retention.CONTRACT or s.get("rollout_seed_scheme") != SEED_SCHEME
+            or s.get("search_behavior_version") != SEARCH_BEHAVIOR_VERSION
+            or s.get("provider_reliability") != provider_reliability_semantics()
             or s["rollout"] != dict(behavior_version=VERSION, context_budget_policy=CONTEXT_BUDGET_POLICY, config=MAIN_ROLLOUT)
             or s["optimizer"] != dict(name="AdamW", learning_rate=1e-6, weight_decay=0.)
             or s["ppo"] != dict(epochs=1, microbatch=1, clip_ratio_low=.2, clip_ratio_high=.28,
@@ -153,6 +156,7 @@ def prepare_context(args, root):
                                  judge_config_sha256=sha256_file(args.judge_config)),
         tool_protocol_version=RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION, image_protocol_version="runtime-image-id-grounding-v3",
         search_config_sha256=sha256_file(args.search_config), layout_config_sha256=sha256_file(args.layout_config),
+        search_behavior_version=SEARCH_BEHAVIOR_VERSION, provider_reliability=provider_reliability_semantics(),
         integration_source_hashes=hashes, software_versions=versions, initial_seed=config["data"]["seed"],
         retention=copy.deepcopy(retention.CONTRACT), rollout_seed_scheme=SEED_SCHEME)
     run = cp.build_training_run_identity(args.run_id, semantics=semantics,

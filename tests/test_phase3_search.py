@@ -441,6 +441,126 @@ def test_serpapi_missing_key_does_not_retry(config, monkeypatch):
     assert session.calls == []
 
 
+@pytest.mark.parametrize("stage", ["upload", "lens"])
+@pytest.mark.parametrize("failure,error_type", [
+    (Response({"error": "temporary serpapi-secret burst"}), "provider_error"),
+    (Response(status=429), "quota_error"),
+    (Response(status=503), "provider_error"),
+    (requests.Timeout("serpapi-secret"), "timeout"),
+    (requests.ConnectionError("serpapi-secret"), "network_error"),
+])
+def test_serpapi_v3_default_bounded_stage_retry(config, keys, stage, failure, error_type):
+    # Exercise the DEFAULT provider policy, replacing only its sleeper (no I/O/waits).
+    session = Session(posts=([failure] * 5 if stage == "upload" else [Response({"image_id": "id"})]),
+                      gets=([failure] * 5 if stage == "lens" else []))
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    waits = []
+    backend.retry = replace(backend.retry, sleeper=waits.append)
+    with pytest.raises(SearchBackendError) as caught:
+        backend.search(Image.new("RGB", (4, 4)), limit=10)
+    exc = caught.value
+    assert waits == [5, 10, 20, 30]
+    assert exc.error_type == error_type and exc.failure_stage == stage
+    assert exc.provider == "serpapi_google_lens"
+    assert exc.attempt_count == backend.last_attempt_count == 5
+    assert exc.upload_attempt_count == (5 if stage == "upload" else 1)
+    assert exc.lens_attempt_count == (5 if stage == "lens" else 0)
+    assert len(session.calls) == (5 if stage == "upload" else 6)
+    assert "serpapi-secret" not in str(exc) + json.dumps(vars(exc))
+
+
+def test_serpapi_v3_each_stage_has_independent_budget_and_success_metadata(config, keys):
+    error = Response({"error": "temporary serpapi-secret burst"})
+    session = Session(posts=[error] * 4 + [Response({"image_id": "id"})],
+                      gets=[error] * 4 + [Response({"visual_matches": []})])
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    waits = []
+    backend.retry = replace(backend.retry, sleeper=waits.append)
+    result = SearchTools(config, lens=backend).image_search({"image_id": "img_1"}, _context())
+    assert result.status == "success" and len(session.calls) == 10
+    assert waits == [5, 10, 20, 30] * 2
+    assert result.metadata["upload_attempt_count"] == result.metadata["lens_attempt_count"] == 5
+    assert result.metadata["attempt_count"] == 5  # existing max-of-stages meaning preserved
+    assert "serpapi-secret" not in result.observation + json.dumps(result.metadata)
+
+
+@pytest.mark.parametrize("stage", ["upload", "lens"])
+@pytest.mark.parametrize("failure,error_type", [
+    (Response(status=401), "authentication_error"),
+    (Response(status=403), "authentication_error"),
+    (Response(ValueError("serpapi-secret")), "invalid_response"),
+    (Response([]), "invalid_response"),
+    (Response({}), "invalid_response"),
+])
+def test_serpapi_v3_nonrecoverable_stage_failure_metadata(config, keys, stage, failure, error_type):
+    session = Session(posts=([failure] if stage == "upload" else [Response({"image_id": "id"})]),
+                      gets=([failure] if stage == "lens" else []))
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    waits = []
+    backend.retry = replace(backend.retry, sleeper=waits.append)
+    result = SearchTools(config, lens=backend).image_search({"image_id": "img_1"}, _context())
+    assert result.status == "error" and result.error_type == error_type
+    assert result.metadata == dict(provider="serpapi_google_lens", error_type=error_type,
+        failure_stage=stage, attempt_count=1, upload_attempt_count=1,
+        lens_attempt_count=(1 if stage == "lens" else 0))
+    assert not waits and len(session.calls) == (1 if stage == "upload" else 2)
+    assert "serpapi-secret" not in result.observation + json.dumps(result.metadata)
+
+
+def test_serpapi_v3_missing_key_has_zero_uploads(config, monkeypatch):
+    monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
+    session = Session()
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    result = SearchTools(config, lens=backend).image_search({"image_id": "img_1"}, _context())
+    assert result.error_type == "configuration_error"
+    assert result.metadata["failure_stage"] == "upload"
+    assert result.metadata["upload_attempt_count"] == result.metadata["lens_attempt_count"] == 0
+    assert not session.calls
+
+
+@pytest.mark.parametrize("image,limit", [(None, 1), (Image.new("RGB", (0, 4)), 1),
+                                        (Image.new("RGB", (4, 4)), 0)])
+def test_serpapi_v3_invalid_input_no_requests(config, keys, image, limit):
+    session = Session()
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    with pytest.raises(SearchBackendError) as caught:
+        backend.search(image, limit=limit)
+    assert caught.value.error_type == "invalid_argument"
+    assert caught.value.failure_stage == "upload"
+    assert caught.value.upload_attempt_count == 0 and not session.calls
+
+
+def test_serpapi_policy_does_not_change_serper_or_jina_defaults(config):
+    assert RetryPolicy().max_attempts == 3
+    assert RetryPolicy().backoff_seconds == (1, 2, 4)
+    for backend in (SerperSearchBackend(config.serper), JinaReaderBackend(config.jina_reader)):
+        assert backend.retry == RetryPolicy()
+    lens = SerpApiLensBackend(config.serpapi)
+    assert lens.retry.max_attempts == 5
+    assert lens.retry.backoff_seconds == (5, 10, 20, 30)
+
+
+def test_serpapi_v3_exhaustion_retains_formal_provider_interruption(config, keys):
+    from opensearch_vl_repro.rl.live_workflow import LiveRLWorkflowAdapter, ProviderInterruption
+    session = Session(posts=[Response({"image_id": "id"})],
+                      gets=[Response({"error": "serpapi-secret burst"})] * 5)
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    backend.retry = replace(backend.retry, sleeper=lambda _: None)
+    result = SearchTools(config, lens=backend).image_search({"image_id": "img_1"}, _context())
+    # Actual interruption attribution; no workflow engine/model/provider construction.
+    adapter = object.__new__(LiveRLWorkflowAdapter)
+    turn = SimpleNamespace(status=result.status, metadata=result.metadata,
+                           observation=result.observation, error=result.error_type)
+    with pytest.raises(ProviderInterruption) as caught:
+        adapter.observe_turn(turn)
+    assert caught.value.error_type == "provider_error"
+    assert adapter.infrastructure_failure is caught.value
+    assert "stage=lens" in str(caught.value)
+    assert "upload_attempt_count=1" in str(caught.value)
+    assert "lens_attempt_count=5" in str(caught.value)
+    assert "serpapi-secret" not in str(caught.value)
+
+
 @pytest.mark.parametrize("upload,lens,expected", [
     (Response(status=401), None, "authentication_error"),
     (Response(status=429), None, "quota_error"),

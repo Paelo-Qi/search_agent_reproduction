@@ -46,9 +46,9 @@ def test_dev50_default_uses_formal_base_eval_config():
     assert config["runtime"]["max_agent_turns"] == 16
 
 
-def test_only_agent_behavior_version_changes_for_v3():
+def test_image_id_v3_agent_and_search_reliability_v3_provenance():
     assert AGENT_BEHAVIOR_VERSION == 5
-    assert (CACHE_SCHEMA_VERSION, SEARCH_BEHAVIOR_VERSION, LAYOUT_BEHAVIOR_VERSION) == (1, 2, 1)
+    assert (CACHE_SCHEMA_VERSION, SEARCH_BEHAVIOR_VERSION, LAYOUT_BEHAVIOR_VERSION) == (1, 3, 1)
 
 
 def test_legacy_repair_training_fails_before_loading_config(tmp_path):

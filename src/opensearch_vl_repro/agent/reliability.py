@@ -16,12 +16,12 @@ from .tool_registry import ToolBackend, ToolContext, ToolResult
 
 
 CACHE_SCHEMA_VERSION = 1
-SEARCH_BEHAVIOR_VERSION = 2
+SEARCH_BEHAVIOR_VERSION = 3
 LAYOUT_BEHAVIOR_VERSION = 1
 AGENT_BEHAVIOR_VERSION = 5
 RUNTIME_METADATA_FIELDS = {
     "cache_hit", "cache_key", "cache_version", "attempt_count",
-    "latency_seconds", "cache_warning",
+    "latency_seconds", "cache_warning", "upload_attempt_count", "lens_attempt_count",
 }
 SECRET_ENV_NAMES = (
     "SERPER_API_KEY", "JINA_API_KEY", "SERPAPI_API_KEY", "PADDLEOCR_ACCESS_TOKEN",
@@ -88,6 +88,25 @@ class RetryPolicy:
                     raise
                 self.sleeper(self.delay_after(attempt))
         raise AssertionError("unreachable")
+
+
+SERPAPI_RELIABILITY_VERSION = "serpapi-google-lens-retry-v3"
+SERPAPI_MAX_ATTEMPTS = 5
+SERPAPI_BACKOFF_SECONDS = (5.0, 10.0, 20.0, 30.0)
+
+
+def serpapi_retry_policy() -> RetryPolicy:
+    """Independent bounded budget for EACH upload/Lens stage; no global change."""
+    return RetryPolicy(max_attempts=SERPAPI_MAX_ATTEMPTS, backoff_seconds=SERPAPI_BACKOFF_SECONDS)
+
+
+def provider_reliability_semantics() -> dict[str, Any]:
+    """Fresh JSON-safe identity, shared by runtime defaults and Main validation."""
+    return {"serpapi_google_lens": {
+        "version": SERPAPI_RELIABILITY_VERSION,
+        "max_attempts": SERPAPI_MAX_ATTEMPTS,
+        "backoff_seconds": list(SERPAPI_BACKOFF_SECONDS),
+    }}
 
 
 @dataclass(frozen=True)

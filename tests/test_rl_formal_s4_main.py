@@ -32,6 +32,8 @@ def main_run():
     original = fixture_run(n=4, world_size=4, prompt_count=400)
     s = copy.deepcopy(original["semantics"])
     s.update(coordinator_version=main.VERSION, initial_seed=20260506,
+        search_behavior_version=main.SEARCH_BEHAVIOR_VERSION,
+        provider_reliability=main.provider_reliability_semantics(),
         retention=copy.deepcopy(retention.CONTRACT), rollout_seed_scheme=main.SEED_SCHEME,
         optimizer=dict(name="AdamW", learning_rate=1e-6, weight_decay=0.),
         ppo=dict(epochs=1, microbatch=1, clip_ratio_low=.2, clip_ratio_high=.28, entropy=0., loss_mode="vanilla"),
@@ -141,7 +143,7 @@ def test_exact_main_identity_and_cli():
 
 
 def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
-    assert main.VERSION == "formal-s4-main400-v4"
+    assert main.VERSION == "formal-s4-main400-v5"
     assert smoke.VERSION == "formal-s3-smoke20-v1"
     assert smoke.ROLLOUT["max_model_len"] == 8192
     assert main.MAIN_ROLLOUT is not smoke.ROLLOUT
@@ -160,7 +162,7 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
     assert "context_budget_policy=CONTEXT_BUDGET_POLICY" in inspect.getsource(collection.run_collection_worker)
     from opensearch_vl_repro.rl.formal_collection import run_collection
     assert "context_budget_policy=" not in inspect.getsource(run_collection)
-    for case in ("v1", "v2", "v3", "8k", "missing", "changed"):
+    for case in ("v1", "v2", "v3", "v4", "8k", "missing", "changed"):
         semantics = copy.deepcopy(ctx.run["semantics"])
         if case == "v1":
             semantics["coordinator_version"] = "formal-s4-main400-v1"
@@ -172,6 +174,11 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
         elif case == "v3":
             semantics["coordinator_version"] = "formal-s4-main400-v3"
             semantics["rollout"]["behavior_version"] = "formal-s4-main400-v3"
+        elif case == "v4":
+            semantics["coordinator_version"] = "formal-s4-main400-v4"
+            semantics["rollout"]["behavior_version"] = "formal-s4-main400-v4"
+            del semantics["search_behavior_version"]
+            del semantics["provider_reliability"]
         elif case == "8k":
             semantics["rollout"]["config"]["max_model_len"] = 8192
         elif case == "missing":
@@ -184,6 +191,28 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
         assert digest(foreign["semantics"]["rollout"]) != digest(rollout)
         with pytest.raises(ValueError): main.require_main_run(foreign)
         with pytest.raises(ValueError): main.recover_main(ctx.output, foreign, cpu_fixture=True)
+
+
+def test_main_v5_explicit_provider_reliability_identity():
+    run = main_run()
+    assert main.SEARCH_BEHAVIOR_VERSION == 3
+    expected = {"serpapi_google_lens": {"version": "serpapi-google-lens-retry-v3",
+        "max_attempts": 5, "backoff_seconds": [5, 10, 20, 30]}}
+    assert run["semantics"]["provider_reliability"] == expected
+    assert run["semantics"]["search_behavior_version"] == 3
+    main.require_main_run(run)
+    for key, replacement in (("provider_reliability", None), ("provider_reliability", {}),
+                             ("search_behavior_version", 2)):
+        semantics = copy.deepcopy(run["semantics"])
+        if replacement is None:
+            del semantics[key]
+        else:
+            semantics[key] = replacement
+        other = cp.build_training_run_identity(run["run_id"], semantics=semantics,
+            prompt_ids=run["prompt_ids"], prompt_sources=run["prompt_sources"])
+        assert other["run_identity_sha256"] != run["run_identity_sha256"]
+        with pytest.raises(ValueError): main.require_main_run(other)
+        with pytest.raises(ValueError): cp.require_same_training_run(run, other)
 
 
 @pytest.mark.parametrize("kind,ceiling", [("main", 16384), ("smoke", 8192)])
