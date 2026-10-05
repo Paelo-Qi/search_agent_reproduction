@@ -45,6 +45,44 @@ class MainUpdateSession(UpdateSession):
     def checkpoint_kind(self, step):
         return "main_checkpoint"
 
+    def load(self, policy=None):
+        if not self.run["semantics"].get("continuation"):
+            return super().load(policy)
+        from .formal_main_continuation import (load_anchor, bootstrap_reload_capability,
+                                               bootstrap_directory, require_active)
+        _, receipt = load_anchor(self.output, self.run)
+        if self.args.phase != "bootstrap":
+            require_active(self.output, self.run)
+        if policy != receipt["inherited_policy"]:
+            return super().load(policy)  # suffix uses UNCHANGED same-run native path
+        from .formal_policy_update import load_formal_actor
+        capability = self.boundary("continuation_authority_full", lambda:
+            bootstrap_reload_capability(self.output, self.run, policy))
+        self.loaded = self.boundary("continuation_native_parent_load", lambda: load_formal_actor(self.run,
+            canonical_config=self.ctx["canonical"], runtime_config=self.ctx["runtime"],
+            source_adapter=self.args.sft_adapter, processor=self.processor, mesh=self.mesh, policy=policy,
+            checkpoint_directory=bootstrap_directory(self.output, receipt), continuation_capability=capability))
+        from .formal_s2_validation import actor_contract
+        return self.boundary("execution_contract", lambda: actor_contract(self.loaded.actor, self.ctx["canonical"]))
+
+    def bootstrap(self):
+        if not getattr(self.args, "continue_from_run", None):
+            return super().bootstrap()
+        self.prepare()
+        from .formal_main_continuation import load_anchor, publish_live_reload
+        from .formal_policy_update import require_reload_capability
+        anchor, _ = self.boundary("continuation_anchor", lambda: load_anchor(self.output, self.run))
+        policy = anchor["initial_policy"]
+        self.load(policy)
+        actual = self.boundary("continuation_actual_reload_capability", lambda:
+            require_reload_capability(self.loaded.reload_receipt, policy))
+        rows = self.collect(actual)
+        self.loaded = None
+        gc.collect()
+        self.torch.cuda.empty_cache()
+        self.boundary("continuation_live_reload_publication", lambda:
+            publish_live_reload(self.output, self.run, rows) if self.rank == 0 else None)
+
 
 def require_launcher(environ):
     world, rank, local = (int(environ.get(k, "-1")) for k in ("WORLD_SIZE", "RANK", "LOCAL_RANK"))

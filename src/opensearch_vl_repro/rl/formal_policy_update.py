@@ -245,7 +245,7 @@ def require_formal_reload(actor, policy, receipt, *, window=None):
 
 def load_formal_actor(run, *, canonical_config, runtime_config, source_adapter, processor, mesh, policy=None,
                       checkpoint_directory=None, initial_seed=None, cpu_fixture=False,
-                      construct=None, manager_factory=None):
+                      construct=None, manager_factory=None, continuation_capability=None):
     """Iteration zero binds original SFT; N>0 requires S1 immutable native checkpoint.
 
     Returns the actual initial PolicyIdentity if policy is omitted. S3 must use it
@@ -266,6 +266,8 @@ def load_formal_actor(run, *, canonical_config, runtime_config, source_adapter, 
         contract=run["semantics"]["execution_contract"]), world, cpu_fixture)
     files, expected, manifest = {}, None, None
     if checkpoint_directory is None:
+        if continuation_capability is not None:
+            raise ValueError("continuation requires FULL native checkpoint, never SFT fallback")
         if policy is not None and policy["policy_iteration"] != 0:
             raise ValueError("updated policy requires a verified native checkpoint, not just an adapter")
         adapter = Path(source_adapter).resolve()
@@ -288,13 +290,19 @@ def load_formal_actor(run, *, canonical_config, runtime_config, source_adapter, 
         directory = Path(checkpoint_directory).resolve()
         def native_checks():
             value = read_verified_checkpoint(directory)
-            require_same_training_run(run, value["run"])
+            expected_policy = policy
+            if continuation_capability is None:
+                require_same_training_run(run, value["run"])
+            else:
+                from .formal_main_continuation import authorize_actor_reload
+                value, expected_policy = authorize_actor_reload(continuation_capability, run, policy,
+                                                               directory, cpu_fixture=cpu_fixture)
             if value["evidence_scope"] != ("cpu_fixture" if cpu_fixture else "runtime"):
                 raise ValueError("foreign run/scope native checkpoint")
             roles, inventory = checkpoint_staging_roles(directory, world, exclude=("checkpoint.json",))
             if roles != value["artifact_role_files"] or inventory != value["file_sha256"]:
                 raise ValueError("native layout does not match verified S1.1 roles")
-            if policy is None or checkpoint_policy(value) != policy:
+            if policy is None or checkpoint_policy(value) != expected_policy:
                 raise ValueError("checkpoint does not match requested PolicyIdentity")
             return value
         manifest = _boundary(native_checks, world, cpu_fixture)

@@ -17,26 +17,38 @@ from .training_window import build_training_window, expected_window_prompts
 from .context_budget import CONTEXT_BUDGET_POLICY
 from opensearch_vl_repro.agent.reliability import SEARCH_BEHAVIOR_VERSION, provider_reliability_semantics
 
-VERSION = "formal-s4-main400-v5"
+VERSION = "formal-s4-main400-v6"
 MAIN_ROLLOUT = copy.deepcopy(ROLLOUT)
 MAIN_ROLLOUT["max_model_len"] = 16384
 SEED_SCHEME = "initial_seed+n*global_prompt_position+rollout_index-v1"
 
 
-def require_main_run(run):
+def require_main_run(run, *, _historical=False):
     from .actor_gate import BASE_MODEL, BASE_REVISION
     from .rl_actor_semantics import contract_sft_config
     from opensearch_vl_repro.agent.tool_contracts import RUNTIME_IMAGE_SEARCH_PROTOCOL_VERSION
     cp.validate_training_run_identity(run)
     s = run["semantics"]
-    if (s.get("coordinator_version") != VERSION or len(run["prompt_ids"]) != 400
+    version = s.get("coordinator_version")
+    if _historical:
+        from .formal_main_continuation import PARENT_VERSIONS
+        if version not in PARENT_VERSIONS or s.get("continuation"):
+            raise ValueError("continuation parent must be original single-run Main v4/v5")
+        if version.endswith("-v4"):
+            if "search_behavior_version" in s or "provider_reliability" in s:
+                raise ValueError("historical Main v4 search identity must remain unchanged")
+        elif (s.get("search_behavior_version") != SEARCH_BEHAVIOR_VERSION
+                or s.get("provider_reliability") != provider_reliability_semantics()):
+            raise ValueError("historical Main v5 provider identity differs")
+    elif (version != VERSION or s.get("search_behavior_version") != SEARCH_BEHAVIOR_VERSION
+          or s.get("provider_reliability") != provider_reliability_semantics()):
+        raise ValueError("Formal Main requires current v6/search-v3 identity")
+    if (len(run["prompt_ids"]) != 400
             or s["rollout_n"] != 4 or s["groups_per_window"] != 4 or s["world_size"] != 4
             or s["require_complete_windows"] is not True or s["weighting"] != cp.FORMAL_WEIGHTING
             or s["dataset"]["split"] != "main" or s.get("diagnostic_version")
             or s.get("retention") != retention.CONTRACT or s.get("rollout_seed_scheme") != SEED_SCHEME
-            or s.get("search_behavior_version") != SEARCH_BEHAVIOR_VERSION
-            or s.get("provider_reliability") != provider_reliability_semantics()
-            or s["rollout"] != dict(behavior_version=VERSION, context_budget_policy=CONTEXT_BUDGET_POLICY, config=MAIN_ROLLOUT)
+            or s["rollout"] != dict(behavior_version=version, context_budget_policy=CONTEXT_BUDGET_POLICY, config=MAIN_ROLLOUT)
             or s["optimizer"] != dict(name="AdamW", learning_rate=1e-6, weight_decay=0.)
             or s["ppo"] != dict(epochs=1, microbatch=1, clip_ratio_low=.2, clip_ratio_high=.28,
                                 entropy=0., loss_mode="vanilla")
@@ -117,6 +129,12 @@ def prepare_context(args, root):
     root = Path(root).resolve()
     validate_cache_locators(args, root)
     output, _ = main_paths(root, args.run_id)
+    if getattr(args, "continue_from_run", None):
+        parent_output, parent_reports = main_paths(root, args.continue_from_run)
+        for field in ("tool_cache_dir", "reward_cache_dir"):
+            target = getattr(args, field, None)
+            if target is not None and any(Path(target).resolve().is_relative_to(p) for p in (parent_output, parent_reports)):
+                raise ValueError("continuation cache cannot write parent namespace")
     # Additional namespace restrictions for shared cache locators.
     for field in ("tool_cache_dir", "reward_cache_dir"):
         target = getattr(args, field, None)
@@ -159,27 +177,38 @@ def prepare_context(args, root):
         search_behavior_version=SEARCH_BEHAVIOR_VERSION, provider_reliability=provider_reliability_semantics(),
         integration_source_hashes=hashes, software_versions=versions, initial_seed=config["data"]["seed"],
         retention=copy.deepcopy(retention.CONTRACT), rollout_seed_scheme=SEED_SCHEME)
+    from .formal_main_continuation import attach_binding, read_authority
+    attach_binding(args, root, semantics)
     run = cp.build_training_run_identity(args.run_id, semantics=semantics,
         prompt_ids=[r["prompt_id"] for r in records],
         prompt_sources=[dict(prompt_id=r["prompt_id"], source_identity=source_identity(r)) for r in records],
         locators=dict(base_snapshot=str(args.base_model_path.resolve()), source_root=str(args.source_root.resolve())))
     require_main_run(run)
+    if (output / "continuation").exists():
+        read_authority(output, run)
     runtime = copy.deepcopy(canonical)
     runtime["model"]["name_or_path"] = str(args.base_model_path.resolve())
     return dict(run=run, records=records, canonical=canonical, runtime=runtime, versions=versions,
                 git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip())
 
 
-def recover_main(root, run, *, cpu_fixture=False, reconcile=True, cleanup=True):
+def recover_main(root, run, *, cpu_fixture=False, reconcile=True, cleanup=True, _historical=False):
     """Metadata history + FULL current parent/current unconsumed groups only.
 
     Caller owns coordinator lifetime/lock; publication calls this under formal
     lock with reconcile=False. No S1 full-history recovery is used indirectly.
     """
-    require_main_run(run)
+    if _historical and (reconcile or cleanup):
+        raise ValueError("historical parent recovery is strictly read-only")
+    require_main_run(run, _historical=_historical)
     root = Path(root)
     scope = "cpu_fixture" if cpu_fixture else "runtime"
-    anchor = cp._load_anchor(root, run)
+    authority = None
+    if run["semantics"].get("continuation"):
+        from .formal_main_continuation import load_anchor, prefix_capability, read_authority
+        anchor, authority = load_anchor(root, run, cpu_fixture=cpu_fixture)
+    else:
+        anchor = cp._load_anchor(root, run)
     if anchor["evidence_scope"] != scope:
         raise ValueError("CPU fixture anchor cannot enter runtime Main")
     checkpoints = [cp.read_checkpoint_manifest_only(p) for p in sorted((root / "checkpoints").iterdir())
@@ -187,18 +216,21 @@ def recover_main(root, run, *, cpu_fixture=False, reconcile=True, cleanup=True):
     groups = [read_formal_group_manifest_only(p) for p in sorted((root / "groups").iterdir())
               if not p.name.startswith(".")]
     ledger = reconstruct_consumed_ledger(run, anchor["initial_policy"], groups, checkpoints,
-        checkpoint_root=root / "checkpoints", checkpoint_reader=cp.read_checkpoint_manifest_only)
+        checkpoint_root=root / "checkpoints", checkpoint_reader=cp.read_checkpoint_manifest_only,
+        inherited_prefix=prefix_capability(authority) if authority else None)
     current = ledger["policy"]["policy_iteration"]
     if current > 100:
         raise ValueError("Main cannot exceed 100 optimizer steps")
-    policies = [anchor["initial_policy"]] + [checkpoint_policy(c) for c in checkpoints]
+    policies = {anchor["initial_policy"]["policy_iteration"]: anchor["initial_policy"],
+                **{c["policy_iteration"]: checkpoint_policy(c) for c in checkpoints}}
+    by_step = {c["policy_iteration"]: c for c in checkpoints}
     by_gid = {g["identity"]["trajectory_group_id"]: g for g in groups}
     for group in groups:
         ident = group["identity"]
         iteration = ident["policy_iteration"]
         if retention.physical_files(root / "groups" / ident["trajectory_group_id"], exclude=("group.json",)) != set(group["file_sha256"]):
             raise ValueError("missing/extra historical group artifact")
-        if (iteration >= 100 or iteration > current or group["evidence_scope"] != scope
+        if (iteration not in policies or iteration >= 100 or iteration > current or group["evidence_scope"] != scope
                 or group.get("diagnostic_mode") or ident["expected_n"] != 4
                 or ident["prompt_id"] not in expected_window_prompts(run, iteration)
                 or ident["pre_update_policy_fingerprint"] != policies[iteration]["effective_policy_fingerprint"]
@@ -207,7 +239,7 @@ def recover_main(root, run, *, cpu_fixture=False, reconcile=True, cleanup=True):
             raise ValueError("foreign/stale/diagnostic Main group")
         merge = group.get("static_merge", {})
         cp.check_seal(merge, "merged_checkpoint_fingerprint")
-        if (merge.get("version") != VERSION or merge.get("run_identity_sha256") != run["run_identity_sha256"]
+        if (merge.get("version") != run["semantics"]["coordinator_version"] or merge.get("run_identity_sha256") != run["run_identity_sha256"]
                 or merge.get("policy_iteration") != iteration
                 or merge.get("effective_policy_fingerprint") != policies[iteration]["effective_policy_fingerprint"]
                 or merge.get("parent_checkpoint_identity") != policies[iteration]["checkpoint_identity"]
@@ -224,6 +256,8 @@ def recover_main(root, run, *, cpu_fixture=False, reconcile=True, cleanup=True):
                 raise ValueError("Main requires real rLLM/live reward evidence")
     if checkpoints:
         cp.read_verified_checkpoint(root / "checkpoints" / f"policy-{current:06d}")
+    elif authority:
+        read_authority(root, run, cpu_fixture=cpu_fixture, full=True)
     for c in checkpoints:
         step = c["policy_iteration"]
         if c["evidence_scope"] != scope or c["eligibility"] != cp.checkpoint_eligibility("main_checkpoint"):
@@ -256,7 +290,7 @@ def recover_main(root, run, *, cpu_fixture=False, reconcile=True, cleanup=True):
             raise ValueError("invalid attempt directory")
         a = read_update_attempt(root, p.name)
         step = a["expected_optimizer_step"]
-        if a["run_identity_sha256"] != run["run_identity_sha256"] or not 1 <= step <= min(current + 1, 100):
+        if a["run_identity_sha256"] != run["run_identity_sha256"] or step - 1 not in policies or not 1 <= step <= min(current + 1, 100):
             raise ValueError("foreign/future update attempt")
         matching = [g for prompt in expected_window_prompts(run, step - 1) for g in groups
                     if g["identity"]["prompt_id"] == prompt and g["identity"]["policy_iteration"] == step - 1]
@@ -268,7 +302,7 @@ def recover_main(root, run, *, cpu_fixture=False, reconcile=True, cleanup=True):
         if step <= current and a["phase"] not in {"failed", "verified"}:
             if not (not reconcile and step == current and a == checkpoints[-1]["update_attempt"]):
                 raise ValueError("unresolved historical attempt")
-        if a["phase"] == "verified" and (step > current or a["attempt_id"] != checkpoints[step - 1]["update_attempt"]["attempt_id"]):
+        if a["phase"] == "verified" and (step not in by_step or a["attempt_id"] != by_step[step]["update_attempt"]["attempt_id"]):
             raise ValueError("duplicate/foreign verified attempt")
         attempts.append(a)
     if len([a for a in attempts if a["expected_optimizer_step"] == current + 1 and a["phase"] != "failed"]) > 1:
@@ -279,7 +313,7 @@ def recover_main(root, run, *, cpu_fixture=False, reconcile=True, cleanup=True):
     for g in current_groups:
         read_formal_group(root / "groups" / g["identity"]["trajectory_group_id"])
     if current < 100:
-        retention.check_retirement(root, run, policies[-1], current_groups,
+        retention.check_retirement(root, run, policies[current], current_groups,
                                   finish_cleanup=cleanup, cpu_fixture=cpu_fixture)
     # Orphan receipts must never silently authorize a future/current deletion.
     expected_receipts = {receipt.parent.name for c in checkpoints for receipt in (
@@ -293,6 +327,7 @@ def recover_main(root, run, *, cpu_fixture=False, reconcile=True, cleanup=True):
     if any(p.name != allowed_merge and not p.name.startswith(".") for p in (root / "merges").glob("*")):
         raise ValueError("unretired historical/foreign static merge")
     return dict(checkpoints=checkpoints, groups=groups, policy=ledger["policy"], ledger=ledger, attempts=attempts,
+        continuation_authority=authority,
         current_groups=current_groups, missing_prompts=[p for p in expected if p not in {g["identity"]["prompt_id"] for g in current_groups}])
 
 
@@ -352,9 +387,22 @@ def commit_main_checkpoint(root, staging, manifest, *, cpu_fixture=False):
 
 
 def final_reconstruction(root, run, *, cpu_fixture=False):
+    if not cpu_fixture and run["semantics"].get("continuation"):
+        from .formal_main_continuation import require_active
+        require_active(root, run)
     value = recover_main(root, run, cpu_fixture=cpu_fixture)
     checkpoints, groups = value["checkpoints"], value["groups"]
-    if (len(checkpoints) != 100 or len(groups) != 400 or sum(len(g["members"]) for g in groups) != 1600
+    inherited = dict(windows=0, groups=0, members=0, prompt_ids=[])
+    authority = value["continuation_authority"]
+    if authority:
+        from .formal_main_continuation import final_prefix_audit, read_authority
+        read_authority(root, run, cpu_fixture=cpu_fixture, full=True)
+        inherited = final_prefix_audit(Path(root).parents[2], authority, run, cpu_fixture=cpu_fixture)
+    ordered_prompts = inherited["prompt_ids"] + [g["identity"]["prompt_id"] for c in checkpoints for g in c["groups"]]
+    if ordered_prompts != run["prompt_ids"]:
+        raise ValueError("final inherited prefix + local suffix membership/order/gap mismatch")
+    if (len(checkpoints) + inherited["windows"] != 100 or len(groups) + inherited["groups"] != 400
+            or sum(len(g["members"]) for g in groups) + inherited["members"] != 1600
             or value["policy"]["global_optimizer_step"] != 100
             or len(value["ledger"]["consumed_group_ids"]) != 400
             or any(e["status"] != "consumed_by_verified_checkpoint" for e in value["ledger"]["prompts"].values())
@@ -371,12 +419,16 @@ def final_reconstruction(root, run, *, cpu_fixture=False):
     # Private historical failed attempts stay forensic, but none may belong to
     # an unconsumed prompt (the final ordered membership is fully consumed).
     audit_private_collections(root, run)
-    return dict(version=VERSION, scope="cpu_fixture" if cpu_fixture else "runtime", passed=not cpu_fixture,
+    result = dict(version=VERSION, scope="cpu_fixture" if cpu_fixture else "runtime", passed=not cpu_fixture,
         checks=dict(immutable_chain=True, ordered_groups400=True, members1600=True, windows100=True,
                     verified_steps100=True, retention_verified=True, no_active_merge=True),
         run_identity=run, final_policy=value["policy"], eligible_for_main_init=False,
         checkpoint_kind="main_checkpoint", groups_completed=400, trajectories_completed=1600,
         optimizer_steps=list(range(1, 101)))
+    if authority:
+        from .formal_main_continuation import report_fields
+        result.update(report_fields(authority, len(checkpoints)))
+    return result
 
 
 def audit_private_collections(root, run):

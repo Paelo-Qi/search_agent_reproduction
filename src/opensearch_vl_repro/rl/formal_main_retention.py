@@ -124,12 +124,16 @@ def check_checkpoint_files(root, run, checkpoint, checkpoints, *, heavy=False,
     path = receipt_path(root, "compact", step)
     files = checkpoint["file_sha256"]
     if path.exists():
-        if step >= len(checkpoints):
+        latest = max(c["policy_iteration"] for c in checkpoints)
+        if step >= latest:
             raise ValueError("latest checkpoint cannot have compaction authorization")
-        successor = checkpoints[step]
+        successors = [c for c in checkpoints if c["policy_iteration"] == step + 1]
+        if len(successors) != 1:
+            raise ValueError("compaction requires unique absolute-step successor")
+        successor = successors[0]
         verified_successor(root, successor)
         value = read_receipt(path)
-        expected = cp.seal(compaction_value(run, checkpoint, successor, len(checkpoints)), "receipt_sha256")
+        expected = cp.seal(compaction_value(run, checkpoint, successor, latest), "receipt_sha256")
         if value != expected:
             raise ValueError("compaction authorization mismatch")
         removable = {n: sha for role in value["removable_role_files"].values() for n, sha in role.items()}
@@ -154,7 +158,7 @@ def compact_history(root, run, checkpoints, *, cpu_fixture=False):
             continue
         verified_successor(root, successor)
         check_checkpoint_files(root, run, checkpoint, checkpoints, cpu_fixture=cpu_fixture)
-        authorize(root, "compact", step, compaction_value(run, checkpoint, successor, len(checkpoints)),
+        authorize(root, "compact", step, compaction_value(run, checkpoint, successor, checkpoints[-1]["policy_iteration"]),
                   cpu_fixture=cpu_fixture)
         check_checkpoint_files(root, run, checkpoint, checkpoints, finish_cleanup=True, cpu_fixture=cpu_fixture)
 

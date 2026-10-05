@@ -143,7 +143,7 @@ def test_exact_main_identity_and_cli():
 
 
 def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
-    assert main.VERSION == "formal-s4-main400-v5"
+    assert main.VERSION == "formal-s4-main400-v6"
     assert smoke.VERSION == "formal-s3-smoke20-v1"
     assert smoke.ROLLOUT["max_model_len"] == 8192
     assert main.MAIN_ROLLOUT is not smoke.ROLLOUT
@@ -193,7 +193,7 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
         with pytest.raises(ValueError): main.recover_main(ctx.output, foreign, cpu_fixture=True)
 
 
-def test_main_v5_explicit_provider_reliability_identity():
+def test_main_v6_explicit_provider_reliability_identity():
     run = main_run()
     assert main.SEARCH_BEHAVIOR_VERSION == 3
     expected = {"serpapi_google_lens": {"version": "serpapi-google-lens-retry-v3",

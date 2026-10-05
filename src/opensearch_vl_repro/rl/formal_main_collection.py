@@ -27,8 +27,16 @@ def validate_main_handoff(root, run, policy, source_adapter):
         role_files = identity["file_sha256"]
     else:
         parent = Path(root) / "checkpoints" / f"policy-{policy['policy_iteration']:06d}"
+        expected_policy = policy
+        if run["semantics"].get("continuation"):
+            from .formal_main_continuation import read_authority, require_active, bootstrap_directory
+            require_active(root, run)
+            receipt = read_authority(root, run, full=True)
+            if policy == receipt["inherited_policy"]:
+                parent = bootstrap_directory(root, receipt)
+                expected_policy = receipt["parent_evidence"]["proof"]["policy"]
         checkpoint = cp.read_verified_checkpoint(parent)
-        if checkpoint_policy(checkpoint) != policy or checkpoint["eligibility"]["kind"] != "main_checkpoint":
+        if checkpoint_policy(checkpoint) != expected_policy or checkpoint["eligibility"]["kind"] != "main_checkpoint":
             raise ValueError("foreign/diagnostic Main adapter")
         directory = parent / "adapter"
         identity = adapter_file_identity(directory)
@@ -50,6 +58,8 @@ def merged_path(output, policy):
 def run_merge_worker(args, root):
     ctx = prepare_context(args, root)
     output, _ = main_paths(root, args.run_id)
+    from .formal_main_continuation import require_active
+    require_active(output, ctx["run"])
     recovered = recover_main(output, ctx["run"])
     if not recovered["missing_prompts"]:
         raise ValueError("complete window must retire merge, not recreate it")
@@ -106,7 +116,9 @@ def read_shared_merge(output, run, policy):
 def run_collection_worker(args, root):
     from .formal_smoke import redact_runtime_secrets
     from .live_workflow import ProviderInterruption
+    from .formal_main_continuation import require_active
     ctx = prepare_context(args, root)
+    require_active(main_paths(root, args.run_id)[0], ctx["run"])
     output, reports = main_paths(root, args.run_id)
     backend, stage, identity = None, "recovery", None
     invocation = str(uuid.uuid4())

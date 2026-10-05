@@ -400,17 +400,22 @@ def retry_update_plan(attempt, window, policy, *, verified_checkpoints):
 
 
 def reconstruct_consumed_ledger(run, initial, groups, verified_checkpoints, *, window=None, checkpoint_root=None,
-                                checkpoint_reader=None):
+                                checkpoint_reader=None, inherited_prefix=None):
     from pathlib import Path
     from .checkpoint import read_verified_checkpoint, validate_checkpoint_manifest, validate_policy, validate_training_run_identity
     from .group import validate_formal_group
     from .training_window import validate_training_window
     validate_training_run_identity(run)
     validate_policy(initial)
-    if initial["policy_iteration"] != 0 or initial["run_identity_sha256"] != run["run_identity_sha256"]:
-        raise ValueError("ledger requires this run's iteration-zero anchor")
-    ledger = {p: {"status": "pending", "group_id": None, "checkpoint_identity": None} for p in run["prompt_ids"]}
-    consumed, current = set(), initial
+    if inherited_prefix is None:
+        if initial["policy_iteration"] != 0 or initial["run_identity_sha256"] != run["run_identity_sha256"]:
+            raise ValueError("ledger requires this run's iteration-zero anchor")
+        ledger = {p: {"status": "pending", "group_id": None, "checkpoint_identity": None} for p in run["prompt_ids"]}
+        consumed = set()
+    else:
+        from .formal_main_continuation import inherited_ledger
+        ledger, consumed = inherited_ledger(inherited_prefix, run, initial)
+    current = initial
     for checkpoint in verified_checkpoints:
         validate_checkpoint_manifest(checkpoint)
         if (checkpoint_root is None or (checkpoint_reader or read_verified_checkpoint)(

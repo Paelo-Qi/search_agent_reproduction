@@ -32,6 +32,8 @@ def worker_command(args, root, phase, *, prompt=None):
     for k in ("tool_cache_dir", "reward_cache_dir"):
         if getattr(args, k, None) is not None:
             common += ["--" + k.replace("_", "-"), str(getattr(args, k))]
+    if getattr(args, "continue_from_run", None):
+        common += ["--continue-from-run", args.continue_from_run]
     if phase == "collect":
         if prompt is None:
             raise ValueError("each collection worker requires one prompt")
@@ -87,6 +89,11 @@ def orchestrate(args, root, ctx, single=None, parallel=None, *, cpu_fixture=Fals
                 scope="cpu_fixture" if cpu_fixture else "runtime", run_identity_sha256=run["run_identity_sha256"],
                 elapsed_seconds=time.monotonic() - started, subprocesses=events, disk=disk,
                 eligible_for_main_init=False, software_versions=ctx.get("versions"), git_commit=ctx.get("git_commit"), **extra)
+            if (output / "continuation").exists():
+                from .formal_main_continuation import read_authority, report_fields
+                authority = read_authority(output, run, cpu_fixture=cpu_fixture)
+                local_windows = len(list((output / "checkpoints").glob("policy-*")))
+                report.update(report_fields(authority, local_windows))
             cp.durable_json(reports / "report.json", redact_runtime_secrets(report), cpu_fixture=cpu_fixture)
             return report
         def guard(phase):
@@ -115,7 +122,20 @@ def orchestrate(args, root, ctx, single=None, parallel=None, *, cpu_fixture=Fals
             if old_report.exists():
                 peak = json.loads(old_report.read_text(encoding="utf-8")).get("disk", {}).get("peak_observed_run_bytes", 0)
             write("running")
-            if not (output / "identity").exists():
+            if run["semantics"].get("continuation"):
+                from .formal_main_continuation import materialize, require_active
+                stage = "continuation_materialization"
+                def continuation_guard(needed):
+                    disk = retention.disk_accounting(output, previous_peak=peak, report_root=reports)
+                    retention.disk_guard(disk, needed_bytes=needed, max_run_bytes=args.max_run_gib * retention.GIB,
+                                         min_free_bytes=args.min_free_gib * retention.GIB)
+                materialize(root, output, run, cpu_fixture=cpu_fixture, guard=continuation_guard)
+                if not cpu_fixture:
+                    if not (output / "continuation_reload").exists():
+                        guard("update")
+                        launch("bootstrap")  # actual fresh W4 native/AdamW/RNG verification
+                    require_active(output, run)
+            elif not (output / "identity").exists():
                 guard("update")
                 launch("bootstrap")
             recovered = recover_main(output, run, cpu_fixture=cpu_fixture)

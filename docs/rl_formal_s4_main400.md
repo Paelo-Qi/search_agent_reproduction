@@ -10,9 +10,10 @@ provisioned; CPU fixtures never authorize runtime PASS.
 
 S4 uses `configs/rl_main.yaml`, the existing quality-selected Main400 and four
 ordered 100-row shards. Full pinned-source/quality/overlap/image preflight is
-mandatory before bootstrap. Iteration zero ONLY uses the original
+mandatory before bootstrap. Fresh-run iteration zero ONLY uses the original
 `outputs/sft_main_imageid_v3/checkpoint-3k/adapter`; Smoke/Gate/S2/staging
-initialization is forbidden.
+initialization is forbidden. The separate, explicit v6 continuation authority
+below may inherit a verified nonzero v4/v5 Main boundary; it is not arbitrary init.
 
 400 prompts / n=4 / K=4 / W=4 / 100 windows; one AdamW step per window,
 lr=1e-6, weight decay=0, PPO epochs=1, per-generation-row mean weighting,
@@ -22,7 +23,7 @@ fatal semantics, live tools and judges are unchanged. The shared S2 production
 update method performs official verl RLOO, O/C, LoRA change/match, native
 model/AdamW/RNG save and destructive fresh multimodal reload.
 
-`formal-s4-main400-v5` binds ordered source identities, frozen data/manifest and
+`formal-s4-main400-v6` binds ordered source identities, frozen data/manifest and
 config hashes, SFT lineage, pinned offline base, software/source hashes,
 algorithm/rollout/reward/tool contracts, seed, retention contract/milestones and
 seed scheme. Every member's seed is `initial_seed + 4*global_position + index`.
@@ -149,10 +150,10 @@ Disk-accounting full/compacted checkpoint lists are sorted by zero-padded
 policy name, independently of filesystem enumeration order; retention and
 compaction authorization rules are unchanged.
 
-## Historical v4 AutoDL acceptance commands (NOT commands for this v5 checkout)
+## Historical v4 AutoDL acceptance commands (NOT commands for this v6 checkout)
 
 The commands below document the original attempt4 v4 bootstrap. Do NOT execute
-them with this v5 checkout or reuse attempt4 with modified sources. They are
+them with this v6 checkout or reuse attempt4 with modified sources. They are
 not a continuation recipe and not a recommendation to restart from SFT3k.
 
 Do not run these locally. Provision the exact frozen Main400/quality/source,
@@ -209,10 +210,10 @@ PYTHONPATH=src python -m pytest tests/test_rl_group.py \
 git diff --check
 ```
 
-This publication-lock patch runs targeted tests ONLY. Full pytest is deferred until
-the user reviews the diff; it is not part of this development invocation.
+This continuation patch runs targeted tests ONLY; full pytest is not part of
+this development invocation.
 
-## SerpAPI reliability v3 and Main continuation blocker
+## Frozen SerpAPI reliability v3 (Goal A)
 
 Upload and Google Lens each have an independent bounded five-attempt budget:
 wait 5, 10, 20, then 30 seconds, deterministically, without jitter. Timeout,
@@ -232,55 +233,109 @@ Successful results carry both stage counts; cache hits do not replay those
 runtime counters. Request credentials and provider error payloads are not
 included in diagnostic metadata or error messages.
 
-**Goal A is implemented; Goal B is BLOCKED and is NOT implemented.**
-Do not upgrade the running `formal-main400-s4-attempt4` in place. No parent
-policy number is known locally, and no latest-parent resolution is claimed.
-AutoDL artifacts are absent: this finding is based on code, not a parent
-checkpoint/native/AdamW/RNG/retention inspection.
+## Verified cross-version continuation (Goal B, v6)
 
-The existing architecture has no legal inherited-prefix authority:
+`formal-main-continuation-v1` supports original, non-continued Main v4/v5 parents
+only. Gate/Smoke/S2/CPU/unverified parents, nested continuation, in-place upgrades
+and arbitrary adapter initialization fail closed. `eligible_for_main_init=false`
+is unchanged. Never resume attempt4 with v6 or edit/reseal its historical identity.
 
-- `checkpoint.initialize_formal_run` and `_load_anchor` require this run's
-  exact original-SFT iteration-zero policy; `run_state.reconstruct_consumed_ledger`
-  requires policy zero and a single matching run hash throughout all checkpoints
-  and groups. A nonzero copied/resealed anchor is rejected.
-- `formal_policy_update.load_formal_actor` FULL-verifies the native checkpoint
-  and requires its run identity and PolicyIdentity to match the current run.
-  A parent checkpoint cannot be loaded as a child capability without a new,
-  explicit, verified continuation authority (not an identity bypass).
-- Main recovery indexes historical policies by absolute iteration in a complete
-  same-run chain; retention indexes successors as `checkpoints[step]` and binds
-  compaction to that run. A suffix beginning at an arbitrary N is not supported.
-- Final reconstruction requires 100 local same-run checkpoints, 400 local groups
-  and 1600 members. It has no receipt schema/validator to prove a parent prefix
-  plus child suffix, or to retain and verify cross-namespace historical evidence.
+First stop and reconcile the parent under its original code. Handoff acquires
+the parent's existing coordinator/formal/publication locks read-only and rejects
+active locks, unpublished update staging, ambiguous attempts or corrupt latest
+state; it does not silently fall back to an older policy. It dynamically verifies
+the original SFT anchor, complete checkpoint/attempt/retention chain and actual
+consumed groups, then FULL-verifies the latest checkpoint's SHA inventory and W4
+rank evidence. The actual parent policy N is unknown locally and is never hardcoded.
 
-Consequently, a CLI-only handoff or checkpoint copy cannot satisfy the requested
-contract. This patch stops that part as explicitly permitted by the task.
-No `--continue-from-run` flag, bootstrap copy, mutable parent resolution, optimizer
-reset, adapter-only fallback or arbitrary Main initialization is introduced.
-There is intentionally no runnable continuation command yet. A future narrowly
-versioned continuation schema must address all four authority layers, frozen
-latest-parent resolution, full child-owned artifact materialization/disk guards,
-inherited ledger evidence and combined final verification **before** permitting
-collection/update. Parent current-window partial groups must then be excluded
-from handoff; model/AdamW/RNG/absolute steps/global-position seeds must continue
-from the frozen verified boundary. None of those features is claimed by this patch.
+The sealed child run binding and `continuation/receipt.json` freeze N/global step,
+parent run/checkpoint/policy identities, original artifact role/file hashes,
+exact first 4N ordered prompts/group identities and prefix manifest hashes.
+Only enumerated provider/reliability and continuation control-plane source files
+may differ. Dataset/ordered sources, base/SFT, execution, PPO/AdamW/reward/judge,
+generation/context/tool/image protocol, seed, retention and software are compared
+exactly. Goal A's five-attempt/backoff strategy is not changed by this handoff.
 
-Same-run source/semantic identity checks and `eligible_for_main_init=false` remain
-intact. Do not treat this v5 provider patch as authorization to restart Main from
-SFT3k or resume attempt4 with v5. Keep the active historical run and its namespace
-unchanged while the continuation architecture is resolved.
+The child disk guard covers bootstrap copy plus receipt/anchor metadata. All
+adapter, native model, AdamW, RNG and bound metadata files are SHA-verified and
+copied (not symlinked) to child staging. Existing durable publication fsyncs all
+bytes and directories, writes the receipt last in staging, then atomically
+publishes `continuation/bootstrap/policy-NNNNNN` with its ORIGINAL parent
+checkpoint manifest intact. The child anchor expresses a distinct inherited
+logical policy and explicit cross-run edge; it does not launder parent identity.
+Failed staging is forensic, never authority. A post-receipt/pre-anchor crash
+finishes from the frozen child-owned receipt without re-resolving parent latest.
 
-Targeted CPU acceptance for this reliability patch (no full pytest):
+Materialization alone NEVER authorizes collection. A fresh four-rank bootstrap
+uses the original native loader with a narrow verified bootstrap capability.
+It loads actual model/LoRA, AdamW and RNG and verifies all four rank snapshots,
+global step N and execution/dropout contracts before publishing the separate
+`continuation_reload/receipt.json` activation. All workers must exit under the
+unchanged supervisor before the next phase. Missing/mismatched state rejects;
+there is no optimizer/RNG/step reset or SFT fallback. Only this inherited initial
+handoff uses the capability; child policy N+1 onward uses ordinary same-run
+checkpoint loading and the unchanged S2 update implementation.
+
+The ledger starts with the verified prefix, not a fabricated `N*4` counter.
+Parent current-window partial groups are NOT copied or reused. Window N+1
+collects all K4 prompts afresh, then updates to absolute step/policy N+1.
+Seeds remain `initial_seed + 4*original_global_prompt_position + rollout_index`.
+`--stop-after-window 25` is absolute: N<25 runs N+1..25; N>=25 adds no update
+(a completed policy100 may undergo final verification). Parent namespace,
+reports, caches and retention are never written; explicit parent cache locators
+are rejected. Keep parent history as forensic/final-audit evidence.
+
+Routine child recovery validates its frozen metadata authority and current own
+checkpoint/bootstrap, not parent historical large bytes or a newly resolved N.
+Later parent progress cannot drift the frozen boundary. Child retention uses
+absolute steps and only child-local successors; it never compacts parent or its
+own inherited bootstrap. Final heavyweight audit independently verifies the
+frozen parent prefix and child suffix as EXACT ordered 400 prompts, 100 windows/
+steps, 400 groups/1600 members and final policy100, with retained milestones
+25/50/75/100 and no partial collection, active merge or unresolved update.
+Parent checkpoint/group evidence must remain accessible and valid at final
+audit, including its legally authorized compaction and full milestone artifacts.
+The final report/manifest records parent identity, frozen N, inherited/local
+counts, receipt hash and old/new reliability semantics; it cannot claim a fresh
+child-only history. Final PASS publication ordering remains unchanged.
+
+### Future AutoDL handoff command (NOT executed locally)
+
+Use the same frozen locators/config bytes as the parent; remove the historical
+`--run-id formal-main400-s4-attempt4` entry from the `MAIN_ARGS` array above.
+Choose a NEW child run ID, after stopping the parent under its original code:
 
 ```bash
-PYTHONPATH=src python -m pytest tests/test_phase3_search.py \
-  tests/test_phase4_reliability.py tests/test_rl_formal_s4_main.py \
-  tests/test_rl_formal_main_continuation.py tests/test_v3_provenance_guards.py \
+export PARENT_RUN=formal-main400-s4-attempt4
+export RUN_ID=formal-main400-s4-continuation-v6-attempt1  # choose an unused NEW ID
+PYTHONPATH=src python scripts/run_rl_formal_main.py \
+  "${MAIN_ARGS[@]}" --run-id "$RUN_ID" \
+  --continue-from-run "$PARENT_RUN" --stop-after-window 25
+# Same child resume: repeat the command, keeping --continue-from-run unchanged.
+# After inspecting the real verified boundary, omit ONLY --stop-after-window:
+PYTHONPATH=src python scripts/run_rl_formal_main.py \
+  "${MAIN_ARGS[@]}" --run-id "$RUN_ID" --continue-from-run "$PARENT_RUN"
+```
+
+No manual N is needed or accepted. A changed CLI parent/semantic input fails
+closed; never edit receipts to make resume pass. Provision extra disk for the
+child-owned FULL bootstrap in addition to normal update/merge headroom. Parent
+history remains a final-audit dependency, not a routine recovery native loader
+dependency. This first schema does not support continuation of a continued child.
+
+Targeted CPU acceptance only (includes retention/run-state regressions):
+
+```bash
+PYTHONPATH=src python -m pytest \
+  tests/test_rl_formal_main_continuation.py tests/test_rl_formal_s4_main.py \
+  tests/test_rl_formal_contracts.py tests/test_rl_formal_update.py tests/test_rl_group.py \
   -o addopts= -q -p no:cacheprovider
 git diff --check
 ```
 
-The continuation test file proves existing rejection barriers and parent metadata
-immutability only; it does not prove a working handoff or authorize GPU execution.
+CPU tests cover multiple dynamic N values, fail-closed latest/authority/native
+reload, immutable parent bytes, crash recovery, absolute seeds/stops, milestone
+crossing and real fixture prefix+suffix policy100 accounting. They do not prove
+AutoDL native compatibility, actual disk/VRAM/timing or runtime PASS. AutoDL
+artifacts are absent; those details can only be audited from code and the user's
+provided run conclusions. No GPU/model/API/training was executed for this patch.

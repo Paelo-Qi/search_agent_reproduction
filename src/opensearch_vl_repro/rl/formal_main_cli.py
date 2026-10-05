@@ -7,6 +7,7 @@ def build_parser(root, *, worker=None):
     root = Path(root)
     p = argparse.ArgumentParser(description="Formal S4 Main400 (not Smoke continuation)")
     p.add_argument("--run-id", required=True)
+    p.add_argument("--continue-from-run", help="verified original Main v4/v5 -> NEW v6 child; dynamically freeze latest")
     p.add_argument("--config", type=Path, default=root / "configs/rl_main.yaml")
     p.add_argument("--data", type=Path, default=root / "data/rl/main400.json")
     for flag in ("source-root", "source-parquet", "base-model-path", "eval-overlap-manifest", "sft-overlap-manifest"):
