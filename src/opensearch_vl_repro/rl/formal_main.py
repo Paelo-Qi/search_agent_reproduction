@@ -17,7 +17,7 @@ from .training_window import build_training_window, expected_window_prompts
 from .context_budget import CONTEXT_BUDGET_POLICY
 from opensearch_vl_repro.agent.reliability import SEARCH_BEHAVIOR_VERSION, provider_reliability_semantics
 
-VERSION = "formal-s4-main400-v6"
+VERSION = "formal-s4-main400-v7"
 MAIN_ROLLOUT = copy.deepcopy(ROLLOUT)
 MAIN_ROLLOUT["max_model_len"] = 16384
 SEED_SCHEME = "initial_seed+n*global_prompt_position+rollout_index-v1"
@@ -37,12 +37,13 @@ def require_main_run(run, *, _historical=False):
         if version.endswith("-v4"):
             if "search_behavior_version" in s or "provider_reliability" in s:
                 raise ValueError("historical Main v4 search identity must remain unchanged")
-        elif (s.get("search_behavior_version") != SEARCH_BEHAVIOR_VERSION
+        # Historical v5 stays bound to Search v3, independent of current behavior.
+        elif (s.get("search_behavior_version") != 3
                 or s.get("provider_reliability") != provider_reliability_semantics()):
             raise ValueError("historical Main v5 provider identity differs")
     elif (version != VERSION or s.get("search_behavior_version") != SEARCH_BEHAVIOR_VERSION
           or s.get("provider_reliability") != provider_reliability_semantics()):
-        raise ValueError("Formal Main requires current v6/search-v3 identity")
+        raise ValueError("Formal Main requires current v7/search-v4 identity")
     if (len(run["prompt_ids"]) != 400
             or s["rollout_n"] != 4 or s["groups_per_window"] != 4 or s["world_size"] != 4
             or s["require_complete_windows"] is not True or s["weighting"] != cp.FORMAL_WEIGHTING

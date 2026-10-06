@@ -31,6 +31,8 @@ def legacy_context(tmp_path, monkeypatch, count=2, version="formal-s4-main400-v4
     if version.endswith("-v4"):
         del s["provider_reliability"]
         del s["search_behavior_version"]
+    else:
+        s["search_behavior_version"] = 3  # frozen original v5/v6 identity, not current Search v4
     run = cp.build_training_run_identity("parent-cpu-main", semantics=s,
         prompt_ids=original["prompt_ids"], prompt_sources=original["prompt_sources"])
     output, reports = main.main_paths(tmp_path, run["run_id"])
@@ -186,6 +188,50 @@ def test_only_enumerated_source_changes_allowed(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="illegal"): handoff.semantic_delta(parent.run, child)
 
 
+def test_goal_a1_v4_to_v7_approved_source_transition_preserves_frozen_authority(tmp_path, monkeypatch):
+    parent = legacy_context(tmp_path, monkeypatch)
+    before = snapshot(parent.output)
+    plan = handoff.resolve_parent(tmp_path, parent.run["run_id"], cpu_fixture=True)
+    semantics = copy.deepcopy(main_run()["semantics"])
+    approved = ["src/opensearch_vl_repro/agent/search_providers.py",
+                "src/opensearch_vl_repro/agent/reliability.py",
+                "src/opensearch_vl_repro/rl/formal_main.py"]
+    assert set(approved) <= handoff.SOURCE_DELTA
+    for name in approved:
+        semantics["integration_source_hashes"][name] = digest(["approved Goal A.1 CPU source", name])
+    semantics["continuation"] = handoff.binding(plan)
+    run = cp.build_training_run_identity("a1-v7-child", semantics=semantics,
+        prompt_ids=parent.run["prompt_ids"], prompt_sources=parent.run["prompt_sources"])
+    assert handoff.semantic_delta(parent.run, run) == sorted(approved)
+    output, _ = main.main_paths(tmp_path, run["run_id"])
+    output.mkdir(parents=True)
+    receipt = handoff.materialize(tmp_path, output, run, cpu_fixture=True)
+    fields = handoff.report_fields(receipt)
+    assert run["semantics"]["coordinator_version"] == "formal-s4-main400-v7"
+    assert run["semantics"]["search_behavior_version"] == 4
+    assert receipt["version"] == "formal-main-continuation-v1"
+    assert fields["parent_policy_iteration"] == 2
+    assert fields["provider_reliability_transition"]["old_search_behavior_version"] == 2
+    assert fields["provider_reliability_transition"]["new_search_behavior_version"] == 4
+    assert fields["provider_reliability_transition"]["new"]["serpapi_google_lens"] == dict(
+        version="serpapi-google-lens-retry-v3", max_attempts=5, backoff_seconds=[5, 10, 20, 30])
+    assert receipt["parent_evidence"]["selected"] == plan["selected"]
+    assert snapshot(parent.output) == before
+
+
+@pytest.mark.parametrize("version", ["formal-s4-main400-v6", "formal-s4-main400-v7", "formal-s4-main400-v4"])
+def test_continued_or_v6_child_cannot_become_a_new_parent(version):
+    current = main_run()
+    semantics = copy.deepcopy(current["semantics"])
+    semantics["coordinator_version"] = semantics["rollout"]["behavior_version"] = version
+    semantics["continuation"] = {"version": handoff.VERSION}
+    parent = cp.build_training_run_identity("not-an-original-parent", semantics=semantics,
+        prompt_ids=current["prompt_ids"], prompt_sources=current["prompt_sources"])
+    with pytest.raises(ValueError, match="original single-run Main v4/v5"):
+        handoff.semantic_delta(parent, current)
+    assert handoff.PARENT_VERSIONS == {"formal-s4-main400-v4", "formal-s4-main400-v5"}
+
+
 @pytest.mark.parametrize("case", ["receipt", "bootstrap", "identity", "prefix_order"])
 def test_child_authority_tamper_fails(tmp_path, monkeypatch, case):
     parent = legacy_context(tmp_path, monkeypatch)
@@ -220,7 +266,7 @@ def test_no_capability_no_nonzero_anchor_and_no_arbitrary_init(tmp_path):
 
 
 def test_worker_continuation_plumbing_and_no_optimizer_reset():
-    assert main.VERSION == "formal-s4-main400-v6" and handoff.VERSION == "formal-main-continuation-v1"
+    assert main.VERSION == "formal-s4-main400-v7" and handoff.VERSION == "formal-main-continuation-v1"
     load = inspect.getsource(update.MainUpdateSession.load)
     assert "bootstrap_reload_capability" in load and "continuation_capability=capability" in load
     assert "super().load(policy)" in load

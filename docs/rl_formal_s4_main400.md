@@ -12,7 +12,7 @@ S4 uses `configs/rl_main.yaml`, the existing quality-selected Main400 and four
 ordered 100-row shards. Full pinned-source/quality/overlap/image preflight is
 mandatory before bootstrap. Fresh-run iteration zero ONLY uses the original
 `outputs/sft_main_imageid_v3/checkpoint-3k/adapter`; Smoke/Gate/S2/staging
-initialization is forbidden. The separate, explicit v6 continuation authority
+initialization is forbidden. The separate, explicit v7 continuation authority
 below may inherit a verified nonzero v4/v5 Main boundary; it is not arbitrary init.
 
 400 prompts / n=4 / K=4 / W=4 / 100 windows; one AdamW step per window,
@@ -23,11 +23,11 @@ fatal semantics, live tools and judges are unchanged. The shared S2 production
 update method performs official verl RLOO, O/C, LoRA change/match, native
 model/AdamW/RNG save and destructive fresh multimodal reload.
 
-`formal-s4-main400-v6` binds ordered source identities, frozen data/manifest and
+`formal-s4-main400-v7` binds ordered source identities, frozen data/manifest and
 config hashes, SFT lineage, pinned offline base, software/source hashes,
 algorithm/rollout/reward/tool contracts, seed, retention contract/milestones and
 seed scheme. Every member's seed is `initial_seed + 4*global_position + index`.
-It also explicitly binds `search_behavior_version=3` and
+It also explicitly binds `search_behavior_version=4` and
 `provider_reliability.serpapi_google_lens` (retry-v3, five attempts per stage,
 backoffs `[5, 10, 20, 30]` seconds), rather than relying only on source hashes.
 GPU locators, collection parallelism, pause and disk controls are operational.
@@ -150,10 +150,10 @@ Disk-accounting full/compacted checkpoint lists are sorted by zero-padded
 policy name, independently of filesystem enumeration order; retention and
 compaction authorization rules are unchanged.
 
-## Historical v4 AutoDL acceptance commands (NOT commands for this v6 checkout)
+## Historical v4 AutoDL acceptance commands (NOT commands for this v7 checkout)
 
 The commands below document the original attempt4 v4 bootstrap. Do NOT execute
-them with this v6 checkout or reuse attempt4 with modified sources. They are
+them with this v7 checkout or reuse attempt4 with modified sources. They are
 not a continuation recipe and not a recommendation to restart from SFT3k.
 
 Do not run these locally. Provision the exact frozen Main400/quality/source,
@@ -233,12 +233,48 @@ Successful results carry both stage counts; cache hits do not replay those
 runtime counters. Request credentials and provider error payloads are not
 included in diagnostic metadata or error messages.
 
-## Verified cross-version continuation (Goal B, v6)
+## Lens Success + no-results allowlist (Goal A.1, Search v4 / Main v7)
+
+Only the Lens `visual_matches` request uses the narrow parser. For HTTP 2xx JSON
+objects, it recognizes EXACTLY `search_metadata` as a dict with status `Success`,
+the exact top-level error `Google Lens hasn't returned any results for this query.`,
+and absent/null `visual_matches`. It returns an equivalent dict with
+`visual_matches=[]`. The image_search tool returns SUCCESS with zero results;
+the policy can continue subsequent turns. No provider retry/interruption, fatal
+attribution or artificial reward=0 is introduced for this successful empty case.
+
+Unknown errors, inexact messages, missing/malformed metadata or present non-null
+`visual_matches` do NOT qualify. Other provider errors still exhaust the existing
+bounded retry; malformed/non-object JSON, auth/config and invalid input retain
+fail-closed behavior. Upload and generic JSON parsing remain unchanged. HTTP
+429/5xx, timeout/network retry and independent five-attempt upload/Lens budgets
+with `[5, 10, 20, 30]` waits remain `serpapi-google-lens-retry-v3`.
+
+The user reports that v6 child `formal-main400-s4-continuation-v6-attempt1`
+activated parent policy21 but has not completed Window22's optimizer update.
+Three Window22 prompts committed (`rl_002971`, `rl_003788`, `rl_000109`);
+`rl_004731` repeatedly failed at trajectory0/step5 with exhausted Lens retries.
+A direct provider probe returned upload success and HTTP200 Lens
+`search_metadata.status=Success` with the exact no-results error above. These
+are supplied AutoDL facts, not locally inspected artifacts or a Window22 PASS.
+
+Search v3 -> v4 changes frozen identity. Preserve that v6 child's receipts,
+bootstrap and three groups as forensic evidence; do NOT resume it with v7,
+rewrite it, migrate its groups or use it as a parent. Create a NEW v7 child from
+original attempt4 (reported policy21; code still dynamically resolves the latest
+fully verified boundary). Recollect ALL K4 prompts for Window22 if N remains21.
+Neither the original parent nor v6 child namespace is modified. No runtime
+artifact, model, GPU, API or Main invocation is part of this local patch.
+
+## Verified cross-version continuation (Goal B, current Main v7)
 
 `formal-main-continuation-v1` supports original, non-continued Main v4/v5 parents
 only. Gate/Smoke/S2/CPU/unverified parents, nested continuation, in-place upgrades
 and arbitrary adapter initialization fail closed. `eligible_for_main_init=false`
-is unchanged. Never resume attempt4 with v6 or edit/reseal its historical identity.
+is unchanged. Never resume attempt4 with v7 or edit/reseal its historical identity.
+The schema/authority stays v1 and SOURCE_DELTA stays its existing exact-file
+allowlist (no directory/glob expansion). Original v5 parents retain Search v3
+identity; current children use Search v4. Continued v6 children are not parents.
 
 First stop and reconcile the parent under its original code. Handoff acquires
 the parent's existing coordinator/formal/publication locks read-only and rejects
@@ -307,7 +343,7 @@ Choose a NEW child run ID, after stopping the parent under its original code:
 
 ```bash
 export PARENT_RUN=formal-main400-s4-attempt4
-export RUN_ID=formal-main400-s4-continuation-v6-attempt1  # choose an unused NEW ID
+export RUN_ID=formal-main400-s4-continuation-v7-attempt1  # choose an unused NEW ID
 PYTHONPATH=src python scripts/run_rl_formal_main.py \
   "${MAIN_ARGS[@]}" --run-id "$RUN_ID" \
   --continue-from-run "$PARENT_RUN" --stop-after-window 25
@@ -322,6 +358,16 @@ closed; never edit receipts to make resume pass. Provision extra disk for the
 child-owned FULL bootstrap in addition to normal update/merge headroom. Parent
 history remains a final-audit dependency, not a routine recovery native loader
 dependency. This first schema does not support continuation of a continued child.
+
+Goal A.1 targeted CPU acceptance (no full pytest):
+
+```bash
+PYTHONPATH=src python -m pytest \
+  tests/test_phase3_search.py tests/test_phase4_reliability.py \
+  tests/test_rl_formal_main_continuation.py tests/test_rl_formal_s4_main.py \
+  tests/test_v3_provenance_guards.py -o addopts= -q -p no:cacheprovider
+git diff --check
+```
 
 Targeted CPU acceptance only (includes retention/run-state regressions):
 

@@ -143,7 +143,7 @@ def test_exact_main_identity_and_cli():
 
 
 def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
-    assert main.VERSION == "formal-s4-main400-v6"
+    assert main.VERSION == "formal-s4-main400-v7"
     assert smoke.VERSION == "formal-s3-smoke20-v1"
     assert smoke.ROLLOUT["max_model_len"] == 8192
     assert main.MAIN_ROLLOUT is not smoke.ROLLOUT
@@ -162,7 +162,7 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
     assert "context_budget_policy=CONTEXT_BUDGET_POLICY" in inspect.getsource(collection.run_collection_worker)
     from opensearch_vl_repro.rl.formal_collection import run_collection
     assert "context_budget_policy=" not in inspect.getsource(run_collection)
-    for case in ("v1", "v2", "v3", "v4", "8k", "missing", "changed"):
+    for case in ("v1", "v2", "v3", "v4", "v5", "v6", "8k", "missing", "changed"):
         semantics = copy.deepcopy(ctx.run["semantics"])
         if case == "v1":
             semantics["coordinator_version"] = "formal-s4-main400-v1"
@@ -179,6 +179,10 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
             semantics["rollout"]["behavior_version"] = "formal-s4-main400-v4"
             del semantics["search_behavior_version"]
             del semantics["provider_reliability"]
+        elif case in {"v5", "v6"}:
+            semantics["coordinator_version"] = "formal-s4-main400-" + case
+            semantics["rollout"]["behavior_version"] = semantics["coordinator_version"]
+            semantics["search_behavior_version"] = 3
         elif case == "8k":
             semantics["rollout"]["config"]["max_model_len"] = 8192
         elif case == "missing":
@@ -193,16 +197,16 @@ def test_main_context_budget_identity_and_old_behavior_rejected(ctx):
         with pytest.raises(ValueError): main.recover_main(ctx.output, foreign, cpu_fixture=True)
 
 
-def test_main_v6_explicit_provider_reliability_identity():
+def test_main_v7_explicit_provider_reliability_identity():
     run = main_run()
-    assert main.SEARCH_BEHAVIOR_VERSION == 3
+    assert main.SEARCH_BEHAVIOR_VERSION == 4
     expected = {"serpapi_google_lens": {"version": "serpapi-google-lens-retry-v3",
         "max_attempts": 5, "backoff_seconds": [5, 10, 20, 30]}}
     assert run["semantics"]["provider_reliability"] == expected
-    assert run["semantics"]["search_behavior_version"] == 3
+    assert run["semantics"]["search_behavior_version"] == 4
     main.require_main_run(run)
     for key, replacement in (("provider_reliability", None), ("provider_reliability", {}),
-                             ("search_behavior_version", 2)):
+                             ("search_behavior_version", 2), ("search_behavior_version", 3)):
         semantics = copy.deepcopy(run["semantics"])
         if replacement is None:
             del semantics[key]

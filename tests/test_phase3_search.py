@@ -18,7 +18,8 @@ from opensearch_vl_repro.agent.phase3_registry import create_phase3_tool_registr
 from opensearch_vl_repro.agent.reliability import RetryPolicy
 from opensearch_vl_repro.agent.search_providers import (
     ImageSearchResult, JinaReaderBackend, LensSearchResponse, SearchBackendError, SearchResult,
-    SerpApiLensBackend, SerperSearchBackend, load_search_config,
+    SERPAPI_LENS_NO_RESULTS_ERROR, SerpApiLensBackend, SerperSearchBackend, load_search_config,
+    _json, _serpapi_json, _serpapi_lens_json,
 )
 from opensearch_vl_repro.agent.search_tools import SearchTools
 from opensearch_vl_repro.agent.tool_contracts import TOOL_DECLARATIONS
@@ -344,6 +345,113 @@ def test_serpapi_success_without_visual_matches(config, keys):
     response = SerpApiLensBackend(config.serpapi, session=session).search(
         Image.new("RGB", (4, 4)), limit=10)
     assert response.image_id == "provider-img-2" and response.matches == ()
+
+
+@pytest.mark.parametrize("status", [200, 201])
+@pytest.mark.parametrize("matches_state", ["missing", "null"])
+def test_serpapi_lens_allowlisted_no_results_is_success_without_retry(config, keys, status, matches_state):
+    raw = {"error": "Google Lens hasn't returned any results for this query.",
+           "search_metadata": {"status": "Success"}}
+    if matches_state == "null":
+        raw["visual_matches"] = None
+    original = json.dumps(raw, sort_keys=True)
+    session = Session(posts=[Response({"image_id": "empty-id"})] * 2,
+                      gets=[Response(raw, status=status)] * 2)
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    waits = []
+    backend.retry = replace(backend.retry, sleeper=waits.append)
+    response = backend.search(Image.new("RGB", (4, 4)), limit=10)
+    assert response.matches == ()
+    assert response.upload_attempt_count == response.lens_attempt_count == response.attempt_count == 1
+    assert len(session.calls) == 2 and not waits
+    result = SearchTools(config, lens=backend).image_search({"image_id": "img_1"}, _context())
+    assert result.status == "success" and result.error_type is None
+    assert result.metadata["result_count"] == 0 and result.metadata["thumbnails"] == []
+    assert result.metadata["upload_attempt_count"] == result.metadata["lens_attempt_count"] == 1
+    assert "No visual matches found." in result.observation
+    assert len(session.calls) == 4 and not waits  # two independent calls, no retry
+    assert json.dumps(raw, sort_keys=True) == original  # response object is not rewritten
+    # Exercise actual Formal observation attribution, without engine/model/API.
+    from opensearch_vl_repro.rl.live_workflow import LiveRLWorkflowAdapter
+    adapter = object.__new__(LiveRLWorkflowAdapter)
+    adapter.consecutive_errors = 2
+    adapter.infrastructure_failure = adapter.fatal_turn = adapter.fatal_step = None
+    adapter.observe_turn(SimpleNamespace(status=result.status, metadata=result.metadata,
+        observation=result.observation, error=result.error_type))
+    assert adapter.consecutive_errors == 0 and adapter.infrastructure_failure is None
+    assert adapter.fatal_turn is adapter.fatal_step is None
+
+
+@pytest.mark.parametrize("override", [
+    {"error": "some other provider error"},
+    {"error": "no results"},
+    {"error": SERPAPI_LENS_NO_RESULTS_ERROR + " "},
+    {"search_metadata": {"status": "Error"}},
+    {"search_metadata": {"status": "success"}},
+    {"search_metadata": {"status": None}},
+    {"search_metadata": None},
+    {"search_metadata": []},
+    {"search_metadata": "Success"},
+    {"visual_matches": []},
+    {"visual_matches": [{"title": "Match", "link": "https://x.test"}]},
+    {"visual_matches": "invalid"},
+    {"visual_matches": False},
+    {"visual_matches": {}},
+    {"missing_metadata": True},
+])
+def test_serpapi_lens_no_results_allowlist_does_not_swallow_other_errors(config, keys, override):
+    raw = {"error": SERPAPI_LENS_NO_RESULTS_ERROR, "search_metadata": {"status": "Success"}}
+    raw.update(override)
+    if raw.pop("missing_metadata", False):
+        del raw["search_metadata"]
+    session = Session(posts=[Response({"image_id": "id"})], gets=[Response(raw)] * 5)
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    waits = []
+    backend.retry = replace(backend.retry, sleeper=waits.append)
+    with pytest.raises(SearchBackendError) as caught:
+        backend.search(Image.new("RGB", (4, 4)), limit=10)
+    assert caught.value.error_type == "provider_error" and caught.value.retryable
+    assert caught.value.failure_stage == "lens" and caught.value.lens_attempt_count == 5
+    assert caught.value.upload_attempt_count == 1
+    assert len(session.calls) == 6 and waits == [5, 10, 20, 30]
+
+
+@pytest.mark.parametrize("status,error_type,attempts", [
+    (401, "authentication_error", 1), (403, "authentication_error", 1),
+    (429, "quota_error", 5), (503, "provider_error", 5),
+    (302, "provider_error", 1), (400, "provider_error", 1),
+])
+def test_serpapi_lens_no_results_body_cannot_override_http_failure(config, keys, status, error_type, attempts):
+    raw = {"error": SERPAPI_LENS_NO_RESULTS_ERROR, "search_metadata": {"status": "Success"}}
+    session = Session(posts=[Response({"image_id": "id"})], gets=[Response(raw, status=status)] * attempts)
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    waits = []
+    backend.retry = replace(backend.retry, sleeper=waits.append)
+    with pytest.raises(SearchBackendError) as caught:
+        backend.search(Image.new("RGB", (4, 4)), limit=10)
+    assert caught.value.error_type == error_type and caught.value.lens_attempt_count == attempts
+    assert len(session.calls) == 1 + attempts
+    assert waits == ([5, 10, 20, 30] if attempts == 5 else [])
+    with pytest.raises(SearchBackendError):
+        _serpapi_lens_json(Response(raw, status=status))
+
+
+def test_serpapi_no_results_exception_is_lens_only_and_upload_stays_strict(config, keys):
+    raw = {"image_id": "must-not-bypass-error", "error": SERPAPI_LENS_NO_RESULTS_ERROR,
+           "search_metadata": {"status": "Success"}}
+    assert _serpapi_lens_json(Response(raw))["visual_matches"] == []
+    for parser in (_json, _serpapi_json):
+        with pytest.raises(SearchBackendError, match="provider reported an error"):
+            parser(Response(raw))
+    session = Session(posts=[Response(raw)] * 5)
+    backend = SerpApiLensBackend(config.serpapi, session=session)
+    waits = []
+    backend.retry = replace(backend.retry, sleeper=waits.append)
+    with pytest.raises(SearchBackendError) as caught:
+        backend.search(Image.new("RGB", (4, 4)), limit=10)
+    assert caught.value.failure_stage == "upload" and caught.value.upload_attempt_count == 5
+    assert caught.value.lens_attempt_count == 0 and all(call[0] == "post" for call in session.calls)
+    assert waits == [5, 10, 20, 30]
 
 
 def test_serpapi_large_noisy_image_uses_bounded_resize(config, keys):

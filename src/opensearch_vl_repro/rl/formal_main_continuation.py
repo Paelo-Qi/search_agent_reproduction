@@ -1,4 +1,4 @@
-"""Narrow v4/v5 Main -> v6 handoff authority; never rewrite a parent identity.
+"""Narrow v4/v5 Main -> v7 handoff authority; never rewrite a parent identity.
 
 Only bootstrap weights/state are materialized. Historical manifests form a
 sealed prefix proof, not pretend local checkpoints. Final audit reopens parent
@@ -22,7 +22,7 @@ from .group import read_formal_group
 from .training_window import expected_window_prompts
 from opensearch_vl_repro.eval_subset import canonical_json_sha256 as digest
 from opensearch_vl_repro.sft_tool_audit import sha256_file
-from opensearch_vl_repro.agent.reliability import provider_reliability_semantics
+from opensearch_vl_repro.agent.reliability import SEARCH_BEHAVIOR_VERSION, provider_reliability_semantics
 
 VERSION = "formal-main-continuation-v1"
 PARENT_VERSIONS = {"formal-s4-main400-v4", "formal-s4-main400-v5"}
@@ -407,7 +407,7 @@ def report_fields(receipt, local_windows=0):
         provider_reliability_transition=dict(old=parent.get("provider_reliability", {
             "serpapi_google_lens": dict(max_attempts=3, backoff_seconds=[1, 2])}),
             old_search_behavior_version=parent.get("search_behavior_version", 2),
-            new_search_behavior_version=3,
+            new_search_behavior_version=SEARCH_BEHAVIOR_VERSION,
             new=provider_reliability_semantics()))
 
 

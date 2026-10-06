@@ -15,6 +15,8 @@ from PIL import Image
 
 from .reliability import RetryPolicy, serpapi_retry_policy
 
+SERPAPI_LENS_NO_RESULTS_ERROR = "Google Lens hasn't returned any results for this query."
+
 
 class SearchBackendError(RuntimeError):
     def __init__(self, error_type: str, message: str, *, retryable: bool = False) -> None:
@@ -145,6 +147,25 @@ def _serpapi_json(response: Any) -> dict[str, Any]:
         if exc.error_type == "provider_error":
             raise SearchBackendError("provider_error", str(exc), retryable=True) from None
         raise
+
+
+def _serpapi_lens_json(response: Any) -> dict[str, Any]:
+    """Lens-only allowlist; upload and generic JSON error handling stay strict."""
+    _response(response)
+    try:
+        raw = response.json()
+    except ValueError:
+        raise SearchBackendError("invalid_response", "provider returned invalid JSON") from None
+    if not isinstance(raw, dict):
+        raise SearchBackendError("invalid_response", "provider returned a non-object response")
+    metadata = raw.get("search_metadata")
+    if (isinstance(metadata, dict) and metadata.get("status") == "Success"
+            and raw.get("error") == SERPAPI_LENS_NO_RESULTS_ERROR
+            and raw.get("visual_matches") is None):
+        return {**raw, "visual_matches": []}
+    if raw.get("error"):
+        raise SearchBackendError("provider_error", "provider reported an error", retryable=True)
+    return raw
 
 
 def _request(method: Any, *args: Any, **kwargs: Any) -> Any:
@@ -320,7 +341,7 @@ class SerpApiLensBackend:
             raise
         lens_attempts = 0
         try:
-            raw, lens_attempts = self.retry.run(lambda: _serpapi_json(_request(
+            raw, lens_attempts = self.retry.run(lambda: _serpapi_lens_json(_request(
                 self.session.get, self.config["lens_endpoint"],
                 params={"engine": "google_lens", "type": "visual_matches",
                         "image_id": image_id, "api_key": key},
